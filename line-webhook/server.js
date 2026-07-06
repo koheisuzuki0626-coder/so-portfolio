@@ -44,6 +44,10 @@ const ALLOWED_USER_IDS = new Set(
 );
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
+// Extra args passed before the prompt. `-p` (print mode) makes the CLI run
+// headless — produce output and exit — which is required in a webhook (no TTY).
+// Override with CLAUDE_ARGS="-p --model sonnet" etc. (space-separated).
+const CLAUDE_ARGS = (process.env.CLAUDE_ARGS || '-p').split(/\s+/).filter(Boolean);
 const COMMAND_TIMEOUT_MS = Number(process.env.COMMAND_TIMEOUT_MS) || 300_000;
 
 // Public HTTPS base URL LINE can reach (e.g. https://xxxx.ngrok.io). Required
@@ -109,7 +113,7 @@ function runClaude(text) {
   return new Promise((resolve, reject) => {
     execFile(
       CLAUDE_BIN,
-      [text],
+      [...CLAUDE_ARGS, text],
       {
         cwd: WORK_DIR,
         timeout: COMMAND_TIMEOUT_MS,
