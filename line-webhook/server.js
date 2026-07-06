@@ -111,7 +111,7 @@ const pendingAttachments = new Map();
 // ---------------------------------------------------------------------------
 function runClaude(text) {
   return new Promise((resolve, reject) => {
-    execFile(
+    const child = execFile(
       CLAUDE_BIN,
       [...CLAUDE_ARGS, text],
       {
@@ -124,11 +124,16 @@ function runClaude(text) {
       (error, stdout, stderr) => {
         if (error) {
           error.stderr = stderr;
+          error.stdout = stdout;
           return reject(error);
         }
         resolve((stdout || '').trim());
       }
     );
+    // `claude -p` reads the prompt from argv but still waits on stdin for
+    // piped input. In a webhook there is none, so close stdin immediately —
+    // otherwise the CLI stalls ("no stdin data received in 3s") and can fail.
+    if (child.stdin) child.stdin.end();
   });
 }
 
@@ -351,10 +356,11 @@ async function handleTextMessage(event, userId) {
     stdout = await runClaude(prompt);
   } catch (err) {
     console.error('claude failed:', err);
+    const detail = (err.stderr || err.stdout || err.message || '').toString().trim();
     const msg =
       err.killed && err.signal === 'SIGTERM'
         ? '(コマンドがタイムアウトしました)'
-        : `(コマンドの実行に失敗しました)\n${(err.stderr || err.message || '').toString().trim().slice(0, 500)}`;
+        : `(コマンドの実行に失敗しました${err.code != null ? ` code=${err.code}` : ''})\n${detail.slice(0, 500)}`;
     await reply(event.replyToken, msg);
     return;
   }
