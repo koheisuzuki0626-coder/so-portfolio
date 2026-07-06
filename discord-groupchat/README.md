@@ -7,7 +7,7 @@ Discord Bot を3体（オーケストレーター / Claude / Gemini）1つの Py
 ## 必要なもの
 - Python 3.10 以上
 - Discord Bot トークン ×3（1サーバーに3体とも招待）
-- `ANTHROPIC_API_KEY`（Claude API＝**従量課金**。Claude Code のサブスクとは別）
+- ログイン済みの `claude` CLI（Claude担当に使用。**Claude Code のサブスクで動くのでAPI課金不要**）
 - `GEMINI_API_KEY`（Gemini API。AI Studio の無料枠キー `AIzaSy...`）
 
 ## セットアップ
@@ -27,9 +27,9 @@ pip install -r requirements.txt
 4. 各アプリの **OAuth2 > URL Generator** で `scope=bot`、権限 `Send Messages` を選択 →
    生成URLを開いて、**3体とも同じDiscordサーバーのチャンネルにInvite**
 
-### 3. API キー
-- Claude: https://console.anthropic.com/ でAPIキー発行。**支払い設定（クレジット）が必要**。
-- Gemini: https://aistudio.google.com/apikey で `AIzaSy...` を発行（無料枠）。
+### 3. API キー / CLI
+- Claude: APIキー不要。`claude -p "hi"` が返事すればOK（Claude Code のサブスクを利用）。
+- Gemini: https://aistudio.google.com/apikey で `AIzaSy...` を発行（**課金なしの無料枠でOK**）。
 
 ### 4. .env を作成
 ```bash
@@ -55,5 +55,5 @@ python ai_group_chat.py
 - 1発言の長さや口調は `ai_group_chat.py` の `persona()` を編集。
 
 ## 注意
-- Claude API は従量課金です。`MAX_TURNS` を小さめにして使いすぎに注意。
+- Claude担当は `claude` CLI 経由なので、実行するMacで `claude` がログイン済みである必要があります。
 - Bot 同士の無限ループを防ぐため、`on_message` は人間の発言（`!talk`/`!stop`）のみ反応します。

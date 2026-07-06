@@ -2,48 +2,44 @@
 Discord上で Claude と Gemini が会話するグループチャット
 =====================================================
 構成: Discord Bot 3体（オーケストレーター / Claude / Gemini）を
-1つのPythonプロセスで動かす。会話の進行はオーケストレーターが制御。
+1つのPythonプロセスで動かす。進行はオーケストレーターが制御し、
 Claude と Gemini は「対等な話し相手」として交互に発言する。
 
+Claude担当は `claude` CLI（Claude Code のサブスク）を使うため、
+Anthropic APIの課金は不要。Gemini担当は Gemini API の無料枠キーを使う。
+
 --- セットアップ ---
-1) Discord Developer Portal (https://discord.com/developers/applications) で
-   アプリを3つ作成（Orchestrator / Claude / Gemini）→ 各「Bot」タブでトークン取得
+1) Discord Developer Portal でアプリを3つ作成（Orchestrator / Claude / Gemini）
+   → 各「Bot」タブでトークン取得
    ※ Orchestrator用Botのみ「MESSAGE CONTENT INTENT」をONにすること（必須）
-2) 各アプリの OAuth2 > URL Generator で scope=bot / 権限=Send Messages を選び、
-   生成URLから3体とも同じサーバー（チャンネル）に招待
-3) python3 -m venv venv && source venv/bin/activate
-   pip install -U discord.py anthropic google-genai python-dotenv
-   （Python 3.10以上推奨）
-4) このファイルと同じ場所に .env を作成（.env.example 参照）:
-   DISCORD_ORCH_TOKEN=xxx
-   DISCORD_CLAUDE_TOKEN=xxx
-   DISCORD_GEMINI_TOKEN=xxx
-   ANTHROPIC_API_KEY=xxx
-   GEMINI_API_KEY=xxx
-5) python ai_group_chat.py
-6) Discordのチャンネルで:
-   !talk 好きなお題   → 会話開始
-   !stop             → 途中停止
+2) OAuth2 > URL Generator で scope=bot / 権限=Send Messages を選び、
+   3体とも同じサーバー（チャンネル）に招待
+3) `claude` CLI がログイン済みであること（`claude -p "hi"` が返事すればOK）
+4) python3 -m venv venv && source venv/bin/activate
+   pip install -r requirements.txt
+5) .env を作成（.env.example 参照）:
+   DISCORD_ORCH_TOKEN / DISCORD_CLAUDE_TOKEN / DISCORD_GEMINI_TOKEN / GEMINI_API_KEY
+6) python ai_group_chat.py
+7) Discordのチャンネルで:  !talk 好きなお題   /  !stop
 """
 
 import asyncio
 import os
 
 import discord
-from anthropic import Anthropic
 from dotenv import load_dotenv
 from google import genai
 
 load_dotenv()
 
 # ---------- 設定 ----------
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
+CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")     # Claude Code CLI（サブスク利用）
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-MAX_TURNS = int(os.getenv("MAX_TURNS", "6"))  # 1回の!talkでの合計発言数（暴走防止）
-REPLY_CHARS = 300                             # 1発言の目安文字数
-SEND_DELAY = 2                                # 発言間の待ち秒数
+MAX_TURNS = int(os.getenv("MAX_TURNS", "6"))       # 1回の!talkでの合計発言数（暴走防止）
+REPLY_CHARS = 300                                  # 1発言の目安文字数
+SEND_DELAY = 2                                     # 発言間の待ち秒数
+CLAUDE_TIMEOUT = 120                               # claude CLI のタイムアウト秒
 
-anthropic_client = Anthropic()  # 環境変数 ANTHROPIC_API_KEY を自動参照
 gemini_client = genai.Client()  # 環境変数 GEMINI_API_KEY を自動参照
 
 # ---------- Discordクライアント3体 ----------
@@ -70,30 +66,34 @@ def persona(me, partner):
     )
 
 
-async def ask_claude(topic, history):
-    prompt = (
+def make_prompt(me, partner, topic, history):
+    return (
+        persona(me, partner) + "\n\n"
         f"お題: {topic}\n\nこれまでの会話:\n"
         f"{build_transcript(history) or '(まだ無し)'}\n\n次のあなたの発言:"
     )
 
-    def _call():
-        resp = anthropic_client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=500,
-            system=persona("Claude", "Gemini"),
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return resp.content[0].text
 
-    return await asyncio.to_thread(_call)
+async def ask_claude(topic, history):
+    """Claude Code CLI をヘッドレスで呼ぶ（サブスク利用・API課金なし）。"""
+    prompt = make_prompt("Claude", "Gemini", topic, history)
+    proc = await asyncio.create_subprocess_exec(
+        CLAUDE_BIN, "-p", prompt,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_TIMEOUT)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise RuntimeError("claude CLI がタイムアウトしました")
+    if proc.returncode != 0:
+        raise RuntimeError((err.decode() or "claude CLI error").strip()[:300])
+    return out.decode().strip()
 
 
 async def ask_gemini(topic, history):
-    prompt = (
-        persona("Gemini", "Claude") + "\n\n"
-        f"お題: {topic}\n\nこれまでの会話:\n"
-        f"{build_transcript(history) or '(まだ無し)'}\n\n次のあなたの発言:"
-    )
+    prompt = make_prompt("Gemini", "Claude", topic, history)
 
     def _call():
         resp = gemini_client.models.generate_content(
@@ -106,7 +106,7 @@ async def ask_gemini(topic, history):
 
 async def send_as(bot, channel_id, text):
     channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-    await channel.send(text[:1900])  # Discordの2000字制限対策
+    await channel.send((text or "(空の応答)")[:1900])  # Discordの2000字制限対策
 
 
 async def run_conversation(channel_id, topic):
@@ -124,7 +124,7 @@ async def run_conversation(channel_id, topic):
             try:
                 text = await ask(topic, history)
             except Exception as e:
-                await send_as(orch, channel_id, f"⚠️ {name} のAPI呼び出し失敗: {e}")
+                await send_as(orch, channel_id, f"⚠️ {name} の呼び出し失敗: {e}")
                 break
             history.append((name, text))
             await send_as(bot, channel_id, text)
