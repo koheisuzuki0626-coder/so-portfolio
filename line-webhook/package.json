@@ -5,11 +5,11 @@
   "type": "commonjs",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --env-file-if-exists=.env --watch server.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20.18"
   },
   "dependencies": {
     "@line/bot-sdk": "^9.5.0",
