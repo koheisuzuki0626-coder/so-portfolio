@@ -1,8 +1,15 @@
-# Discord AI グループチャット（Claude × Gemini）
+# Discord AI グループチャット（人間 × Claude × Gemini）
 
 Discord Bot を3体（オーケストレーター / Claude / Gemini）1つの Python プロセスで動かし、
-チャンネル内で **Claude と Gemini が対等に交互に会話**します。人間が `!talk お題` で
-開始、`!stop` で停止。進行はオーケストレーターが制御します。
+チャンネルで **人間・Claude・Gemini が一緒に会話**できます。
+
+- 普通に発言 → Claude と Gemini の**両方が会話に参加**
+- 「クロード ○○」「gemini ○○」や @メンション → **その子だけ**が反応
+- `!talk お題` → Claude と Gemini **だけ**で自動トーク（最大 `MAX_TURNS` 発言）
+- `!stop` → 自動トークを停止
+
+メッセージを読むのは**オーケストレーターBotだけ**（Claude/Gemini Botは送信専用）なので、
+`MESSAGE CONTENT INTENT` はオーケストレーター用にだけ ON にすればOKです。
 
 ## 必要なもの
 - Python 3.10 以上
@@ -44,11 +51,23 @@ python ai_group_chat.py
 ターミナルに `オーケストレーター起動: ...` が出れば成功。
 
 ### 6. Discord で会話
-チャンネルで：
+チャンネルで普通に話しかけるだけ：
+```
+みんなおすすめの映画ある？
+```
+→ Claude と Gemini が会話に参加します。
+
+特定の子だけに聞きたいときは名前を入れる：
+```
+クロード これはどう思う？
+gemini 別の案ちょうだい
+```
+
+AI二人だけで話させたいとき：
 ```
 !talk 猫と犬はどっちが賢い？
 ```
-→ Claude と Gemini が交互に発言します。`!stop` で停止。
+`!stop` で停止。
 
 ## 調整
 - `MAX_TURNS`（合計発言数）, `CLAUDE_MODEL`, `GEMINI_MODEL` は `.env` で変更可。
