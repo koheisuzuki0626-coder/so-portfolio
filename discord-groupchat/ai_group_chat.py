@@ -1,22 +1,19 @@
 """
-Discord グループチャット（人間 × Claude × Gemini）
-==================================================
-Discord Bot 3体（オーケストレーター / Claude / Gemini）を1プロセスで動かす。
-人間がチャンネルで発言すると Claude と Gemini が会話に参加する。名前で宛先指定も可能。
+Discord グループチャット（人間 × オーケストレーター × Claude × Gemini）
+====================================================================
+Discord Bot 3体を1プロセスで動かす。
 
-使い方（チャンネルで）:
-  ・普通に発言           → Claude と Gemini の両方が反応
-  ・「クロード ○○」など   → Claude だけ反応（@メンションでもOK）
-  ・「gemini ○○」など    → Gemini だけ反応
-  ・!talk お題           → Claude と Gemini だけで自動トーク（最大 MAX_TURNS 発言）
-  ・!stop                → 自動トークを停止
+  ・普通に発言 / @オーケストレーター → オーケストレーターが Claude と Gemini を使い、
+                                        1つにまとめた回答を返す（司令塔）
+  ・「クロード ○○」/ @Claude         → Claude だけが返す
+  ・「gemini ○○」/ @Gemini          → Gemini だけが返す
+  ・@Claude と @Gemini 両方指名       → 二人が個別に返す
+  ・!talk お題                        → Claude と Gemini だけで自動トーク
+  ・!stop                             → 自動トークを停止
 
-Claude担当は `claude` CLI（Claude Code のサブスク）を使うので Anthropic API 課金は不要。
-Gemini担当は Gemini API の無料枠キー（GEMINI_API_KEY）を使う。
-
-セットアップ手順は README.md を参照。
-※ MESSAGE CONTENT INTENT は「オーケストレーター」用Botだけ ON にすればよい
-  （メッセージを読むのはオーケストレーターだけ。Claude/Gemini Botは送信専用）。
+Claude担当は `claude` CLI（サブスク）。Gemini担当は Gemini API 無料枠キー。
+メッセージを読むのはオーケストレーターBotだけ（他は送信専用）なので、
+MESSAGE CONTENT INTENT はオーケストレーター用にだけONにすればよい。
 """
 
 import asyncio
@@ -29,23 +26,21 @@ from google import genai
 load_dotenv()
 
 # ---------- 設定 ----------
-CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")     # Claude Code CLI（サブスク利用）
+CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-MAX_TURNS = int(os.getenv("MAX_TURNS", "6"))       # !talk での合計発言数（暴走防止）
-REPLY_CHARS = 300                                  # 1発言の目安文字数
-SEND_DELAY = 2                                     # 自動トークの発言間の待ち秒数
-HISTORY_LIMIT = 24                                 # チャンネルごとに保持する会話数
-CLAUDE_TIMEOUT = 120                               # claude CLI のタイムアウト秒
+MAX_TURNS = int(os.getenv("MAX_TURNS", "6"))
+REPLY_CHARS = 400
+SEND_DELAY = 2
+HISTORY_LIMIT = 24
+CLAUDE_TIMEOUT = 120
 
 gemini_client = genai.Client()  # 環境変数 GEMINI_API_KEY を自動参照
 
-# ---------- Discordクライアント3体 ----------
 orch_intents = discord.Intents.default()
-orch_intents.message_content = True  # メッセージ本文の読取りに必要（Portal側もON必須）
+orch_intents.message_content = True
 orch = discord.Client(intents=orch_intents)
-
-claude_bot = discord.Client(intents=discord.Intents.default())  # 送信専用
-gemini_bot = discord.Client(intents=discord.Intents.default())  # 送信専用
+claude_bot = discord.Client(intents=discord.Intents.default())
+gemini_bot = discord.Client(intents=discord.Intents.default())
 
 state = {"running": False, "stop": False}
 histories = {}  # channel_id -> list[(speaker, text)]
@@ -58,32 +53,16 @@ def get_history(cid):
 def add_history(cid, speaker, text):
     h = get_history(cid)
     h.append((speaker, text))
-    del h[:-HISTORY_LIMIT]  # 直近だけ残す
+    del h[:-HISTORY_LIMIT]
 
 
 def build_transcript(history):
     return "\n".join(f"{name}: {text}" for name, text in history) or "(まだ会話なし)"
 
 
-def persona(me, partner):
-    return (
-        f"あなたは{me}。人間たちと{partner}が参加するDiscordのグループチャットにいる。"
-        f"{partner}も人間もあなたと対等な仲間で、上下関係はない。"
-        f"日本語で{REPLY_CHARS}字以内、1発言だけで会話に自然に参加する。前置きや名乗りは不要。"
-        "直前の流れを踏まえ、相手に話しかけたり、同意だけでなく自分の視点も述べること。"
-    )
-
-
-def make_prompt(me, partner, history):
-    return (
-        persona(me, partner) + "\n\nこれまでの会話ログ:\n"
-        f"{build_transcript(history)}\n\n次の {me} の発言:"
-    )
-
-
-async def ask_claude(history):
+# ---------- 各AIへの問い合わせ ----------
+async def run_claude_cli(prompt):
     """Claude Code CLI をヘッドレスで呼ぶ（サブスク利用・API課金なし）。"""
-    prompt = make_prompt("Claude", "Gemini", history)
     proc = await asyncio.create_subprocess_exec(
         CLAUDE_BIN, "-p", prompt,
         stdout=asyncio.subprocess.PIPE,
@@ -99,58 +78,103 @@ async def ask_claude(history):
     return out.decode().strip()
 
 
+def peer_persona(me, partner):
+    return (
+        f"あなたは{me}。人間たちと{partner}が参加するDiscordのグループチャットにいる。"
+        f"{partner}も人間も対等な仲間。日本語で{REPLY_CHARS}字以内、1発言だけで自然に参加する。"
+        "前置きや名乗りは不要。直前の流れを踏まえ、自分の視点も述べること。"
+    )
+
+
+def peer_prompt(me, partner, history):
+    return (
+        peer_persona(me, partner) + "\n\nこれまでの会話ログ:\n"
+        f"{build_transcript(history)}\n\n次の {me} の発言:"
+    )
+
+
+async def ask_claude(history):
+    return await run_claude_cli(peer_prompt("Claude", "Gemini", history))
+
+
 async def ask_gemini(history):
-    prompt = make_prompt("Gemini", "Claude", history)
+    prompt = peer_prompt("Gemini", "Claude", history)
 
     def _call():
-        resp = gemini_client.models.generate_content(
+        return gemini_client.models.generate_content(
             model=GEMINI_MODEL, contents=prompt
-        )
-        return resp.text
+        ).text
 
     return await asyncio.to_thread(_call)
 
 
+async def ask_orchestrator(history):
+    """司令塔。Geminiの意見を（取れれば）取り込み、Claudeで1つの回答にまとめる。"""
+    gemini_view = ""
+    try:
+        gemini_view = await ask_gemini(history)
+    except Exception:
+        gemini_view = ""  # Geminiが使えなくてもClaude単独で続行
+
+    prompt = (
+        "あなたは司令塔（オーケストレーター）。人間とのグループチャットで、"
+        "部下だが対等な仲間である Claude と Gemini の力を借りて、"
+        f"最良の【単一の回答】をまとめて返す。日本語で{REPLY_CHARS}字以内、結論を先に簡潔に。"
+        "『Claudeが〜』『Geminiが〜』などの実況や名乗りは不要。回答本体だけを書く。\n\n"
+        f"これまでの会話ログ:\n{build_transcript(history)}\n\n"
+        + (
+            f"参考：Geminiの意見（鵜呑みにせず取捨選択して統合すること）:\n{gemini_view}\n\n"
+            if gemini_view.strip()
+            else ""
+        )
+        + "上を踏まえた、あなた（オーケストレーター）の最終回答:"
+    )
+    return await run_claude_cli(prompt)
+
+
+# ---------- 送信・進行 ----------
 async def send_as(bot, channel_id, text):
     channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-    await channel.send((text or "(空の応答)")[:1900])  # Discordの2000字制限対策
+    await channel.send((text or "(空の応答)")[:1900])
 
 
 async def respond(cid, name, bot, ask):
-    """あるAIに履歴を渡して発言させ、履歴に追記してチャンネルに送る。"""
     text = await ask(get_history(cid))
     add_history(cid, name, text)
     await send_as(bot, cid, text)
 
 
 def decide_targets(message, content):
-    """メッセージの宛先から、反応するAIを決める。宛先なしなら両方。"""
+    """宛先から反応者を決める。宛先が無ければオーケストレーターが統合回答。"""
     low = content.lower()
-    want_claude = (
+    named_claude = (
         "claude" in low or "クロード" in content
         or (claude_bot.user and claude_bot.user in message.mentions)
     )
-    want_gemini = (
+    named_gemini = (
         "gemini" in low or "ジェミニ" in content or "ジェミナイ" in content
         or (gemini_bot.user and gemini_bot.user in message.mentions)
     )
-    if not want_claude and not want_gemini:
-        want_claude = want_gemini = True  # 宛先指定なし → 両方参加
+    named_orch = (
+        "オーケストレーター" in content or "orchestrator" in low
+        or (orch.user and orch.user in message.mentions)
+    )
     targets = []
-    if want_claude:
+    if named_orch:
+        targets.append(("Orchestrator", orch, ask_orchestrator))
+    if named_claude:
         targets.append(("Claude", claude_bot, ask_claude))
-    if want_gemini:
+    if named_gemini:
         targets.append(("Gemini", gemini_bot, ask_gemini))
+    if not targets:  # 宛先指定なし → 既定はオーケストレーターの統合回答
+        targets.append(("Orchestrator", orch, ask_orchestrator))
     return targets
 
 
 async def run_auto(cid, topic):
     """Claude と Gemini だけで自動的に会話（!talk 用）。"""
     state["running"], state["stop"] = True, False
-    speakers = [
-        ("Claude", claude_bot, ask_claude),
-        ("Gemini", gemini_bot, ask_gemini),
-    ]
+    speakers = [("Claude", claude_bot, ask_claude), ("Gemini", gemini_bot, ask_gemini)]
     try:
         for i in range(MAX_TURNS):
             if state["stop"]:
@@ -175,7 +199,7 @@ async def on_ready():
 @orch.event
 async def on_message(message):
     if message.author.bot:
-        return  # 人間の発言だけに反応（Bot同士の無限ループ防止）
+        return
     content = message.content.strip()
     if not content:
         return
@@ -197,9 +221,8 @@ async def on_message(message):
         asyncio.create_task(run_auto(cid, topic))
         return
     if content.startswith("!"):
-        return  # 未知のコマンドは無視
+        return
 
-    # --- 通常のグループ会話 ---
     add_history(cid, message.author.display_name, content)
     async with message.channel.typing():
         for name, bot, ask in decide_targets(message, content):
