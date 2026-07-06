@@ -1,0 +1,68 @@
+"""
+Higgsfield 公式SDK（higgsfield_client）の薄いラッパー。
+=====================================================
+認証は キーID + シークレット。.env の HIGGSFIELD_API_KEY / HIGGSFIELD_API_SECRET を
+SDKが見る HF_API_KEY / HF_API_SECRET に橋渡しする。
+
+  generate_image(prompt) -> 画像URL
+  generate_video(image_url, prompt) -> 動画URL
+
+app名（生成モデル）は .env で上書き可能。
+"""
+
+import os
+
+import higgsfield_client as _hf  # 公式SDK（pip install higgsfield_client）
+
+IMAGE_APP = os.getenv("HIGGSFIELD_IMAGE_APP", "bytedance/seedream/v4/text-to-image")
+VIDEO_APP = os.getenv("HIGGSFIELD_VIDEO_APP", "higgsfield/dop-turbo/image2video")
+
+
+def _ensure_env():
+    """.env の HIGGSFIELD_* を SDK が参照する HF_* に反映する。"""
+    if os.getenv("HIGGSFIELD_API_KEY") and not os.getenv("HF_API_KEY"):
+        os.environ["HF_API_KEY"] = os.environ["HIGGSFIELD_API_KEY"]
+    if os.getenv("HIGGSFIELD_API_SECRET") and not os.getenv("HF_API_SECRET"):
+        os.environ["HF_API_SECRET"] = os.environ["HIGGSFIELD_API_SECRET"]
+
+
+def _find_url(result, prefer):
+    """レスポンス(dict/list)を再帰的に探して最初のURL文字列を返す。"""
+    if isinstance(result, dict):
+        for k in prefer:
+            v = result.get(k)
+            if isinstance(v, str) and v.startswith("http"):
+                return v
+        for v in result.values():
+            u = _find_url(v, prefer)
+            if u:
+                return u
+    elif isinstance(result, list):
+        for v in result:
+            u = _find_url(v, prefer)
+            if u:
+                return u
+    return None
+
+
+async def generate_image(prompt, **arguments):
+    _ensure_env()
+    result = await _hf.subscribe_async(
+        app=IMAGE_APP, arguments={"prompt": prompt, **arguments}
+    )
+    url = _find_url(result, ("image_url", "url"))
+    if not url:
+        raise RuntimeError(f"画像URLが取れません（形が想定と違う）: {str(result)[:600]}")
+    return url
+
+
+async def generate_video(image_url, prompt="", **arguments):
+    _ensure_env()
+    args = {"image_url": image_url, **arguments}
+    if prompt:
+        args["prompt"] = prompt
+    result = await _hf.subscribe_async(app=VIDEO_APP, arguments=args)
+    url = _find_url(result, ("video_url", "url"))
+    if not url:
+        raise RuntimeError(f"動画URLが取れません（形が想定と違う）: {str(result)[:600]}")
+    return url
