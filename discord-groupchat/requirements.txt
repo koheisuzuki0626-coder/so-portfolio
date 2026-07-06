@@ -1,0 +1,4 @@
+discord.py>=2.3
+anthropic>=0.40
+google-genai>=0.3
+python-dotenv>=1.0
