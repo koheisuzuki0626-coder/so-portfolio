@@ -142,9 +142,10 @@ async def ask_orchestrator(history):
 
 
 # ---------- 送信・進行 ----------
-async def send_as(bot, channel_id, text):
+async def send_as(bot, channel_id, text, view=None):
     channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-    await channel.send((text or "(空の応答)")[:1900])
+    kwargs = {"view": view} if view is not None else {}
+    await channel.send((text or "(空の応答)")[:1900], **kwargs)
 
 
 async def respond(cid, name, bot, ask):
@@ -226,6 +227,45 @@ CREDIT_MSG = (
 )
 
 
+class ApprovalView(discord.ui.View):
+    """各段階の下に出す [✅ 承認して次へ] [🔄 やり直し] ボタン。"""
+
+    def __init__(self, cid):
+        super().__init__(timeout=1800)  # 30分
+        self.cid = cid
+
+    async def _disable(self, interaction):
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:  # noqa: BLE001
+            pass
+        self.stop()
+
+    @discord.ui.button(label="✅ 承認して次へ", style=discord.ButtonStyle.success)
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not projects.get(self.cid):
+            await interaction.response.send_message("このプロジェクトは終了しています。", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"✅ {interaction.user.display_name} が承認しました。次に進みます…"
+        )
+        await self._disable(interaction)
+        await pipeline_reply(self.cid, "OK")
+
+    @discord.ui.button(label="🔄 やり直し", style=discord.ButtonStyle.secondary)
+    async def revise(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not projects.get(self.cid):
+            await interaction.response.send_message("このプロジェクトは終了しています。", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "🔄 修正内容をこのチャンネルにテキストで送ってください"
+            "（例:「もっと明るく」「シーン2を夜に」）。"
+        )
+        await self._disable(interaction)
+
+
 async def _pipeline_plan(cid, feedback=""):
     p = projects[cid]
     prompt = (
@@ -247,7 +287,8 @@ async def _pipeline_plan(cid, feedback=""):
     await send_as(
         orch, cid,
         f"📝 【構成案】\n{p['plan']}\n\n———\n"
-        "OKなら「OK」、直したい所はテキストで指示してください。",
+        "下のボタン、または「OK」で承認。直したい所はテキストで指示してください。",
+        view=ApprovalView(cid),
     )
 
 
@@ -286,7 +327,8 @@ async def _pipeline_storyboard(cid, feedback=""):
     p["images"] = images
     await send_as(
         orch, cid,
-        "———\n絵コンテOKなら「OK」、直すならテキストで指示してください。",
+        "———\n下のボタン、または「OK」で承認。直すならテキストで指示してください。",
+        view=ApprovalView(cid),
     )
 
 
@@ -319,12 +361,14 @@ async def _pipeline_edit(cid, feedback=""):
     if remaining <= 0:
         await send_as(
             orch, cid,
-            "———\n編集チェック最終回です。「OK」で完成にしてください。",
+            "———\n編集チェック最終回です。下のボタン、または「OK」で完成にしてください。",
+            view=ApprovalView(cid),
         )
     else:
         await send_as(
             orch, cid,
-            f"———\nOKなら「OK」で完成。直すならテキストで指示（あと{remaining}回まで修正可）。",
+            f"———\n下のボタン、または「OK」で完成。直すならテキストで指示（あと{remaining}回まで修正可）。",
+            view=ApprovalView(cid),
         )
 
 
