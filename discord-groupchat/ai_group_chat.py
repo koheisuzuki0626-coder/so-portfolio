@@ -127,17 +127,54 @@ async def ask_gemini(history):
     return await _gemini_call(peer_prompt("Gemini", "Claude", history))
 
 
+# ---------- Web検索（DuckDuckGo・APIキー不要・権限プロンプト不要）----------
+SEARCH_RESULTS_N = int(os.getenv("SEARCH_RESULTS_N", "5"))
+
+
+def _web_search_sync(query, n):
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        from duckduckgo_search import DDGS  # 旧パッケージ名フォールバック
+    with DDGS() as d:
+        return list(d.text(query, max_results=n))
+
+
+async def web_search_context(query):
+    """queryでWeb検索し、Claude/Geminiに渡す文脈テキストを返す。失敗時は空文字。"""
+    if not query.strip():
+        return ""
+    try:
+        results = await asyncio.to_thread(_web_search_sync, query, SEARCH_RESULTS_N)
+    except Exception as e:  # noqa: BLE001
+        print(f"[web_search] 失敗: {e}")
+        return ""
+    if not results:
+        return ""
+    lines = []
+    for r in results:
+        title = r.get("title") or ""
+        body = r.get("body") or r.get("snippet") or ""
+        href = r.get("href") or r.get("url") or ""
+        lines.append(f"- {title}\n  {body}\n  {href}")
+    return (
+        "【Web検索結果（最新情報。必要に応じて根拠として使い、URLも示す）】\n"
+        + "\n".join(lines)
+    )
+
+
 # ---------------------------------------------------------------------------
 # オーケストレーター：3層構造
 #   ① ルーティング（得意モデルへ振り分け／簡単なら単発）
 #   ② ディベート（各回答を相互に見せて批判・修正）
 #   ③ 司令塔が統合（合意点/対立点を整理して単一回答へ）
 # ---------------------------------------------------------------------------
-def _answer_prompt(who, history):
+def _answer_prompt(who, history, extra=""):
     return (
         f"あなたは{who}。次の会話の最後の要求に、正確で役立つ回答を日本語で簡潔に述べる。"
         "前置きや名乗りは不要、回答本体のみ。\n\n"
-        f"{build_transcript(history)}\n\nあなたの回答:"
+        + (extra + "\n\n" if extra else "")
+        + f"{build_transcript(history)}\n\nあなたの回答:"
     )
 
 
@@ -153,13 +190,14 @@ def _critique_prompt(me, other, my_ans, other_ans, history):
 
 
 async def _route(history):
-    """① どのモデルに振るか・多段化するかを判定。JSONで受ける。"""
+    """① モデル振り分け・多段化・Web検索要否を判定。JSONで受ける。"""
     prompt = (
         "あなたはルーター。次の会話の最後の要求に最適な処理方針をJSONだけで返す。\n"
-        '形式: {"mode":"single"|"debate","lead":"claude"|"gemini"}\n'
+        '形式: {"mode":"single"|"debate","lead":"claude"|"gemini","search":true|false}\n'
         "- 雑談/簡単な質問/短い依頼 → single\n"
         "- 複雑/重要/事実確認や多角的検討が有益 → debate\n"
-        "- コード・論理・技術寄り → lead=claude ／ 最新情報・画像・幅広い発想 → lead=gemini\n\n"
+        "- コード・論理・技術寄り → lead=claude ／ 最新情報・画像・幅広い発想 → lead=gemini\n"
+        "- 最新情報・時事・製品/価格・実在の事実確認が要る → search=true、雑談や一般常識 → search=false\n\n"
         f"会話:\n{build_transcript(history)}\n\nJSON:"
     )
     try:
@@ -168,40 +206,49 @@ async def _route(history):
         d = json.loads(m.group(0)) if m else {}
         mode = d.get("mode") if d.get("mode") in ("single", "debate") else "single"
         lead = d.get("lead") if d.get("lead") in ("claude", "gemini") else "claude"
-        return mode, lead
+        search = bool(d.get("search"))
+        return mode, lead, search
     except Exception:  # noqa: BLE001
-        return "single", "claude"
+        return "single", "claude", False
 
 
-async def _synthesize(claude_ans, gemini_ans, history):
+async def _synthesize(claude_ans, gemini_ans, history, extra=""):
     """③ 司令塔が統合。合意点を軸に、対立点があれば触れて単一回答へ。"""
     prompt = (
         "あなたは司令塔（オーケストレーター）。ClaudeとGeminiの回答を統合し、単一の最終回答を作る。"
         "両者の【合意点】を軸に据え、【対立点】があれば簡潔に触れて最も妥当な結論を示す。"
         f"実況や『Claudeが〜』等は書かず、回答本体のみ。日本語で{REPLY_CHARS}字以内、結論を先に。\n\n"
-        f"会話:\n{build_transcript(history)}\n\n"
+        + (extra + "\n\n" if extra else "")
+        + f"会話:\n{build_transcript(history)}\n\n"
         f"Claudeの回答:\n{claude_ans}\n\n"
         f"Geminiの回答:\n{gemini_ans}\n\n最終回答:"
     )
     return await run_claude_cli(prompt)
 
 
+def _latest_user_msg(history):
+    return history[-1][1] if history else ""
+
+
 async def ask_orchestrator(history):
-    mode, lead = await _route(history)
+    mode, lead, search = await _route(history)
+
+    # 必要ならWeb検索して文脈を用意（ボット自身が検索＝権限プロンプト不要）
+    ctx = await web_search_context(_latest_user_msg(history)) if search else ""
 
     # ① 単発モード：簡単な要求は得意モデル1つで即答（コスト節約）
     if mode == "single":
         if lead == "gemini":
             try:
-                return await _gemini_call(_answer_prompt("Gemini", history))
+                return await _gemini_call(_answer_prompt("Gemini", history, ctx))
             except Exception:  # noqa: BLE001
                 pass  # Gemini不可ならClaudeへ
-        return await run_claude_cli(_answer_prompt("Claude", history))
+        return await run_claude_cli(_answer_prompt("Claude", history, ctx))
 
-    # ② ディベートモード：まず両者が独立に回答
+    # ② ディベートモード：まず両者が独立に回答（検索結果があれば共有）
     results = await asyncio.gather(
-        run_claude_cli(_answer_prompt("Claude", history)),
-        _gemini_call(_answer_prompt("Gemini", history)),
+        run_claude_cli(_answer_prompt("Claude", history, ctx)),
+        _gemini_call(_answer_prompt("Gemini", history, ctx)),
         return_exceptions=True,
     )
     claude_ans = results[0] if not isinstance(results[0], Exception) else ""
@@ -209,7 +256,7 @@ async def ask_orchestrator(history):
 
     # Geminiが使えない場合はClaude単独に縮退
     if not gemini_ans.strip():
-        return claude_ans or await run_claude_cli(_answer_prompt("Claude", history))
+        return claude_ans or await run_claude_cli(_answer_prompt("Claude", history, ctx))
     if not claude_ans.strip():
         return gemini_ans
 
@@ -223,7 +270,7 @@ async def ask_orchestrator(history):
     gemini_rev = revised[1] if not isinstance(revised[1], Exception) else gemini_ans
 
     # ③ 統合
-    return await _synthesize(claude_rev, gemini_rev, history)
+    return await _synthesize(claude_rev, gemini_rev, history, ctx)
 
 
 # ---------- 送信・進行 ----------
@@ -555,6 +602,22 @@ async def on_message(message):
             await message.channel.send("🛑 プロジェクトを中止しました。")
         else:
             await message.channel.send("進行中のプロジェクトはありません。")
+        return
+    if content.startswith("!search"):
+        q = content[len("!search"):].strip()
+        if not q:
+            await message.channel.send("使い方: !search 調べたいこと")
+            return
+        async with message.channel.typing():
+            ctx = await web_search_context(q)
+            if not ctx:
+                await send_as(orch, cid, "🔍 検索結果が取得できませんでした。")
+                return
+            ans = await run_claude_cli(
+                "次のWeb検索結果を根拠に、質問へ日本語で簡潔に答え、参考URLも示す。\n\n"
+                f"質問: {q}\n\n{ctx}\n\n回答:"
+            )
+            await send_as(orch, cid, ans)
         return
     if content.startswith("!talk"):
         if state["running"]:

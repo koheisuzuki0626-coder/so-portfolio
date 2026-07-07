@@ -2,3 +2,4 @@ discord.py>=2.3
 google-genai>=0.3
 python-dotenv>=1.0
 higgsfield_client>=0.1
+ddgs>=6.0
