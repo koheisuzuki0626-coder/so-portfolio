@@ -72,12 +72,18 @@ def build_transcript(history):
 
 
 # ---------- 各AIへの問い合わせ ----------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # .claude/settings.json のある場所
+
+
 async def run_claude_cli(prompt):
     """Claude Code CLI をヘッドレスで呼ぶ（サブスク利用・API課金なし）。"""
+    # cwd をこのスクリプトの場所に固定 → どこから起動しても
+    # discord-groupchat/.claude/settings.json（WebSearch許可など）が確実に読まれる。
     proc = await asyncio.create_subprocess_exec(
         CLAUDE_BIN, "-p", prompt,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        cwd=BASE_DIR,
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_TIMEOUT)
