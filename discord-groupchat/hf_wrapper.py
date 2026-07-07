@@ -14,8 +14,10 @@ import os
 
 import higgsfield_client as _hf  # 公式SDK（pip install higgsfield_client）
 
-IMAGE_APP = os.getenv("HIGGSFIELD_IMAGE_APP", "bytedance/seedream/v4/text-to-image")
-VIDEO_APP = os.getenv("HIGGSFIELD_VIDEO_APP", "higgsfield/dop-turbo/image2video")
+# Higgsfield の実在モデルID（models一覧より）。.env で上書き可能。
+# 画像候補: z_image(高速) / recraft_v4_1 / soul_location / soul_cast
+IMAGE_APP = os.getenv("HIGGSFIELD_IMAGE_APP", "z_image")
+VIDEO_APP = os.getenv("HIGGSFIELD_VIDEO_APP", "dop-turbo")
 
 
 def _ensure_env():
