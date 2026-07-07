@@ -217,6 +217,11 @@ def _is_approve(text):
     return text.strip().lower() in APPROVE_WORDS
 
 
+def _alive(cid, p):
+    """プロジェクトpがまだ有効か（!stop / !cancel で消えていないか）。"""
+    return projects.get(cid) is p
+
+
 def _is_credit_error(e):
     return "not_enough_credits" in str(e)
 
@@ -284,6 +289,8 @@ async def _pipeline_plan(cid, feedback=""):
     except Exception as e:  # noqa: BLE001
         await send_as(orch, cid, f"⚠️ 構成案の生成に失敗: {e}")
         return
+    if not _alive(cid, p):  # 生成中に !stop された
+        return
     await send_as(
         orch, cid,
         f"📝 【構成案】\n{p['plan']}\n\n———\n"
@@ -310,11 +317,15 @@ async def _pipeline_storyboard(cid, feedback=""):
     except Exception as e:  # noqa: BLE001
         await send_as(orch, cid, f"⚠️ 絵コンテのプロンプト生成に失敗: {e}")
         return
+    if not _alive(cid, p):
+        return
     scenes = [ln.strip(" -*0123456789.、。") for ln in raw.splitlines() if ln.strip()]
     p["scenes"] = scenes[:NUM_SCENES]
     await send_as(orch, cid, "🎨 絵コンテ画像を生成中…（Higgsfield）")
     images = []
     for i, sc in enumerate(p["scenes"], 1):
+        if not _alive(cid, p):  # !stop で中止された
+            return
         try:
             url = await hf_wrapper.generate_image(sc)
             images.append(url)
@@ -324,6 +335,8 @@ async def _pipeline_storyboard(cid, feedback=""):
                 await send_as(orch, cid, CREDIT_MSG)
                 return
             await send_as(orch, cid, f"⚠️ シーン{i} の画像生成に失敗: {e}")
+    if not _alive(cid, p):
+        return
     p["images"] = images
     await send_as(
         orch, cid,
@@ -347,6 +360,8 @@ async def _pipeline_edit(cid, feedback=""):
     )
     videos = []
     for i, img in enumerate(p["images"], 1):
+        if not _alive(cid, p):  # !stop で中止された
+            return
         try:
             vurl = await hf_wrapper.generate_video(img, prompt=(feedback or p["topic"]))
             videos.append(vurl)
@@ -356,6 +371,8 @@ async def _pipeline_edit(cid, feedback=""):
                 await send_as(orch, cid, CREDIT_MSG)
                 return
             await send_as(orch, cid, f"⚠️ シーン{i} の動画生成に失敗: {e}")
+    if not _alive(cid, p):
+        return
     p["videos"] = videos
     remaining = MAX_EDIT_ROUNDS - p["round"]
     if remaining <= 0:
@@ -383,7 +400,9 @@ async def pipeline_start(cid, topic):
 
 async def pipeline_reply(cid, text):
     """進行中プロジェクトへの返信（承認 or 修正指示）を処理する。"""
-    p = projects[cid]
+    p = projects.get(cid)
+    if p is None:  # !stop / !cancel 済み
+        return
     stage = p["stage"]
     approve = _is_approve(text)
 
@@ -429,7 +448,12 @@ async def on_message(message):
 
     if content == "!stop":
         state["stop"] = True
-        await message.channel.send("⏹️ 停止します")
+        if projects.pop(cid, None):
+            await message.channel.send(
+                "⏹️ 進行中のプロジェクトを停止しました。以降は通常の会話に戻ります。"
+            )
+        else:
+            await message.channel.send("⏹️ 停止します")
         return
     if content.startswith("!project"):
         topic = content[len("!project"):].strip()
