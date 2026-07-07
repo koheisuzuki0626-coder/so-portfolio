@@ -47,11 +47,11 @@ def _find_url(result, prefer=("url", "image_url", "video_url")):
     return None
 
 
-async def generate_image(prompt, **arguments):
+async def generate_image(prompt, model=None, **arguments):
     _ensure_env()
     # モデル名は第1引数（位置引数）。arguments に prompt などを渡す。
     result = await _hf.subscribe_async(
-        IMAGE_APP, arguments={"prompt": prompt, **arguments}
+        model or IMAGE_APP, arguments={"prompt": prompt, **arguments}
     )
     # 代表的な形: {"images": [{"url": ...}]}
     try:
