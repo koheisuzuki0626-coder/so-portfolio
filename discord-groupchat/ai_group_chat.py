@@ -73,19 +73,14 @@ def build_transcript(history):
 
 # ---------- 各AIへの問い合わせ ----------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # .claude/settings.json のある場所
-# ヘッドレス(-p)で許可するツール。settings.json だけでは効かないので明示的に渡す。
-# 安全のため必要最小限（Web検索/取得）だけ。全許可(skip-permissions)は使わない。
-CLAUDE_ALLOWED_TOOLS = os.getenv("CLAUDE_ALLOWED_TOOLS", "WebSearch,WebFetch")
 
 
 async def run_claude_cli(prompt):
     """Claude Code CLI をヘッドレスで呼ぶ（サブスク利用・API課金なし）。"""
-    args = [CLAUDE_BIN, "-p"]
-    if CLAUDE_ALLOWED_TOOLS.strip():
-        args += ["--allowedTools", CLAUDE_ALLOWED_TOOLS]
-    args.append(prompt)
+    # cwd を固定 → discord-groupchat/.claude/settings.json（WebSearch許可）が読まれる。
+    # ※ワークスペースを一度「信頼(trust)」しておかないと settings.json は無視される。
     proc = await asyncio.create_subprocess_exec(
-        *args,
+        CLAUDE_BIN, "-p", prompt,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=BASE_DIR,
