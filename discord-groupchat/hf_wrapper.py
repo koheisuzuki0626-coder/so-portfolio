@@ -14,10 +14,9 @@ import os
 
 import higgsfield_client as _hf  # 公式SDK（pip install higgsfield_client）
 
-# Higgsfield の実在モデルID（models一覧より）。.env で上書き可能。
-# 画像候補: z_image(高速) / recraft_v4_1 / soul_location / soul_cast
-IMAGE_APP = os.getenv("HIGGSFIELD_IMAGE_APP", "z_image")
-VIDEO_APP = os.getenv("HIGGSFIELD_VIDEO_APP", "dop-turbo")
+# Higgsfield のモデルID（公式SDK実例のパス形式）。.env で上書き可能。
+IMAGE_APP = os.getenv("HIGGSFIELD_IMAGE_APP", "flux-pro/kontext/max/text-to-image")
+VIDEO_APP = os.getenv("HIGGSFIELD_VIDEO_APP", "/v1/image2video/dop")
 
 
 def _ensure_env():

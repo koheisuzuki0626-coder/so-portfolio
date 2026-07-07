@@ -14,12 +14,12 @@ load_dotenv()
 
 import hf_wrapper  # noqa: E402
 
-# 実在する text-to-image モデル候補（公式カタログより）
+# 実在する text-to-image モデル候補（公式SDKの実例より・パス形式）
 CANDIDATES = [
-    "nano_banana",
-    "text2image_soul_v2",
-    "flux_2",
-    "gpt_image_2",
+    "flux-pro/kontext/max/text-to-image",
+    "/v1/text2image/soul",
+    "text2image/soul",
+    "bytedance/seedream/v4/text-to-image",
 ]
 
 
