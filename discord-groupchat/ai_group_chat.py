@@ -127,11 +127,38 @@ async def ask_gemini(history):
     return await _gemini_call(peer_prompt("Gemini", "Claude", history))
 
 
-# ---------- Web検索（DuckDuckGo・APIキー不要・権限プロンプト不要）----------
+# ---------- Web検索：Google（Geminiグラウンディング）優先・DDGフォールバック ----------
 SEARCH_RESULTS_N = int(os.getenv("SEARCH_RESULTS_N", "5"))
 
 
-def _web_search_sync(query, n):
+def _google_search_sync(query):
+    """Gemini の Google 検索グラウンディングで最新情報を取得。(要約, 出典URL群)。"""
+    from google.genai import types
+
+    resp = gemini_client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=query,
+        config=types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())]
+        ),
+    )
+    text = resp.text or ""
+    sources = []
+    try:
+        for cand in resp.candidates or []:
+            gm = getattr(cand, "grounding_metadata", None)
+            for ch in getattr(gm, "grounding_chunks", None) or []:
+                web = getattr(ch, "web", None)
+                uri = getattr(web, "uri", None) if web else None
+                if uri:
+                    title = getattr(web, "title", "") or uri
+                    sources.append(f"{title}: {uri}")
+    except Exception:  # noqa: BLE001
+        pass
+    return text, sources
+
+
+def _ddg_search_sync(query, n):
     try:
         from ddgs import DDGS
     except ImportError:
@@ -141,13 +168,24 @@ def _web_search_sync(query, n):
 
 
 async def web_search_context(query):
-    """queryでWeb検索し、Claude/Geminiに渡す文脈テキストを返す。失敗時は空文字。"""
+    """queryをWeb検索し、AIに渡す文脈テキストを返す。失敗時は空文字。"""
     if not query.strip():
         return ""
+    # ① Google検索（Geminiグラウンディング）
     try:
-        results = await asyncio.to_thread(_web_search_sync, query, SEARCH_RESULTS_N)
+        text, sources = await asyncio.to_thread(_google_search_sync, query)
+        if text or sources:
+            block = "【Google検索の要約（最新情報。根拠として使い、URLも示す）】\n" + text
+            if sources:
+                block += "\n\n参考URL:\n" + "\n".join(f"- {s}" for s in sources[:6])
+            return block
     except Exception as e:  # noqa: BLE001
-        print(f"[web_search] 失敗: {e}")
+        print(f"[google_search] 失敗→DuckDuckGoにフォールバック: {e}")
+    # ② フォールバック：DuckDuckGo
+    try:
+        results = await asyncio.to_thread(_ddg_search_sync, query, SEARCH_RESULTS_N)
+    except Exception as e:  # noqa: BLE001
+        print(f"[ddg_search] 失敗: {e}")
         return ""
     if not results:
         return ""
@@ -157,10 +195,7 @@ async def web_search_context(query):
         body = r.get("body") or r.get("snippet") or ""
         href = r.get("href") or r.get("url") or ""
         lines.append(f"- {title}\n  {body}\n  {href}")
-    return (
-        "【Web検索結果（最新情報。必要に応じて根拠として使い、URLも示す）】\n"
-        + "\n".join(lines)
-    )
+    return "【Web検索結果（最新情報。根拠として使い、URLも示す）】\n" + "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
