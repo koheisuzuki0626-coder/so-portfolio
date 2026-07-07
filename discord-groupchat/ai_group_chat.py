@@ -17,7 +17,9 @@ MESSAGE CONTENT INTENT はオーケストレーター用にだけONにすれば�
 """
 
 import asyncio
+import json
 import os
+import re
 
 import discord
 from dotenv import load_dotenv
@@ -106,9 +108,7 @@ async def ask_claude(history):
     return await run_claude_cli(peer_prompt("Claude", "Gemini", history))
 
 
-async def ask_gemini(history):
-    prompt = peer_prompt("Gemini", "Claude", history)
-
+async def _gemini_call(prompt):
     def _call():
         return gemini_client.models.generate_content(
             model=GEMINI_MODEL, contents=prompt
@@ -117,28 +117,107 @@ async def ask_gemini(history):
     return await asyncio.to_thread(_call)
 
 
-async def ask_orchestrator(history):
-    """司令塔。Geminiの意見を（取れれば）取り込み、Claudeで1つの回答にまとめる。"""
-    gemini_view = ""
-    try:
-        gemini_view = await ask_gemini(history)
-    except Exception:
-        gemini_view = ""  # Geminiが使えなくてもClaude単独で続行
+async def ask_gemini(history):
+    return await _gemini_call(peer_prompt("Gemini", "Claude", history))
 
+
+# ---------------------------------------------------------------------------
+# オーケストレーター：3層構造
+#   ① ルーティング（得意モデルへ振り分け／簡単なら単発）
+#   ② ディベート（各回答を相互に見せて批判・修正）
+#   ③ 司令塔が統合（合意点/対立点を整理して単一回答へ）
+# ---------------------------------------------------------------------------
+def _answer_prompt(who, history):
+    return (
+        f"あなたは{who}。次の会話の最後の要求に、正確で役立つ回答を日本語で簡潔に述べる。"
+        "前置きや名乗りは不要、回答本体のみ。\n\n"
+        f"{build_transcript(history)}\n\nあなたの回答:"
+    )
+
+
+def _critique_prompt(me, other, my_ans, other_ans, history):
+    return (
+        f"あなたは{me}。同じ要求に対する、あなたの回答と{other}の回答がある。"
+        f"{other}の回答を批判的に検討し、正しい点は取り入れ、誤りや見落としは指摘して、"
+        "あなたの回答を改善した最終版だけを日本語で簡潔に述べる。\n\n"
+        f"要求と会話:\n{build_transcript(history)}\n\n"
+        f"あなた（{me}）の回答:\n{my_ans}\n\n"
+        f"{other}の回答:\n{other_ans}\n\n改善後のあなたの回答:"
+    )
+
+
+async def _route(history):
+    """① どのモデルに振るか・多段化するかを判定。JSONで受ける。"""
     prompt = (
-        "あなたは司令塔（オーケストレーター）。人間とのグループチャットで、"
-        "部下だが対等な仲間である Claude と Gemini の力を借りて、"
-        f"最良の【単一の回答】をまとめて返す。日本語で{REPLY_CHARS}字以内、結論を先に簡潔に。"
-        "『Claudeが〜』『Geminiが〜』などの実況や名乗りは不要。回答本体だけを書く。\n\n"
-        f"これまでの会話ログ:\n{build_transcript(history)}\n\n"
-        + (
-            f"参考：Geminiの意見（鵜呑みにせず取捨選択して統合すること）:\n{gemini_view}\n\n"
-            if gemini_view.strip()
-            else ""
-        )
-        + "上を踏まえた、あなた（オーケストレーター）の最終回答:"
+        "あなたはルーター。次の会話の最後の要求に最適な処理方針をJSONだけで返す。\n"
+        '形式: {"mode":"single"|"debate","lead":"claude"|"gemini"}\n'
+        "- 雑談/簡単な質問/短い依頼 → single\n"
+        "- 複雑/重要/事実確認や多角的検討が有益 → debate\n"
+        "- コード・論理・技術寄り → lead=claude ／ 最新情報・画像・幅広い発想 → lead=gemini\n\n"
+        f"会話:\n{build_transcript(history)}\n\nJSON:"
+    )
+    try:
+        raw = await run_claude_cli(prompt)
+        m = re.search(r"\{.*\}", raw, re.S)
+        d = json.loads(m.group(0)) if m else {}
+        mode = d.get("mode") if d.get("mode") in ("single", "debate") else "single"
+        lead = d.get("lead") if d.get("lead") in ("claude", "gemini") else "claude"
+        return mode, lead
+    except Exception:  # noqa: BLE001
+        return "single", "claude"
+
+
+async def _synthesize(claude_ans, gemini_ans, history):
+    """③ 司令塔が統合。合意点を軸に、対立点があれば触れて単一回答へ。"""
+    prompt = (
+        "あなたは司令塔（オーケストレーター）。ClaudeとGeminiの回答を統合し、単一の最終回答を作る。"
+        "両者の【合意点】を軸に据え、【対立点】があれば簡潔に触れて最も妥当な結論を示す。"
+        f"実況や『Claudeが〜』等は書かず、回答本体のみ。日本語で{REPLY_CHARS}字以内、結論を先に。\n\n"
+        f"会話:\n{build_transcript(history)}\n\n"
+        f"Claudeの回答:\n{claude_ans}\n\n"
+        f"Geminiの回答:\n{gemini_ans}\n\n最終回答:"
     )
     return await run_claude_cli(prompt)
+
+
+async def ask_orchestrator(history):
+    mode, lead = await _route(history)
+
+    # ① 単発モード：簡単な要求は得意モデル1つで即答（コスト節約）
+    if mode == "single":
+        if lead == "gemini":
+            try:
+                return await _gemini_call(_answer_prompt("Gemini", history))
+            except Exception:  # noqa: BLE001
+                pass  # Gemini不可ならClaudeへ
+        return await run_claude_cli(_answer_prompt("Claude", history))
+
+    # ② ディベートモード：まず両者が独立に回答
+    results = await asyncio.gather(
+        run_claude_cli(_answer_prompt("Claude", history)),
+        _gemini_call(_answer_prompt("Gemini", history)),
+        return_exceptions=True,
+    )
+    claude_ans = results[0] if not isinstance(results[0], Exception) else ""
+    gemini_ans = results[1] if not isinstance(results[1], Exception) else ""
+
+    # Geminiが使えない場合はClaude単独に縮退
+    if not gemini_ans.strip():
+        return claude_ans or await run_claude_cli(_answer_prompt("Claude", history))
+    if not claude_ans.strip():
+        return gemini_ans
+
+    # ②-b 相互に見せて批判・修正（ディベート1ラウンド）
+    revised = await asyncio.gather(
+        run_claude_cli(_critique_prompt("Claude", "Gemini", claude_ans, gemini_ans, history)),
+        _gemini_call(_critique_prompt("Gemini", "Claude", gemini_ans, claude_ans, history)),
+        return_exceptions=True,
+    )
+    claude_rev = revised[0] if not isinstance(revised[0], Exception) else claude_ans
+    gemini_rev = revised[1] if not isinstance(revised[1], Exception) else gemini_ans
+
+    # ③ 統合
+    return await _synthesize(claude_rev, gemini_rev, history)
 
 
 # ---------- 送信・進行 ----------
