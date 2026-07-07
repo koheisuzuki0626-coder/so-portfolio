@@ -26,7 +26,7 @@ def _ensure_env():
         os.environ["HF_API_SECRET"] = os.environ["HIGGSFIELD_API_SECRET"]
 
 
-def _find_url(result, prefer):
+def _find_url(result, prefer=("url", "image_url", "video_url")):
     """レスポンス(dict/list)を再帰的に探して最初のURL文字列を返す。"""
     if isinstance(result, dict):
         for k in prefer:
@@ -47,10 +47,16 @@ def _find_url(result, prefer):
 
 async def generate_image(prompt, **arguments):
     _ensure_env()
+    # モデル名は第1引数（位置引数）。arguments に prompt などを渡す。
     result = await _hf.subscribe_async(
-        app=IMAGE_APP, arguments={"prompt": prompt, **arguments}
+        IMAGE_APP, arguments={"prompt": prompt, **arguments}
     )
-    url = _find_url(result, ("image_url", "url"))
+    # 代表的な形: {"images": [{"url": ...}]}
+    try:
+        return result["images"][0]["url"]
+    except (KeyError, IndexError, TypeError):
+        pass
+    url = _find_url(result)
     if not url:
         raise RuntimeError(f"画像URLが取れません（形が想定と違う）: {str(result)[:600]}")
     return url
@@ -61,8 +67,12 @@ async def generate_video(image_url, prompt="", **arguments):
     args = {"image_url": image_url, **arguments}
     if prompt:
         args["prompt"] = prompt
-    result = await _hf.subscribe_async(app=VIDEO_APP, arguments=args)
-    url = _find_url(result, ("video_url", "url"))
+    result = await _hf.subscribe_async(VIDEO_APP, arguments=args)
+    try:
+        return result["videos"][0]["url"]
+    except (KeyError, IndexError, TypeError):
+        pass
+    url = _find_url(result)
     if not url:
         raise RuntimeError(f"動画URLが取れません（形が想定と違う）: {str(result)[:600]}")
     return url
