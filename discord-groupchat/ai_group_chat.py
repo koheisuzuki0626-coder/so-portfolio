@@ -216,6 +216,16 @@ def _is_approve(text):
     return text.strip().lower() in APPROVE_WORDS
 
 
+def _is_credit_error(e):
+    return "not_enough_credits" in str(e)
+
+
+CREDIT_MSG = (
+    "⚠️ Higgsfield のクレジットが不足しています。\n"
+    "https://cloud.higgsfield.ai でクレジットを追加すると、この段階が動きます。"
+)
+
+
 async def _pipeline_plan(cid, feedback=""):
     p = projects[cid]
     prompt = (
@@ -269,6 +279,9 @@ async def _pipeline_storyboard(cid, feedback=""):
             images.append(url)
             await send_as(orch, cid, f"シーン{i}: {sc}\n{url}")
         except Exception as e:  # noqa: BLE001
+            if _is_credit_error(e):
+                await send_as(orch, cid, CREDIT_MSG)
+                return
             await send_as(orch, cid, f"⚠️ シーン{i} の画像生成に失敗: {e}")
     p["images"] = images
     await send_as(
@@ -297,6 +310,9 @@ async def _pipeline_edit(cid, feedback=""):
             videos.append(vurl)
             await send_as(orch, cid, f"シーン{i} 動画: {vurl}")
         except Exception as e:  # noqa: BLE001
+            if _is_credit_error(e):
+                await send_as(orch, cid, CREDIT_MSG)
+                return
             await send_as(orch, cid, f"⚠️ シーン{i} の動画生成に失敗: {e}")
     p["videos"] = videos
     remaining = MAX_EDIT_ROUNDS - p["round"]
