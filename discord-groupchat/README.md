@@ -69,6 +69,22 @@ AI二人だけで話させたいとき：
 ```
 `!stop` で停止。
 
+### 映像制作パイプライン（構成案 → 絵コンテ → 編集チェック×3）
+Higgsfield を使った承認フロー。各段階でテキスト返信して進めます。
+
+```
+!project 犬が主役の30秒CM
+```
+1. **構成案**（Claudeが作成）→ `OK` で承認、直したいときは指示を返信
+2. **絵コンテ**（Higgsfieldで画像生成）→ `OK` or 修正指示
+3. **編集チェック×3**（Higgsfieldで動画化）→ 最大3回まで修正、`OK` で完成
+
+`!cancel` で中止。
+
+> ⚠️ 絵コンテ・編集の生成には Higgsfield のクレジット（有料）が必要です。
+> `.env` に `HIGGSFIELD_API_KEY` / `HIGGSFIELD_API_SECRET` を設定してください。
+> クレジットが無いと該当段階で「not_enough_credits」となります（構成案までは無料）。
+
 ## 調整
 - `MAX_TURNS`（合計発言数）, `CLAUDE_MODEL`, `GEMINI_MODEL` は `.env` で変更可。
 - 1発言の長さや口調は `ai_group_chat.py` の `persona()` を編集。

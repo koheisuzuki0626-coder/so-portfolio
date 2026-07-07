@@ -25,6 +25,15 @@ from google import genai
 
 load_dotenv()
 
+# Higgsfield（映像パイプライン用）。未設定でもチャット機能は動くように保護。
+try:
+    import hf_wrapper
+    HF_AVAILABLE = True
+    HF_IMPORT_ERROR = None
+except Exception as _e:  # noqa: BLE001
+    HF_AVAILABLE = False
+    HF_IMPORT_ERROR = _e
+
 # ---------- 設定 ----------
 CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
@@ -191,6 +200,159 @@ async def run_auto(cid, topic):
         state["running"] = False
 
 
+# ---------------------------------------------------------------------------
+# 映像制作パイプライン（構成案 → 絵コンテ → 編集チェック×3）
+# ---------------------------------------------------------------------------
+projects = {}  # channel_id -> dict(stage, topic, plan, scenes, images, videos, round)
+NUM_SCENES = int(os.getenv("PIPELINE_SCENES", "3"))
+MAX_EDIT_ROUNDS = 3
+APPROVE_WORDS = {
+    "ok", "okay", "ok!", "おっけー", "オッケー", "承認", "了解", "りょうかい",
+    "いいね", "これでいい", "これでok", "次", "next", "🆗", "👍", "完成",
+}
+
+
+def _is_approve(text):
+    return text.strip().lower() in APPROVE_WORDS
+
+
+async def _pipeline_plan(cid, feedback=""):
+    p = projects[cid]
+    prompt = (
+        f"あなたは映像ディレクター。お題「{p['topic']}」で短い映像の構成案を作る。"
+        "日本語で簡潔に、次を必ず含める："
+        "タイトル / コンセプト(1〜2文) / "
+        f"シーン一覧({NUM_SCENES}個・各シーンは1行で情景を描写) / 尺の目安。"
+    )
+    if feedback:
+        prompt += (
+            f"\n\n【前回の構成案】\n{p['plan']}\n\n"
+            f"【修正指示】{feedback}\nこれを反映して作り直すこと。"
+        )
+    try:
+        p["plan"] = await run_claude_cli(prompt)
+    except Exception as e:  # noqa: BLE001
+        await send_as(orch, cid, f"⚠️ 構成案の生成に失敗: {e}")
+        return
+    await send_as(
+        orch, cid,
+        f"📝 【構成案】\n{p['plan']}\n\n———\n"
+        "OKなら「OK」、直したい所はテキストで指示してください。",
+    )
+
+
+async def _pipeline_storyboard(cid, feedback=""):
+    p = projects[cid]
+    if not HF_AVAILABLE:
+        await send_as(orch, cid, f"⚠️ Higgsfield が使えません: {HF_IMPORT_ERROR}")
+        return
+    prompt = (
+        f"次の構成案から、絵コンテ用の画像生成プロンプトを{NUM_SCENES}個作る。"
+        "各シーン1つ、英語で、視覚描写をカンマ区切りで1行ずつ。"
+        f"番号や記号は付けず、{NUM_SCENES}行だけ出力する。"
+    )
+    if feedback:
+        prompt += f"\n修正指示: {feedback}"
+    prompt += f"\n\n構成案:\n{p['plan']}"
+    try:
+        raw = await run_claude_cli(prompt)
+    except Exception as e:  # noqa: BLE001
+        await send_as(orch, cid, f"⚠️ 絵コンテのプロンプト生成に失敗: {e}")
+        return
+    scenes = [ln.strip(" -*0123456789.、。") for ln in raw.splitlines() if ln.strip()]
+    p["scenes"] = scenes[:NUM_SCENES]
+    await send_as(orch, cid, "🎨 絵コンテ画像を生成中…（Higgsfield）")
+    images = []
+    for i, sc in enumerate(p["scenes"], 1):
+        try:
+            url = await hf_wrapper.generate_image(sc)
+            images.append(url)
+            await send_as(orch, cid, f"シーン{i}: {sc}\n{url}")
+        except Exception as e:  # noqa: BLE001
+            await send_as(orch, cid, f"⚠️ シーン{i} の画像生成に失敗: {e}")
+    p["images"] = images
+    await send_as(
+        orch, cid,
+        "———\n絵コンテOKなら「OK」、直すならテキストで指示してください。",
+    )
+
+
+async def _pipeline_edit(cid, feedback=""):
+    p = projects[cid]
+    if not HF_AVAILABLE:
+        await send_as(orch, cid, f"⚠️ Higgsfield が使えません: {HF_IMPORT_ERROR}")
+        return
+    if not p.get("images"):
+        await send_as(orch, cid, "⚠️ 絵コンテ画像がありません。先に絵コンテを承認してください。")
+        return
+    p["round"] += 1
+    await send_as(
+        orch, cid,
+        f"🎞️ 編集（動画化）… チェック {p['round']}/{MAX_EDIT_ROUNDS} 回目（Higgsfield）",
+    )
+    videos = []
+    for i, img in enumerate(p["images"], 1):
+        try:
+            vurl = await hf_wrapper.generate_video(img, prompt=(feedback or p["topic"]))
+            videos.append(vurl)
+            await send_as(orch, cid, f"シーン{i} 動画: {vurl}")
+        except Exception as e:  # noqa: BLE001
+            await send_as(orch, cid, f"⚠️ シーン{i} の動画生成に失敗: {e}")
+    p["videos"] = videos
+    remaining = MAX_EDIT_ROUNDS - p["round"]
+    if remaining <= 0:
+        await send_as(
+            orch, cid,
+            "———\n編集チェック最終回です。「OK」で完成にしてください。",
+        )
+    else:
+        await send_as(
+            orch, cid,
+            f"———\nOKなら「OK」で完成。直すならテキストで指示（あと{remaining}回まで修正可）。",
+        )
+
+
+async def pipeline_start(cid, topic):
+    projects[cid] = {
+        "stage": "plan", "topic": topic, "plan": "",
+        "scenes": [], "images": [], "videos": [], "round": 0,
+    }
+    await send_as(orch, cid, f"🎬 プロジェクト開始：「{topic}」\nまず構成案を作ります…")
+    await _pipeline_plan(cid)
+
+
+async def pipeline_reply(cid, text):
+    """進行中プロジェクトへの返信（承認 or 修正指示）を処理する。"""
+    p = projects[cid]
+    stage = p["stage"]
+    approve = _is_approve(text)
+
+    if stage == "plan":
+        if approve:
+            p["stage"] = "storyboard"
+            await _pipeline_storyboard(cid)
+        else:
+            await _pipeline_plan(cid, feedback=text)
+    elif stage == "storyboard":
+        if approve:
+            p["stage"] = "edit"
+            p["round"] = 0
+            await _pipeline_edit(cid)
+        else:
+            await _pipeline_storyboard(cid, feedback=text)
+    elif stage == "edit":
+        if approve:
+            await send_as(orch, cid, "✅ 完成です！お疲れさまでした🎉")
+            projects.pop(cid, None)
+        elif p["round"] >= MAX_EDIT_ROUNDS:
+            await send_as(
+                orch, cid,
+                "編集チェックは3回までです。「OK」で完成にしてください。",
+            )
+        else:
+            await _pipeline_edit(cid, feedback=text)
+
+
 @orch.event
 async def on_ready():
     print(f"オーケストレーター起動: {orch.user}")
@@ -209,6 +371,22 @@ async def on_message(message):
         state["stop"] = True
         await message.channel.send("⏹️ 停止します")
         return
+    if content.startswith("!project"):
+        topic = content[len("!project"):].strip()
+        if not topic:
+            await message.channel.send("使い方: !project お題（例: !project 犬が主役の30秒CM）")
+            return
+        if projects.get(cid):
+            await message.channel.send("進行中のプロジェクトがあります。!cancel で中止できます。")
+            return
+        asyncio.create_task(pipeline_start(cid, topic))
+        return
+    if content == "!cancel":
+        if projects.pop(cid, None):
+            await message.channel.send("🛑 プロジェクトを中止しました。")
+        else:
+            await message.channel.send("進行中のプロジェクトはありません。")
+        return
     if content.startswith("!talk"):
         if state["running"]:
             await message.channel.send("自動トークが進行中です。!stop で止められます。")
@@ -221,6 +399,12 @@ async def on_message(message):
         asyncio.create_task(run_auto(cid, topic))
         return
     if content.startswith("!"):
+        return
+
+    # 進行中プロジェクトがあれば、その返信（承認/修正）として扱う
+    if projects.get(cid):
+        async with message.channel.typing():
+            await pipeline_reply(cid, content)
         return
 
     add_history(cid, message.author.display_name, content)
