@@ -269,10 +269,19 @@ async def web_search_context(query):
 #   ② ディベート（各回答を相互に見せて批判・修正）
 #   ③ 司令塔が統合（合意点/対立点を整理して単一回答へ）
 # ---------------------------------------------------------------------------
+NO_TOOLS_NOTE = (
+    "重要：あなたはチャットで文章を返すだけで、コマンド実行・ファイル編集・"
+    "許可ボタンの表示はできない。実際に実行/編集してほしい要求には、"
+    "『許可ボタンを出した』等と偽らず、"
+    "『Discordで `!agent <やりたいこと>` と打ってください（プラン提示→承認ボタン→実行）』"
+    "と案内すること。"
+)
+
+
 def _answer_prompt(who, history, extra=""):
     return (
         f"あなたは{who}。次の会話の最後の要求に、正確で役立つ回答を日本語で簡潔に述べる。"
-        "前置きや名乗りは不要、回答本体のみ。\n\n"
+        "前置きや名乗りは不要、回答本体のみ。" + NO_TOOLS_NOTE + "\n\n"
         + (extra + "\n\n" if extra else "")
         + f"{build_transcript(history)}\n\nあなたの回答:"
     )
@@ -317,7 +326,8 @@ async def _synthesize(claude_ans, gemini_ans, history, extra=""):
     prompt = (
         "あなたは司令塔（オーケストレーター）。ClaudeとGeminiの回答を統合し、単一の最終回答を作る。"
         "両者の【合意点】を軸に据え、【対立点】があれば簡潔に触れて最も妥当な結論を示す。"
-        f"実況や『Claudeが〜』等は書かず、回答本体のみ。日本語で{REPLY_CHARS}字以内、結論を先に。\n\n"
+        f"実況や『Claudeが〜』等は書かず、回答本体のみ。日本語で{REPLY_CHARS}字以内、結論を先に。"
+        + NO_TOOLS_NOTE + "\n\n"
         + (extra + "\n\n" if extra else "")
         + f"会話:\n{build_transcript(history)}\n\n"
         f"Claudeの回答:\n{claude_ans}\n\n"
