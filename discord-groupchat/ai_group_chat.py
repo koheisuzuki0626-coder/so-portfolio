@@ -302,11 +302,14 @@ async def _route(history):
     """① モデル振り分け・多段化・Web検索要否を判定。JSONで受ける。"""
     prompt = (
         "あなたはルーター。次の会話の最後の要求に最適な処理方針をJSONだけで返す。\n"
-        '形式: {"mode":"single"|"debate","lead":"claude"|"gemini","search":true|false}\n'
+        '形式: {"mode":"single"|"debate","lead":"claude"|"gemini","search":true|false,"action":true|false}\n'
         "- 原則 single（1モデルで即答）。debate は"
         "『重大な判断・設計・事実の突き合わせが本当に必要』な時だけ（省エネ重視）。\n"
         "- コード・論理・技術寄り → lead=claude ／ 最新情報・画像・幅広い発想 → lead=gemini\n"
-        "- 最新情報・時事・製品/価格・実在の事実確認が要る → search=true、雑談や一般常識 → search=false\n\n"
+        "- 最新情報・時事・製品/価格・実在の事実確認が要る → search=true、雑談や一般常識 → search=false\n"
+        "- ファイル編集・コード変更・コマンド実行など『実際に手を動かす作業』を頼まれている"
+        "（例:『〜を直して/追加して/作って/実行して/削除して』）→ action=true。"
+        "質問・相談・説明だけ → action=false\n\n"
         f"会話:\n{build_transcript(history)}\n\nJSON:"
     )
     try:
@@ -316,9 +319,10 @@ async def _route(history):
         mode = d.get("mode") if d.get("mode") in ("single", "debate") else "single"
         lead = d.get("lead") if d.get("lead") in ("claude", "gemini") else "claude"
         search = bool(d.get("search"))
-        return mode, lead, search
+        action = bool(d.get("action"))
+        return mode, lead, search, action
     except Exception:  # noqa: BLE001
-        return "single", "claude", False
+        return "single", "claude", False, False
 
 
 async def _synthesize(claude_ans, gemini_ans, history, extra=""):
@@ -341,8 +345,11 @@ def _latest_user_msg(history):
 
 
 async def ask_orchestrator(history):
-    mode, lead, search = await _route(history)
+    mode, lead, search, _action = await _route(history)
+    return await _orchestrate(mode, lead, search, history)
 
+
+async def _orchestrate(mode, lead, search, history):
     # 必要ならWeb検索して文脈を用意（ボット自身が検索＝権限プロンプト不要）
     ctx = await web_search_context(_latest_user_msg(history)) if search else ""
 
@@ -381,6 +388,34 @@ async def ask_orchestrator(history):
 
     # ③ 統合
     return await _synthesize(claude_rev, gemini_rev, history, ctx)
+
+
+async def _handle_orchestrator(message, cid):
+    """オーケストレーター宛て。実行/編集の指示なら承認フロー、それ以外は通常回答。"""
+    history = get_history(cid)
+    mode, lead, search, action = await _route(history)
+    if action:
+        await message.channel.send(
+            "🛠 実行/編集の指示と判断しました。プランを作ります…"
+            "（[✅許可]で実行 / [❌拒否]で中止）"
+        )
+        asyncio.create_task(
+            _run_agent_task(cid, message.content.strip(), message.author.id)
+        )
+        return
+    async with message.channel.typing():
+        try:
+            answer = await _orchestrate(mode, lead, search, history)
+        except Exception as e:  # noqa: BLE001
+            if _is_quota_error(e):
+                try:
+                    answer = await run_claude_cli(_answer_prompt("Claude", history))
+                except Exception:  # noqa: BLE001
+                    answer = "⚠️ 一時的に応答できませんでした。少し後で試してください。"
+            else:
+                answer = f"⚠️ 応答に失敗: {str(e)[:300]}"
+    add_history(cid, "Orchestrator", answer)
+    await send_as(orch, cid, answer)
 
 
 # ---------- 送信・進行 ----------
@@ -862,8 +897,15 @@ async def on_message(message):
         return
 
     add_history(cid, message.author.display_name, content)
+    targets = decide_targets(message, content)
+
+    # オーケストレーター単独宛て → 実行/編集の指示なら承認フロー、それ以外は通常回答
+    if len(targets) == 1 and targets[0][0] == "Orchestrator":
+        await _handle_orchestrator(message, cid)
+        return
+
     async with message.channel.typing():
-        for name, bot, ask in decide_targets(message, content):
+        for name, bot, ask in targets:
             try:
                 await respond(cid, name, bot, ask)
             except Exception as e:
