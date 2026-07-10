@@ -14,5 +14,8 @@ sleep 1
 echo "⬇️  最新コードを取得…"
 git -C .. pull origin claude/line-webhook-claude-integration-l3hff3 || echo "(git pull はスキップしました)"
 
+echo "📦 依存を確認/インストール…"
+venv/bin/pip install -q -r requirements.txt || echo "(pip install に失敗。ネット確認)"
+
 echo "🚀 ボットを起動…（止めるときは Ctrl+C）"
 exec venv/bin/python ai_group_chat.py
