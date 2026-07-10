@@ -302,14 +302,16 @@ async def _route(history):
     """① モデル振り分け・多段化・Web検索要否を判定。JSONで受ける。"""
     prompt = (
         "あなたはルーター。次の会話の最後の要求に最適な処理方針をJSONだけで返す。\n"
-        '形式: {"mode":"single"|"debate","lead":"claude"|"gemini","search":true|false,"action":true|false}\n'
+        '形式: {"mode":"single"|"debate","lead":"claude"|"gemini","search":true|false,'
+        '"intent":"chat"|"action"|"project"}\n'
         "- 原則 single（1モデルで即答）。debate は"
         "『重大な判断・設計・事実の突き合わせが本当に必要』な時だけ（省エネ重視）。\n"
         "- コード・論理・技術寄り → lead=claude ／ 最新情報・画像・幅広い発想 → lead=gemini\n"
         "- 最新情報・時事・製品/価格・実在の事実確認が要る → search=true、雑談や一般常識 → search=false\n"
-        "- ファイル編集・コード変更・コマンド実行など『実際に手を動かす作業』を頼まれている"
-        "（例:『〜を直して/追加して/作って/実行して/削除して』）→ action=true。"
-        "質問・相談・説明だけ → action=false\n\n"
+        "- intent: 映像/動画/CM/ムービー/PV等の【制作】を頼まれている"
+        "（例:『犬の動画作って』『CM作りたい』）→ project。"
+        "ファイル編集・コード変更・コマンド実行など実作業 → action。"
+        "それ以外（質問・相談・雑談）→ chat\n\n"
         f"会話:\n{build_transcript(history)}\n\nJSON:"
     )
     try:
@@ -319,10 +321,10 @@ async def _route(history):
         mode = d.get("mode") if d.get("mode") in ("single", "debate") else "single"
         lead = d.get("lead") if d.get("lead") in ("claude", "gemini") else "claude"
         search = bool(d.get("search"))
-        action = bool(d.get("action"))
-        return mode, lead, search, action
+        intent = d.get("intent") if d.get("intent") in ("chat", "action", "project") else "chat"
+        return mode, lead, search, intent
     except Exception:  # noqa: BLE001
-        return "single", "claude", False, False
+        return "single", "claude", False, "chat"
 
 
 async def _synthesize(claude_ans, gemini_ans, history, extra=""):
@@ -345,7 +347,7 @@ def _latest_user_msg(history):
 
 
 async def ask_orchestrator(history):
-    mode, lead, search, _action = await _route(history)
+    mode, lead, search, _intent = await _route(history)
     return await _orchestrate(mode, lead, search, history)
 
 
@@ -391,17 +393,21 @@ async def _orchestrate(mode, lead, search, history):
 
 
 async def _handle_orchestrator(message, cid):
-    """オーケストレーター宛て。実行/編集の指示なら承認フロー、それ以外は通常回答。"""
+    """オーケストレーター宛て。意図に応じて 制作 / 実行編集 / 通常回答 に振り分ける。"""
     history = get_history(cid)
-    mode, lead, search, action = await _route(history)
-    if action:
+    mode, lead, search, intent = await _route(history)
+    content = message.content.strip()
+
+    if intent == "project":
+        await message.channel.send("🎬 映像制作の依頼と判断しました。構成案から始めます…")
+        asyncio.create_task(pipeline_start(cid, content))
+        return
+    if intent == "action":
         await message.channel.send(
             "🛠 実行/編集の指示と判断しました。プランを作ります…"
             "（[✅許可]で実行 / [❌拒否]で中止）"
         )
-        asyncio.create_task(
-            _run_agent_task(cid, message.content.strip(), message.author.id)
-        )
+        asyncio.create_task(_run_agent_task(cid, content, message.author.id))
         return
     async with message.channel.typing():
         try:
@@ -810,6 +816,29 @@ async def _run_agent_task(cid, task, owner_id):
     await send_as(orch, cid, result)
 
 
+# 自然言語での「停止」。短い停止フレーズだけを拾う（誤爆防止）。
+_STOP_PHRASES = {
+    "止めて", "止めて。", "とめて", "やめて", "やめ", "ストップ", "すとっぷ",
+    "stop", "中止", "中止して", "キャンセル", "cancel", "ストップして",
+    "止まれ", "停止", "停止して",
+}
+
+
+def _is_stop_phrase(content):
+    norm = content.strip().rstrip("。.!！?？ 　").lower()
+    return norm in _STOP_PHRASES
+
+
+async def _do_stop(message, cid):
+    state["stop"] = True
+    if projects.pop(cid, None):
+        await message.channel.send(
+            "⏹️ 進行中の作業を停止しました。以降は通常の会話に戻ります。"
+        )
+    else:
+        await message.channel.send("⏹️ 停止しました。")
+
+
 @orch.event
 async def on_ready():
     print(f"オーケストレーター起動: {orch.user}")
@@ -824,14 +853,8 @@ async def on_message(message):
         return
     cid = message.channel.id
 
-    if content == "!stop":
-        state["stop"] = True
-        if projects.pop(cid, None):
-            await message.channel.send(
-                "⏹️ 進行中のプロジェクトを停止しました。以降は通常の会話に戻ります。"
-            )
-        else:
-            await message.channel.send("⏹️ 停止します")
+    if content == "!stop" or _is_stop_phrase(content):
+        await _do_stop(message, cid)
         return
     if content.startswith("!project"):
         topic = content[len("!project"):].strip()
