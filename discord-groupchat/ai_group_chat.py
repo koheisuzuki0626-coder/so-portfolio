@@ -20,7 +20,7 @@ import asyncio
 import json
 import os
 import re
-from datetime import date
+import time
 
 import discord
 from dotenv import load_dotenv
@@ -137,8 +137,10 @@ def _retry_delay(e, default=8):
         return default
 
 
-# モデルごとの「本日枠切れ」記録（model -> その日付）。
-_gemini_exhausted = {}
+# 枠切れモデルのクールダウン（model -> この時刻まではスキップ）。時間が来たら自動復帰。
+GEMINI_COOLDOWN_SEC = int(os.getenv("GEMINI_COOLDOWN_SEC", "1800"))  # 既定30分
+_gemini_cooldown = {}
+_gemini_rr = {"i": 0}  # ラウンドロビン用インデックス
 
 
 def _gen_sync(model, prompt):
@@ -146,27 +148,35 @@ def _gen_sync(model, prompt):
 
 
 async def _gemini_call(prompt):
-    """複数モデルを順に試し、枠切れなら次モデルへ自動フォールバック。"""
-    today = date.today()
+    """モデルをローテーション（毎回開始位置をずらす）しつつ、枠切れはクールダウンで
+    一時スキップ。時間が経てば自動的に再挑戦＝枠が復活したらまた使う。"""
+    now = time.time()
+    n = len(GEMINI_MODELS)
+    if n == 0:
+        raise RuntimeError("GEMINI_MODELS が空です")
+    start = _gemini_rr["i"]
+    _gemini_rr["i"] = (start + 1) % n  # 次回は次のモデルから開始（負荷分散）
+    order = [GEMINI_MODELS[(start + k) % n] for k in range(n)]
+
     last_err = None
-    for model in GEMINI_MODELS:
-        if _gemini_exhausted.get(model) == today:
-            continue  # 本日枠切れ済みは飛ばす
+    for model in order:
+        if _gemini_cooldown.get(model, 0) > now:
+            continue  # クールダウン中はスキップ（期限が来たら自動で対象に戻る）
         for attempt in range(2):
             try:
                 return await asyncio.to_thread(_gen_sync, model, prompt)
             except Exception as e:  # noqa: BLE001
                 last_err = e
                 per_day = "PerDay" in str(e) or "PerProjectPerModel" in str(e)
-                # 分あたり制限（日次ではない）なら、同モデルで一度だけ待って再試行
+                # 分あたり制限（日次でない）なら、同モデルで一度だけ待って再試行
                 if _is_quota_error(e) and not per_day and attempt == 0:
                     await asyncio.sleep(_retry_delay(e))
                     continue
-                # 日次枠切れ or その他のエラー → 今日はこのモデルを避けて次モデルへ
+                # 日次枠切れ or その他エラー → 一定時間このモデルを避ける（後で自動復帰）
                 if per_day or not _is_quota_error(e):
-                    _gemini_exhausted[model] = today
+                    _gemini_cooldown[model] = time.time() + GEMINI_COOLDOWN_SEC
                 break
-    raise last_err or RuntimeError("Geminiの利用可能なモデルがありません（本日はClaude中心で動作）")
+    raise last_err or RuntimeError("Geminiの利用可能なモデルがありません（一時的にClaude中心）")
 
 
 async def ask_gemini(history):
