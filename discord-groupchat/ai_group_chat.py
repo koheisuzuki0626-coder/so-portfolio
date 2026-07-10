@@ -665,13 +665,10 @@ async def pipeline_reply(cid, text):
 
 
 # ---------------------------------------------------------------------------
-# エージェントモード：Claude Code をツール付きで動かし、承認をDiscordで受ける
-#   !agent やってほしいこと  → Claudeがツールを使うたびに [✅許可][❌拒否] ボタン
+# エージェントモード（プラン承認型・追加SDK不要 / Python 3.9でも動く）
+#   !agent タスク → Claudeが「実行プラン」を提示 → [✅許可]で実行 / [❌拒否]で中止
+#   ※ 許可するとフル権限で実行されるので、プランを確認してから許可すること。
 # ---------------------------------------------------------------------------
-# 読み取り系は自動許可（毎回聞くとうるさいので）。書き込み・実行・検索は都度承認。
-SAFE_AUTO_TOOLS = {"Read", "Glob", "Grep", "LS", "TodoWrite", "NotebookRead"}
-
-
 class PermissionView(discord.ui.View):
     """[✅許可][❌拒否]。押すと future を解決する。実行者のみ操作可。"""
 
@@ -709,52 +706,55 @@ class PermissionView(discord.ui.View):
             self.future.set_result(False)
 
 
-async def run_claude_agent(cid, task, owner_id):
-    """Claude Code をエージェントとして実行。ツール使用時はDiscordで承認を取る。"""
-    try:
-        from claude_agent_sdk import (
-            AssistantMessage,
-            ClaudeAgentOptions,
-            ClaudeSDKClient,
-            PermissionResultAllow,
-            PermissionResultDeny,
-            TextBlock,
-        )
-    except ImportError:
-        return ("⚠️ claude-agent-sdk が未インストールです。"
-                "`bash ~/so-portfolio/discord-groupchat/restart.sh` で再取得＋起動してください。")
-
-    async def can_use_tool(tool_name, input_data, context):
-        if tool_name in SAFE_AUTO_TOOLS:
-            return PermissionResultAllow()
-        fut = asyncio.get_running_loop().create_future()
-        await send_as(
-            orch, cid,
-            f"🔐 Claudeが **{tool_name}** を使おうとしています:\n"
-            f"```\n{str(input_data)[:800]}\n```\n"
-            "許可しますか？（実行した本人のみ操作可・5分で自動拒否）",
-            view=PermissionView(fut, owner_id),
-        )
-        try:
-            allowed = await asyncio.wait_for(fut, timeout=310)
-        except asyncio.TimeoutError:
-            allowed = False
-        if allowed:
-            return PermissionResultAllow()
-        return PermissionResultDeny(message="ユーザーが拒否しました")
-
-    options = ClaudeAgentOptions(
-        can_use_tool=can_use_tool, permission_mode="default", cwd=BASE_DIR
+async def _run_claude_exec(task):
+    """承認済みタスクをフル権限で実行し、標準出力を返す。"""
+    proc = await asyncio.create_subprocess_exec(
+        CLAUDE_BIN, "-p", "--dangerously-skip-permissions", task,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=BASE_DIR,
     )
-    texts = []
-    async with ClaudeSDKClient(options) as client:
-        await client.query(task)
-        async for message in client.receive_response():
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        texts.append(block.text)
-    return "\n".join(texts).strip() or "(応答なし)"
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=600)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return "⚠️ 実行がタイムアウトしました。"
+    if proc.returncode != 0:
+        return f"⚠️ 実行に失敗: {(err.decode() or '').strip()[:400]}"
+    return out.decode().strip() or "(完了・出力なし)"
+
+
+async def run_claude_agent(cid, task, owner_id):
+    """プラン承認型：計画を提示→Discordで承認→実行。SDK不要。"""
+    # ① 計画（実行せず、やることの計画をテキストで）
+    plan_prompt = (
+        "次のタスクを実行するとしたら、行う手順やコマンドの【計画】だけを日本語で"
+        "箇条書きにしてください。まだ実行はしないこと。\n\nタスク: " + task
+    )
+    try:
+        plan = await run_claude_cli(plan_prompt)
+    except Exception as e:  # noqa: BLE001
+        return f"⚠️ 計画の作成に失敗: {str(e)[:300]}"
+
+    # ② Discordで承認（ボタン）
+    fut = asyncio.get_running_loop().create_future()
+    await send_as(
+        orch, cid,
+        f"🤖 タスク: {task}\n\n📋 実行プラン:\n{plan[:1500]}\n\n"
+        "この計画で実行しますか？ [✅許可] を押すと **Mac上で実際に実行**します"
+        "（実行した本人のみ操作可・5分で自動却下）。",
+        view=PermissionView(fut, owner_id),
+    )
+    try:
+        approved = await asyncio.wait_for(fut, timeout=310)
+    except asyncio.TimeoutError:
+        approved = False
+    if not approved:
+        return "🛑 却下されました。実行しません。"
+
+    # ③ 承認 → 実行（承認済みのためフル権限）
+    await send_as(orch, cid, "▶️ 承認されました。実行します…")
+    return await _run_claude_exec(task)
 
 
 async def _run_agent_task(cid, task, owner_id):
