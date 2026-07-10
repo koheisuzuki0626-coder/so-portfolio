@@ -622,6 +622,107 @@ async def pipeline_reply(cid, text):
             await _pipeline_edit(cid, feedback=text)
 
 
+# ---------------------------------------------------------------------------
+# エージェントモード：Claude Code をツール付きで動かし、承認をDiscordで受ける
+#   !agent やってほしいこと  → Claudeがツールを使うたびに [✅許可][❌拒否] ボタン
+# ---------------------------------------------------------------------------
+# 読み取り系は自動許可（毎回聞くとうるさいので）。書き込み・実行・検索は都度承認。
+SAFE_AUTO_TOOLS = {"Read", "Glob", "Grep", "LS", "TodoWrite", "NotebookRead"}
+
+
+class PermissionView(discord.ui.View):
+    """[✅許可][❌拒否]。押すと future を解決する。実行者のみ操作可。"""
+
+    def __init__(self, future, owner_id):
+        super().__init__(timeout=300)
+        self.future = future
+        self.owner_id = owner_id
+
+    async def _resolve(self, interaction, value):
+        if self.owner_id and interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "この承認はコマンドを実行した本人だけが操作できます。", ephemeral=True
+            )
+            return
+        if not self.future.done():
+            self.future.set_result(value)
+        for c in self.children:
+            c.disabled = True
+        try:
+            await interaction.response.edit_message(view=self)
+        except Exception:  # noqa: BLE001
+            pass
+        self.stop()
+
+    @discord.ui.button(label="✅ 許可", style=discord.ButtonStyle.success)
+    async def allow(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._resolve(interaction, True)
+
+    @discord.ui.button(label="❌ 拒否", style=discord.ButtonStyle.danger)
+    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._resolve(interaction, False)
+
+    async def on_timeout(self):
+        if not self.future.done():
+            self.future.set_result(False)
+
+
+async def run_claude_agent(cid, task, owner_id):
+    """Claude Code をエージェントとして実行。ツール使用時はDiscordで承認を取る。"""
+    try:
+        from claude_agent_sdk import (
+            AssistantMessage,
+            ClaudeAgentOptions,
+            ClaudeSDKClient,
+            PermissionResultAllow,
+            PermissionResultDeny,
+            TextBlock,
+        )
+    except ImportError:
+        return ("⚠️ claude-agent-sdk が未インストールです。"
+                "`bash ~/so-portfolio/discord-groupchat/restart.sh` で再取得＋起動してください。")
+
+    async def can_use_tool(tool_name, input_data, context):
+        if tool_name in SAFE_AUTO_TOOLS:
+            return PermissionResultAllow()
+        fut = asyncio.get_running_loop().create_future()
+        await send_as(
+            orch, cid,
+            f"🔐 Claudeが **{tool_name}** を使おうとしています:\n"
+            f"```\n{str(input_data)[:800]}\n```\n"
+            "許可しますか？（実行した本人のみ操作可・5分で自動拒否）",
+            view=PermissionView(fut, owner_id),
+        )
+        try:
+            allowed = await asyncio.wait_for(fut, timeout=310)
+        except asyncio.TimeoutError:
+            allowed = False
+        if allowed:
+            return PermissionResultAllow()
+        return PermissionResultDeny(message="ユーザーが拒否しました")
+
+    options = ClaudeAgentOptions(
+        can_use_tool=can_use_tool, permission_mode="default", cwd=BASE_DIR
+    )
+    texts = []
+    async with ClaudeSDKClient(options) as client:
+        await client.query(task)
+        async for message in client.receive_response():
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        texts.append(block.text)
+    return "\n".join(texts).strip() or "(応答なし)"
+
+
+async def _run_agent_task(cid, task, owner_id):
+    try:
+        result = await run_claude_agent(cid, task, owner_id)
+    except Exception as e:  # noqa: BLE001
+        result = f"⚠️ エージェント実行に失敗: {str(e)[:400]}"
+    await send_as(orch, cid, result)
+
+
 @orch.event
 async def on_ready():
     print(f"オーケストレーター起動: {orch.user}")
@@ -660,6 +761,17 @@ async def on_message(message):
             await message.channel.send("🛑 プロジェクトを中止しました。")
         else:
             await message.channel.send("進行中のプロジェクトはありません。")
+        return
+    if content.startswith("!agent"):
+        task = content[len("!agent"):].strip()
+        if not task:
+            await message.channel.send(
+                "使い方: !agent やってほしいこと（例: !agent このフォルダのファイル一覧を出して）\n"
+                "※ Claudeがコマンド実行やファイル編集をする前に、[✅許可][❌拒否] ボタンで確認します。"
+            )
+            return
+        await message.channel.send(f"🤖 エージェント開始: {task}")
+        asyncio.create_task(_run_agent_task(cid, task, message.author.id))
         return
     if content.startswith("!search"):
         q = content[len("!search"):].strip()
