@@ -20,6 +20,7 @@ import asyncio
 import json
 import os
 import re
+from datetime import date
 
 import discord
 from dotenv import load_dotenv
@@ -128,7 +129,23 @@ def _retry_delay(e, default=8):
         return default
 
 
+# Gemini の1日あたり呼び出し上限（省エネ枠）。超えたら自動でClaude単独に縮退。
+GEMINI_DAILY_LIMIT = int(os.getenv("GEMINI_DAILY_LIMIT", "30"))
+_gemini_usage = {"date": None, "count": 0}
+
+
+def _gemini_budget_ok():
+    today = date.today()
+    if _gemini_usage["date"] != today:
+        _gemini_usage["date"], _gemini_usage["count"] = today, 0
+    return _gemini_usage["count"] < GEMINI_DAILY_LIMIT
+
+
 async def _gemini_call(prompt, retries=1):
+    if not _gemini_budget_ok():
+        raise RuntimeError("Gemini省エネ枠の上限に達しました（本日はClaude中心で動作）")
+    _gemini_usage["count"] += 1
+
     def _call():
         return gemini_client.models.generate_content(
             model=GEMINI_MODEL, contents=prompt
@@ -190,21 +207,11 @@ def _ddg_search_sync(query, n):
         return list(d.text(query, max_results=n))
 
 
-async def web_search_context(query):
-    """queryをWeb検索し、AIに渡す文脈テキストを返す。失敗時は空文字。"""
-    if not query.strip():
-        return ""
-    # ① Google検索（Geminiグラウンディング）
-    try:
-        text, sources = await asyncio.to_thread(_google_search_sync, query)
-        if text or sources:
-            block = "【Google検索の要約（最新情報。根拠として使い、URLも示す）】\n" + text
-            if sources:
-                block += "\n\n参考URL:\n" + "\n".join(f"- {s}" for s in sources[:6])
-            return block
-    except Exception as e:  # noqa: BLE001
-        print(f"[google_search] 失敗→DuckDuckGoにフォールバック: {e}")
-    # ② フォールバック：DuckDuckGo
+# 既定は "ddg"（無料・Gemini枠を消費しない）。Google検索したいなら .env で "google"。
+SEARCH_ENGINE = os.getenv("SEARCH_ENGINE", "ddg")
+
+
+async def _ddg_context(query):
     try:
         results = await asyncio.to_thread(_ddg_search_sync, query, SEARCH_RESULTS_N)
     except Exception as e:  # noqa: BLE001
@@ -219,6 +226,25 @@ async def web_search_context(query):
         href = r.get("href") or r.get("url") or ""
         lines.append(f"- {title}\n  {body}\n  {href}")
     return "【Web検索結果（最新情報。根拠として使い、URLも示す）】\n" + "\n".join(lines)
+
+
+async def web_search_context(query):
+    """queryをWeb検索し、AIに渡す文脈テキストを返す。失敗時は空文字。"""
+    if not query.strip():
+        return ""
+    # SEARCH_ENGINE=google のときだけ Gemini(Google)グラウンディングを使う（枠を消費）。
+    if SEARCH_ENGINE == "google":
+        try:
+            text, sources = await asyncio.to_thread(_google_search_sync, query)
+            if text or sources:
+                block = "【Google検索の要約（最新情報。根拠として使い、URLも示す）】\n" + text
+                if sources:
+                    block += "\n\n参考URL:\n" + "\n".join(f"- {s}" for s in sources[:6])
+                return block
+        except Exception as e:  # noqa: BLE001
+            print(f"[google_search] 失敗→DuckDuckGoにフォールバック: {e}")
+    # 既定：DuckDuckGo（Geminiの無料枠を使わない）
+    return await _ddg_context(query)
 
 
 # ---------------------------------------------------------------------------
@@ -252,8 +278,8 @@ async def _route(history):
     prompt = (
         "あなたはルーター。次の会話の最後の要求に最適な処理方針をJSONだけで返す。\n"
         '形式: {"mode":"single"|"debate","lead":"claude"|"gemini","search":true|false}\n'
-        "- 雑談/簡単な質問/短い依頼 → single\n"
-        "- 複雑/重要/事実確認や多角的検討が有益 → debate\n"
+        "- 原則 single（1モデルで即答）。debate は"
+        "『重大な判断・設計・事実の突き合わせが本当に必要』な時だけ（省エネ重視）。\n"
         "- コード・論理・技術寄り → lead=claude ／ 最新情報・画像・幅広い発想 → lead=gemini\n"
         "- 最新情報・時事・製品/価格・実在の事実確認が要る → search=true、雑談や一般常識 → search=false\n\n"
         f"会話:\n{build_transcript(history)}\n\nJSON:"
