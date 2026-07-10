@@ -38,7 +38,8 @@ except Exception as _e:  # noqa: BLE001
 
 # ---------- 設定 ----------
 CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# gemini-2.5-flash は無料枠が1日20回と少ない。2.0-flash の方が無料枠が広い。
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 MAX_TURNS = int(os.getenv("MAX_TURNS", "6"))
 REPLY_CHARS = 400
 SEND_DELAY = 2
@@ -114,13 +115,35 @@ async def ask_claude(history):
     return await run_claude_cli(peer_prompt("Claude", "Gemini", history))
 
 
-async def _gemini_call(prompt):
+def _is_quota_error(e):
+    m = str(e)
+    return "429" in m or "RESOURCE_EXHAUSTED" in m or "quota" in m.lower()
+
+
+def _retry_delay(e, default=8):
+    m = re.search(r"retry in ([0-9.]+)s", str(e)) or re.search(r"retryDelay'?:?\s*'?([0-9.]+)s", str(e))
+    try:
+        return min(float(m.group(1)), 30) if m else default
+    except Exception:  # noqa: BLE001
+        return default
+
+
+async def _gemini_call(prompt, retries=1):
     def _call():
         return gemini_client.models.generate_content(
             model=GEMINI_MODEL, contents=prompt
         ).text
 
-    return await asyncio.to_thread(_call)
+    for attempt in range(retries + 1):
+        try:
+            return await asyncio.to_thread(_call)
+        except Exception as e:  # noqa: BLE001
+            # 一時的なレート制限（分あたり）なら待って1回だけ再試行。
+            # 1日上限に達している場合は待っても無駄なので即あきらめて上位で縮退。
+            if _is_quota_error(e) and attempt < retries:
+                await asyncio.sleep(_retry_delay(e))
+                continue
+            raise
 
 
 async def ask_gemini(history):
@@ -680,7 +703,15 @@ async def on_message(message):
             try:
                 await respond(cid, name, bot, ask)
             except Exception as e:
-                await send_as(orch, cid, f"⚠️ {name} の呼び出し失敗: {e}")
+                if _is_quota_error(e):
+                    await send_as(
+                        orch, cid,
+                        f"⚠️ {name} は本日の無料枠上限に達しました"
+                        "（Geminiは無料枠が小さめ）。時間をおくか、質問を "
+                        "@Claude 宛てにしてみてください。",
+                    )
+                else:
+                    await send_as(orch, cid, f"⚠️ {name} の呼び出し失敗: {str(e)[:300]}")
             await asyncio.sleep(1)
 
 
