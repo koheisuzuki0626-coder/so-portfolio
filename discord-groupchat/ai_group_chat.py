@@ -39,8 +39,16 @@ except Exception as _e:  # noqa: BLE001
 
 # ---------- 設定 ----------
 CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")
-# gemini-2.5-flash は無料枠が1日20回と少ない。2.0-flash の方が無料枠が広い。
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+# Geminiモデルを順に試す（各モデルは別々の日次無料枠）。上のモデルの枠が切れたら次へ。
+GEMINI_MODELS = [
+    m.strip()
+    for m in os.getenv(
+        "GEMINI_MODELS",
+        "gemini-2.0-flash,gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.0-flash-lite",
+    ).split(",")
+    if m.strip()
+]
+GEMINI_MODEL = GEMINI_MODELS[0]  # 検索グラウンディング等で使う既定モデル
 MAX_TURNS = int(os.getenv("MAX_TURNS", "6"))
 REPLY_CHARS = 400
 SEND_DELAY = 2
@@ -129,38 +137,36 @@ def _retry_delay(e, default=8):
         return default
 
 
-# Gemini の1日あたり呼び出し上限（省エネ枠）。超えたら自動でClaude単独に縮退。
-GEMINI_DAILY_LIMIT = int(os.getenv("GEMINI_DAILY_LIMIT", "30"))
-_gemini_usage = {"date": None, "count": 0}
+# モデルごとの「本日枠切れ」記録（model -> その日付）。
+_gemini_exhausted = {}
 
 
-def _gemini_budget_ok():
+def _gen_sync(model, prompt):
+    return gemini_client.models.generate_content(model=model, contents=prompt).text
+
+
+async def _gemini_call(prompt):
+    """複数モデルを順に試し、枠切れなら次モデルへ自動フォールバック。"""
     today = date.today()
-    if _gemini_usage["date"] != today:
-        _gemini_usage["date"], _gemini_usage["count"] = today, 0
-    return _gemini_usage["count"] < GEMINI_DAILY_LIMIT
-
-
-async def _gemini_call(prompt, retries=1):
-    if not _gemini_budget_ok():
-        raise RuntimeError("Gemini省エネ枠の上限に達しました（本日はClaude中心で動作）")
-    _gemini_usage["count"] += 1
-
-    def _call():
-        return gemini_client.models.generate_content(
-            model=GEMINI_MODEL, contents=prompt
-        ).text
-
-    for attempt in range(retries + 1):
-        try:
-            return await asyncio.to_thread(_call)
-        except Exception as e:  # noqa: BLE001
-            # 一時的なレート制限（分あたり）なら待って1回だけ再試行。
-            # 1日上限に達している場合は待っても無駄なので即あきらめて上位で縮退。
-            if _is_quota_error(e) and attempt < retries:
-                await asyncio.sleep(_retry_delay(e))
-                continue
-            raise
+    last_err = None
+    for model in GEMINI_MODELS:
+        if _gemini_exhausted.get(model) == today:
+            continue  # 本日枠切れ済みは飛ばす
+        for attempt in range(2):
+            try:
+                return await asyncio.to_thread(_gen_sync, model, prompt)
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                per_day = "PerDay" in str(e) or "PerProjectPerModel" in str(e)
+                # 分あたり制限（日次ではない）なら、同モデルで一度だけ待って再試行
+                if _is_quota_error(e) and not per_day and attempt == 0:
+                    await asyncio.sleep(_retry_delay(e))
+                    continue
+                # 日次枠切れ or その他のエラー → 今日はこのモデルを避けて次モデルへ
+                if per_day or not _is_quota_error(e):
+                    _gemini_exhausted[model] = today
+                break
+    raise last_err or RuntimeError("Geminiの利用可能なモデルがありません（本日はClaude中心で動作）")
 
 
 async def ask_gemini(history):
