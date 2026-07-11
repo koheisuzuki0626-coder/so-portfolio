@@ -11,8 +11,13 @@ echo "🛑 既存のボットを停止…"
 pkill -f ai_group_chat.py 2>/dev/null || true
 sleep 1
 
-echo "⬇️  最新コードを取得…"
-git -C .. pull origin claude/line-webhook-claude-integration-l3hff3 || echo "(git pull はスキップしました)"
+echo "⬇️  最新コードに同期（GitHubに強制一致）…"
+BRANCH=claude/line-webhook-claude-integration-l3hff3
+if git -C .. fetch origin "$BRANCH"; then
+    git -C .. reset --hard "origin/$BRANCH" || echo "(reset に失敗)"
+else
+    echo "(fetch に失敗。ネット確認)"
+fi
 
 echo "📦 依存を確認/インストール…"
 venv/bin/pip install -q -r requirements.txt || echo "(pip install に失敗。ネット確認)"
