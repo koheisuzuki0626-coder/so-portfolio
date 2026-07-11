@@ -392,6 +392,26 @@ async def _orchestrate(mode, lead, search, history):
     return await _synthesize(claude_rev, gemini_rev, history, ctx)
 
 
+# Claudeが「許可して」と言い出したのを検知する語句（安全ネット用）。
+_PERM_PHRASES = (
+    "許可をお願い", "許可してください", "許可を選", "承認をお願い", "承認してください",
+    "承認を選", "権限確認", "権限の確認", "確認プロンプト", "permission prompt",
+    "approve this", "実行してよろしいですか", "許可が必要",
+)
+
+
+def _looks_like_permission_request(text):
+    return any(p in text for p in _PERM_PHRASES)
+
+
+async def _start_agent(message, cid, content):
+    await message.channel.send(
+        "🛠 実行/編集の指示と判断しました。プランを作ります…"
+        "（[✅許可]で実行 / [❌拒否]で中止）"
+    )
+    asyncio.create_task(_run_agent_task(cid, content, message.author.id))
+
+
 async def _handle_orchestrator(message, cid):
     """オーケストレーター宛て。意図に応じて 制作 / 実行編集 / 通常回答 に振り分ける。"""
     history = get_history(cid)
@@ -403,11 +423,7 @@ async def _handle_orchestrator(message, cid):
         asyncio.create_task(pipeline_start(cid, content))
         return
     if intent == "action":
-        await message.channel.send(
-            "🛠 実行/編集の指示と判断しました。プランを作ります…"
-            "（[✅許可]で実行 / [❌拒否]で中止）"
-        )
-        asyncio.create_task(_run_agent_task(cid, content, message.author.id))
+        await _start_agent(message, cid, content)
         return
     async with message.channel.typing():
         try:
@@ -420,6 +436,11 @@ async def _handle_orchestrator(message, cid):
                     answer = "⚠️ 一時的に応答できませんでした。少し後で試してください。"
             else:
                 answer = f"⚠️ 応答に失敗: {str(e)[:300]}"
+
+    # 安全ネット：Claudeが「許可して」と言い出したら、必ず本物の承認ボタンを出す
+    if _looks_like_permission_request(answer):
+        await _start_agent(message, cid, content)
+        return
     add_history(cid, "Orchestrator", answer)
     await send_as(orch, cid, answer)
 
