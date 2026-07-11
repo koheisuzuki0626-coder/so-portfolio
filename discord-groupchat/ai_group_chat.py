@@ -392,16 +392,18 @@ async def _orchestrate(mode, lead, search, history):
     return await _synthesize(claude_rev, gemini_rev, history, ctx)
 
 
-# Claudeが「許可して」と言い出したのを検知する語句（安全ネット用）。
-_PERM_PHRASES = (
-    "許可をお願い", "許可してください", "許可を選", "承認をお願い", "承認してください",
-    "承認を選", "権限確認", "権限の確認", "確認プロンプト", "permission prompt",
-    "approve this", "実行してよろしいですか", "許可が必要",
+# Claudeが承認を求めているか（言い回しの揺れに強い2条件判定）。
+_PERM_WORDS = ("許可", "承認", "権限", "permission", "approve")
+_ASK_WORDS = (
+    "ください", "下さい", "お願い", "必要", "してほしい", "して欲しい",
+    "選んで", "押して", "してくれ", "よろしいですか", "いいですか", "求め",
 )
 
 
 def _looks_like_permission_request(text):
-    return any(p in text for p in _PERM_PHRASES)
+    has_perm = any(w in text for w in _PERM_WORDS)
+    has_ask = any(w in text for w in _ASK_WORDS)
+    return has_perm and has_ask
 
 
 async def _start_agent(message, cid, content):
