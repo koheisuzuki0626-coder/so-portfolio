@@ -269,19 +269,10 @@ async def web_search_context(query):
 #   ② ディベート（各回答を相互に見せて批判・修正）
 #   ③ 司令塔が統合（合意点/対立点を整理して単一回答へ）
 # ---------------------------------------------------------------------------
-NO_TOOLS_NOTE = (
-    "重要：あなたはチャットで文章を返すだけで、コマンド実行・ファイル編集・"
-    "許可ボタンの表示はできない。実際に実行/編集してほしい要求には、"
-    "『許可ボタンを出した』等と偽らず、"
-    "『Discordで `!agent <やりたいこと>` と打ってください（プラン提示→承認ボタン→実行）』"
-    "と案内すること。"
-)
-
-
 def _answer_prompt(who, history, extra=""):
     return (
         f"あなたは{who}。次の会話の最後の要求に、正確で役立つ回答を日本語で簡潔に述べる。"
-        "前置きや名乗りは不要、回答本体のみ。" + NO_TOOLS_NOTE + "\n\n"
+        "前置きや名乗りは不要、回答本体のみ。\n\n"
         + (extra + "\n\n" if extra else "")
         + f"{build_transcript(history)}\n\nあなたの回答:"
     )
@@ -302,16 +293,11 @@ async def _route(history):
     """① モデル振り分け・多段化・Web検索要否を判定。JSONで受ける。"""
     prompt = (
         "あなたはルーター。次の会話の最後の要求に最適な処理方針をJSONだけで返す。\n"
-        '形式: {"mode":"single"|"debate","lead":"claude"|"gemini","search":true|false,'
-        '"intent":"chat"|"action"|"project"}\n'
+        '形式: {"mode":"single"|"debate","lead":"claude"|"gemini","search":true|false}\n'
         "- 原則 single（1モデルで即答）。debate は"
         "『重大な判断・設計・事実の突き合わせが本当に必要』な時だけ（省エネ重視）。\n"
         "- コード・論理・技術寄り → lead=claude ／ 最新情報・画像・幅広い発想 → lead=gemini\n"
-        "- 最新情報・時事・製品/価格・実在の事実確認が要る → search=true、雑談や一般常識 → search=false\n"
-        "- intent: 映像/動画/CM/ムービー/PV等の【制作】を頼まれている"
-        "（例:『犬の動画作って』『CM作りたい』）→ project。"
-        "ファイル編集・コード変更・コマンド実行など実作業 → action。"
-        "それ以外（質問・相談・雑談）→ chat\n\n"
+        "- 最新情報・時事・製品/価格・実在の事実確認が要る → search=true、雑談や一般常識 → search=false\n\n"
         f"会話:\n{build_transcript(history)}\n\nJSON:"
     )
     try:
@@ -321,10 +307,35 @@ async def _route(history):
         mode = d.get("mode") if d.get("mode") in ("single", "debate") else "single"
         lead = d.get("lead") if d.get("lead") in ("claude", "gemini") else "claude"
         search = bool(d.get("search"))
-        intent = d.get("intent") if d.get("intent") in ("chat", "action", "project") else "chat"
-        return mode, lead, search, intent
+        return mode, lead, search
     except Exception:  # noqa: BLE001
-        return "single", "claude", False, "chat"
+        return "single", "claude", False
+
+
+async def _classify_task(latest_msg):
+    """最後の発言を厳密に分類：exec（実際にコード/ファイルを触る）/ video / chat。
+    迷ったら chat（＝普段の会話を邪魔しない）。"""
+    prompt = (
+        "次のユーザー発言を1語だけで分類して返す: exec / video / chat\n"
+        "exec = ファイルやコードを実際に作成・編集・削除する、またはコマンドを実行する"
+        "明確な作業指示。例:『requirements.txtにyt-dlpを追加して』『server.pyのバグを直して』"
+        "『このコード書き換えて』『npm installして』\n"
+        "video = 動画・映像・CM・PVの制作依頼。例:『犬の動画作って』\n"
+        "chat = それ以外すべて（質問・相談・意見・説明・提案・雑談）。"
+        "例:『どう思う?』『Pythonって何?』『どう直すのがいい?』\n"
+        "重要：実際にファイルを触る/コマンドを走らせる明確な指示だけが exec。"
+        "単なる質問や相談は必ず chat。迷ったら chat。\n\n"
+        f"発言: {latest_msg}\n\n分類（1語だけ）:"
+    )
+    try:
+        raw = (await run_claude_cli(prompt)).strip().lower()
+    except Exception:  # noqa: BLE001
+        return "chat"
+    if "exec" in raw:
+        return "exec"
+    if "video" in raw:
+        return "video"
+    return "chat"
 
 
 async def _synthesize(claude_ans, gemini_ans, history, extra=""):
@@ -332,8 +343,7 @@ async def _synthesize(claude_ans, gemini_ans, history, extra=""):
     prompt = (
         "あなたは司令塔（オーケストレーター）。ClaudeとGeminiの回答を統合し、単一の最終回答を作る。"
         "両者の【合意点】を軸に据え、【対立点】があれば簡潔に触れて最も妥当な結論を示す。"
-        f"実況や『Claudeが〜』等は書かず、回答本体のみ。日本語で{REPLY_CHARS}字以内、結論を先に。"
-        + NO_TOOLS_NOTE + "\n\n"
+        f"実況や『Claudeが〜』等は書かず、回答本体のみ。日本語で{REPLY_CHARS}字以内、結論を先に。\n\n"
         + (extra + "\n\n" if extra else "")
         + f"会話:\n{build_transcript(history)}\n\n"
         f"Claudeの回答:\n{claude_ans}\n\n"
@@ -347,7 +357,7 @@ def _latest_user_msg(history):
 
 
 async def ask_orchestrator(history):
-    mode, lead, search, _intent = await _route(history)
+    mode, lead, search = await _route(history)
     return await _orchestrate(mode, lead, search, history)
 
 
@@ -392,41 +402,32 @@ async def _orchestrate(mode, lead, search, history):
     return await _synthesize(claude_rev, gemini_rev, history, ctx)
 
 
-# Claudeが承認を求めているか（言い回しの揺れに強い2条件判定）。
-_PERM_WORDS = ("許可", "承認", "権限", "permission", "approve")
-_ASK_WORDS = (
-    "ください", "下さい", "お願い", "必要", "してほしい", "して欲しい",
-    "選んで", "押して", "してくれ", "よろしいですか", "いいですか", "求め",
-)
-
-
-def _looks_like_permission_request(text):
-    has_perm = any(w in text for w in _PERM_WORDS)
-    has_ask = any(w in text for w in _ASK_WORDS)
-    return has_perm and has_ask
-
-
 async def _start_agent(message, cid, content):
     await message.channel.send(
-        "🛠 実行/編集の指示と判断しました。プランを作ります…"
+        "🛠 コードを触る作業ですね。プランを作ります…"
         "（[✅許可]で実行 / [❌拒否]で中止）"
     )
     asyncio.create_task(_run_agent_task(cid, content, message.author.id))
 
 
 async def _handle_orchestrator(message, cid):
-    """オーケストレーター宛て。意図に応じて 制作 / 実行編集 / 通常回答 に振り分ける。"""
+    """オーケストレーター宛て。実際にコード/ファイルを触る指示のときだけ承認ダイアログ。
+    それ以外（質問・相談・雑談）は普通に会話する。"""
     history = get_history(cid)
-    mode, lead, search, intent = await _route(history)
     content = message.content.strip()
 
-    if intent == "project":
-        await message.channel.send("🎬 映像制作の依頼と判断しました。構成案から始めます…")
+    # 厳密判定：exec（コードを触る）/ video（映像制作）/ chat（それ以外）
+    kind = await _classify_task(_latest_user_msg(history))
+    if kind == "video":
+        await message.channel.send("🎬 映像制作の依頼ですね。構成案から始めます…")
         asyncio.create_task(pipeline_start(cid, content))
         return
-    if intent == "action":
+    if kind == "exec":
         await _start_agent(message, cid, content)
         return
+
+    # 通常会話（承認ダイアログは出さない）
+    mode, lead, search = await _route(history)
     async with message.channel.typing():
         try:
             answer = await _orchestrate(mode, lead, search, history)
@@ -438,11 +439,6 @@ async def _handle_orchestrator(message, cid):
                     answer = "⚠️ 一時的に応答できませんでした。少し後で試してください。"
             else:
                 answer = f"⚠️ 応答に失敗: {str(e)[:300]}"
-
-    # 安全ネット：Claudeが「許可して」と言い出したら、必ず本物の承認ボタンを出す
-    if _looks_like_permission_request(answer):
-        await _start_agent(message, cid, content)
-        return
     add_history(cid, "Orchestrator", answer)
     await send_as(orch, cid, answer)
 
