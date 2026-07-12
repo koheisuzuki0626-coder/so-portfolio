@@ -272,6 +272,10 @@ MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024  # 20MB
 SUPPORTED_IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 SUPPORTED_VIDEO_TYPES = {".mp4", ".webm", ".mov", ".avi"}
 
+# 一時画像ファイル保存先
+TEMP_IMAGE_DIR = Path(os.getenv("TEMP_IMAGE_DIR", "/tmp/discord_images"))
+TEMP_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+
 
 async def _download_file(url):
     """URLからファイルをダウンロード。バイナリで返す。"""
@@ -298,43 +302,67 @@ def _has_attachments(message):
     return has_image, has_video
 
 
+def _gemini_analyze_image_sync(image_data):
+    """Gemini API で画像を分析（OCR・構図・テキスト抽出）。同期版。"""
+    try:
+        from google.genai import types
+        resp = gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                types.Content(
+                    parts=[
+                        types.Part.from_data(data=image_data, mime_type="image/jpeg")
+                        if image_data.startswith(b'\xff\xd8')
+                        else types.Part.from_data(data=image_data, mime_type="image/png"),
+                        types.Part(text="この画像の内容を詳細に分析してください。"
+                                      "① 画像内のすべてのテキストを正確に抽出（OCR）。"
+                                      "② 構図・レイアウト・視点を説明。"
+                                      "③ 主要な要素・オブジェクト・配置を列挙。"),
+                    ]
+                )
+            ],
+        )
+        return resp.text or ""
+    except Exception as e:
+        print(f"[gemini_analyze_image] 失敗: {e}")
+        return ""
+
+
 async def extract_attachment_context(message):
     """メッセージの添付ファイル（画像・動画）を処理してコンテキストを返す。
-    画像は base64エンコード＋詳細分析指示、動画はメタデータ＋分析指示。"""
+    画像はGeminiで分析（OCR＋構図分析）、動画はメタデータ。"""
     if not message.attachments:
         return ""
 
     contexts = []
-    analysis_hints = []
 
     for att in message.attachments:
         filename = att.filename
         ext = Path(filename).suffix.lower()
         size_mb = att.size / (1024 * 1024)
 
-        # 画像処理
+        # 画像処理（Gemini で OCR・分析）
         if ext in SUPPORTED_IMAGE_TYPES:
             file_data = await _download_file(att.url)
             if file_data:
-                b64 = base64.b64encode(file_data).decode()
-                mime_type = f"image/{ext[1:]}"
-                if ext == ".jpg":
-                    mime_type = "image/jpeg"
-                elif ext == ".webp":
-                    mime_type = "image/webp"
-                contexts.append(f"【画像: {filename}】\n[データ: {mime_type}; base64]\n{b64}")
-                analysis_hints.append(
-                    "画像内のテキスト・情報を抽出し、構図・レイアウト・視点を分析してください。"
-                )
+                try:
+                    # Gemini で画像を分析
+                    analysis = await asyncio.to_thread(_gemini_analyze_image_sync, file_data)
+                    if analysis:
+                        contexts.append(f"【画像: {filename}】\n{analysis}")
+                    else:
+                        contexts.append(f"【画像: {filename}】\n（分析に失敗しました）")
+                except Exception as e:
+                    print(f"[image_analysis] 失敗: {e}")
+                    contexts.append(f"【画像 {filename} の分析失敗】")
             else:
                 contexts.append(f"【画像 {filename} のダウンロード失敗】")
 
-        # 動画処理（メタデータ + 分析指示）
+        # 動画処理（メタデータのみ）
         elif ext in SUPPORTED_VIDEO_TYPES:
-            contexts.append(f"【動画: {filename} (約{size_mb:.1f}MB)】")
-            analysis_hints.append(
-                f"このビデオファイル '{filename}' の内容・ストーリー展開・シーン構成を分析してください。"
-                "動画が見られない場合、ファイル名や想定される用途から推測して説明してください。"
+            contexts.append(
+                f"【動画: {filename} (約{size_mb:.1f}MB)】\n"
+                "※動画ファイルが添付されています。内容について質問してください。"
             )
 
         # その他（スキップ）
@@ -344,13 +372,7 @@ async def extract_attachment_context(message):
     if not contexts:
         return ""
 
-    result = "\n\n【メッセージに添付されたファイル】\n" + "\n".join(contexts)
-
-    # 分析指示を追加
-    if analysis_hints:
-        result += "\n\n【分析指示】\n" + " ".join(analysis_hints)
-
-    return result
+    return "\n\n【メッセージに添付されたファイル】\n" + "\n".join(contexts)
 
 
 # ---------------------------------------------------------------------------
