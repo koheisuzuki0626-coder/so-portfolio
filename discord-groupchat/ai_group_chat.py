@@ -490,9 +490,12 @@ async def _route(history):
         '形式: {"mode":"single"|"debate","lead":"claude"|"gemini","search":true|false}\n'
         "- 原則 single（1モデルで即答）。debate は"
         "『重大な判断・設計・事実の突き合わせが本当に必要』な時だけ（省エネ重視）。\n"
-        "- コード・論理・技術寄り → lead=claude ／ "
-        "最新情報・画像・文章/ドキュメント作成・要約・翻訳・幅広い発想 → lead=gemini"
-        "（Geminiの得意分野は積極的にGeminiへ。無料枠を有効活用する）\n"
+        "- lead は適材適所で選ぶ（コスト節約ではなく品質基準で）：\n"
+        "  claude が得意 → コード・デバッグ・論理的推論・設計判断・"
+        "丁寧で構成の良い日本語の文章・長文の執筆\n"
+        "  gemini が得意 → 長文の要約・多言語翻訳・最新情報・画像や視覚の話題・"
+        "大量の箇条書き整理・幅広いアイデア出し\n"
+        "  どちらでも良いタスクは、その要求に本当に向いている方を選ぶ\n"
         "- 最新情報・時事・製品/価格・実在の事実確認が要る → search=true、雑談や一般常識 → search=false\n\n"
         f"会話:\n{build_transcript(history)}\n\nJSON:"
     )
