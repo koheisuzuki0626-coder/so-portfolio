@@ -289,13 +289,24 @@ async def _download_file(url):
         return None
 
 
+def _has_attachments(message):
+    """メッセージに画像・動画が添付されているか判定。"""
+    if not message.attachments:
+        return False, False
+    has_image = any(Path(a.filename).suffix.lower() in SUPPORTED_IMAGE_TYPES for a in message.attachments)
+    has_video = any(Path(a.filename).suffix.lower() in SUPPORTED_VIDEO_TYPES for a in message.attachments)
+    return has_image, has_video
+
+
 async def extract_attachment_context(message):
     """メッセージの添付ファイル（画像・動画）を処理してコンテキストを返す。
-    画像は base64エンコード、動画はメタデータのみ。"""
+    画像は base64エンコード＋詳細分析指示、動画はメタデータ＋分析指示。"""
     if not message.attachments:
         return ""
 
     contexts = []
+    analysis_hints = []
+
     for att in message.attachments:
         filename = att.filename
         ext = Path(filename).suffix.lower()
@@ -306,19 +317,25 @@ async def extract_attachment_context(message):
             file_data = await _download_file(att.url)
             if file_data:
                 b64 = base64.b64encode(file_data).decode()
-                # Claude の vision 形式で送信
                 mime_type = f"image/{ext[1:]}"
                 if ext == ".jpg":
                     mime_type = "image/jpeg"
                 elif ext == ".webp":
                     mime_type = "image/webp"
                 contexts.append(f"【画像: {filename}】\n[データ: {mime_type}; base64]\n{b64}")
+                analysis_hints.append(
+                    "画像内のテキスト・情報を抽出し、構図・レイアウト・視点を分析してください。"
+                )
             else:
                 contexts.append(f"【画像 {filename} のダウンロード失敗】")
 
-        # 動画処理（メタデータのみ）
+        # 動画処理（メタデータ + 分析指示）
         elif ext in SUPPORTED_VIDEO_TYPES:
             contexts.append(f"【動画: {filename} (約{size_mb:.1f}MB)】")
+            analysis_hints.append(
+                f"このビデオファイル '{filename}' の内容・ストーリー展開・シーン構成を分析してください。"
+                "動画が見られない場合、ファイル名や想定される用途から推測して説明してください。"
+            )
 
         # その他（スキップ）
         else:
@@ -327,7 +344,13 @@ async def extract_attachment_context(message):
     if not contexts:
         return ""
 
-    return "\n\n【メッセージに添付されたファイル】\n" + "\n".join(contexts)
+    result = "\n\n【メッセージに添付されたファイル】\n" + "\n".join(contexts)
+
+    # 分析指示を追加
+    if analysis_hints:
+        result += "\n\n【分析指示】\n" + " ".join(analysis_hints)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
