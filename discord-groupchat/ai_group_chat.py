@@ -490,7 +490,9 @@ async def _route(history):
         '形式: {"mode":"single"|"debate","lead":"claude"|"gemini","search":true|false}\n'
         "- 原則 single（1モデルで即答）。debate は"
         "『重大な判断・設計・事実の突き合わせが本当に必要』な時だけ（省エネ重視）。\n"
-        "- コード・論理・技術寄り → lead=claude ／ 最新情報・画像・幅広い発想 → lead=gemini\n"
+        "- コード・論理・技術寄り → lead=claude ／ "
+        "最新情報・画像・文章/ドキュメント作成・要約・翻訳・幅広い発想 → lead=gemini"
+        "（Geminiの得意分野は積極的にGeminiへ。無料枠を有効活用する）\n"
         "- 最新情報・時事・製品/価格・実在の事実確認が要る → search=true、雑談や一般常識 → search=false\n\n"
         f"会話:\n{build_transcript(history)}\n\nJSON:"
     )
@@ -507,14 +509,15 @@ async def _route(history):
 
 
 async def _classify_task(latest_msg):
-    """最後の発言を厳密に分類：exec（実際にコード/ファイルを触る）/ video / chat。
+    """最後の発言を厳密に分類：exec（実際にコード/ファイルを触る）/ video / image / chat。
     迷ったら chat（＝普段の会話を邪魔しない）。"""
     prompt = (
-        "次のユーザー発言を1語だけで分類して返す: exec / video / chat\n"
+        "次のユーザー発言を1語だけで分類して返す: exec / video / image / chat\n"
         "exec = ファイルやコードを実際に作成・編集・削除する、またはコマンドを実行する"
         "明確な作業指示。例:『requirements.txtにyt-dlpを追加して』『server.pyのバグを直して』"
         "『このコード書き換えて』『npm installして』\n"
         "video = 動画・映像・CM・PVの制作依頼。例:『犬の動画作って』\n"
+        "image = 画像・イラスト・ロゴ・絵の生成依頼。例:『猫のイラスト描いて』『ロゴ画像作って』\n"
         "chat = それ以外すべて（質問・相談・意見・説明・提案・雑談）。"
         "例:『どう思う?』『Pythonって何?』『どう直すのがいい?』\n"
         "重要：実際にファイルを触る/コマンドを走らせる明確な指示だけが exec。"
@@ -529,7 +532,24 @@ async def _classify_task(latest_msg):
         return "exec"
     if "video" in raw:
         return "video"
+    if "image" in raw:
+        return "image"
     return "chat"
+
+
+async def _handle_image_request(cid, request):
+    """画像生成の依頼は Gemini（無料枠 約500枚/日）で完結。クレジット消費なし。"""
+    await send_as(orch, cid, "🎨 Gemini で画像を生成中…（無料枠）")
+    try:
+        data = await asyncio.to_thread(_gemini_generate_image_sync, request)
+        await send_image_bytes(cid, "✅ できました！修正したい点があれば教えてください。", data, "image.png")
+        add_history(cid, "Orchestrator", f"（依頼「{request[:60]}」の画像をGeminiで生成して投稿した）")
+    except Exception as e:  # noqa: BLE001
+        print(f"[image_request] 失敗: {str(e)[:200]}")
+        if _is_quota_error(e):
+            await send_as(orch, cid, "⚠️ Gemini画像生成の本日の無料枠が上限です。時間をおいて再度お試しください。")
+        else:
+            await send_as(orch, cid, f"⚠️ 画像生成に失敗: {str(e)[:200]}")
 
 
 async def _synthesize(claude_ans, gemini_ans, history, extra=""):
@@ -619,6 +639,9 @@ async def _handle_orchestrator(message, cid):
     if kind == "exec":
         last_msg = _latest_user_msg(history)
         await _start_agent(message, cid, last_msg)
+        return
+    if kind == "image":
+        asyncio.create_task(_handle_image_request(cid, _latest_user_msg(history)))
         return
 
     # 通常会話（承認ダイアログは出さない）
