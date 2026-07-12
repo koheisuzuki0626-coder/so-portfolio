@@ -316,43 +316,62 @@ def _detect_mime_type(data):
         return "image/jpeg"  # デフォルト
 
 
+IMAGE_ANALYSIS_PROMPT = (
+    "この画像の内容を詳細に分析してください。\n"
+    "① 画像内のすべてのテキストを正確に抽出（OCR）。改行や表の構造もできるだけ保つ。\n"
+    "② 構図・レイアウト・視点を説明。\n"
+    "③ 主要な要素・オブジェクト・配置・色を列挙。"
+)
+
+
+def _make_image_part(image_data, mime_type):
+    """SDKバージョン差を吸収して画像Partを作る。"""
+    from google.genai import types
+
+    # 新しめのSDK: Part.from_bytes / 古い呼び方: inline_data=Blob
+    if hasattr(types.Part, "from_bytes"):
+        return types.Part.from_bytes(data=image_data, mime_type=mime_type)
+    return types.Part(inline_data=types.Blob(data=image_data, mime_type=mime_type))
+
+
 def _gemini_analyze_image_sync(image_data):
-    """Gemini API で画像を分析（OCR・構図・テキスト抽出）。同期版。"""
+    """Gemini API で画像を分析（OCR・構図・テキスト抽出）。
+    テキスト版 _gemini_call と同じく、無料枠切れモデルはクールダウンして
+    次のモデルへ自動ローテーションする。"""
+    mime_type = _detect_mime_type(image_data)
+    print(f"[gemini_analyze_image] MIME type: {mime_type}, size: {len(image_data)} bytes")
+
     try:
-        from google.genai import types
-
-        mime_type = _detect_mime_type(image_data)
-        print(f"[gemini_analyze_image] MIME type: {mime_type}, size: {len(image_data)} bytes")
-
-        # Gemini が無料枠切れの場合の fallback メッセージ
-        try:
-            resp = gemini_client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=[
-                    types.Content(
-                        parts=[
-                            types.Part.from_data(data=image_data, mime_type=mime_type),
-                            types.Part(text="この画像の内容を詳細に分析してください。"
-                                          "① 画像内のすべてのテキストを正確に抽出（OCR）。"
-                                          "② 構図・レイアウト・視点を説明。"
-                                          "③ 主要な要素・オブジェクト・配置を列挙。"),
-                        ]
-                    )
-                ],
-            )
-            text = resp.text or ""
-            if text:
-                return text
-        except Exception as e_analysis:
-            print(f"[gemini_analyze_image] Gemini 分析失敗: {str(e_analysis)[:200]}")
-            if _is_quota_error(e_analysis):
-                return "（Gemini の無料枠上限に達しました。画像内容をテキストで入力してください。）"
-            raise
-
-        return ""
+        image_part = _make_image_part(image_data, mime_type)
     except Exception as e:
-        print(f"[gemini_analyze_image] 致命的エラー: {str(e)[:200]}")
-        return f"（画像分析エラー: {str(e)[:100]}）"
+        print(f"[gemini_analyze_image] Part生成失敗: {str(e)[:200]}")
+        return ""
+
+    contents = [image_part, IMAGE_ANALYSIS_PROMPT]
+
+    now = time.time()
+    last_err = None
+    for model in GEMINI_MODELS:
+        if _gemini_cooldown.get(model, 0) > now:
+            continue  # 枠切れクールダウン中は次のモデルへ
+        try:
+            resp = gemini_client.models.generate_content(model=model, contents=contents)
+            text = (resp.text or "").strip()
+            if text:
+                print(f"[gemini_analyze_image] 成功: {model}")
+                return text
+        except Exception as e:
+            last_err = e
+            print(f"[gemini_analyze_image] {model} 失敗: {str(e)[:200]}")
+            per_day = "PerDay" in str(e) or "PerProjectPerModel" in str(e)
+            if _is_quota_error(e) and per_day:
+                # 日次枠切れ → このモデルをしばらく避ける（自動復帰あり）
+                _gemini_cooldown[model] = time.time() + GEMINI_COOLDOWN_SEC
+            # 枠切れ・その他エラーとも次のモデルで再挑戦
+
+    if last_err and _is_quota_error(last_err):
+        return "（Gemini の無料枠が全モデルで上限に達しています。時間をおいて再度お試しください。）"
+    return ""
 
 
 async def extract_attachment_context(message):
