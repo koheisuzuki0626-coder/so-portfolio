@@ -316,6 +316,39 @@ def _detect_mime_type(data):
         return "image/jpeg"  # デフォルト
 
 
+# ---------- 画像生成（絵コンテ用・Gemini優先で無料枠を活用） ----------
+# gemini-2.5-flash-image（Nano Banana）は無料枠 約500枚/日。
+# IMAGE_GEN_ENGINE=higgsfield にすると従来どおり Higgsfield を使う。
+IMAGE_GEN_ENGINE = os.getenv("IMAGE_GEN_ENGINE", "gemini")
+GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+
+
+def _gemini_generate_image_sync(prompt):
+    """Gemini の画像生成モデルで画像を作り、PNGバイト列を返す。"""
+    resp = gemini_client.models.generate_content(
+        model=GEMINI_IMAGE_MODEL,
+        contents=prompt,
+    )
+    for cand in resp.candidates or []:
+        content = getattr(cand, "content", None)
+        for part in (getattr(content, "parts", None) or []):
+            inline = getattr(part, "inline_data", None)
+            data = getattr(inline, "data", None)
+            if data:
+                return data
+    raise RuntimeError("Geminiが画像を返しませんでした")
+
+
+async def send_image_bytes(cid, text, data, filename):
+    """画像バイト列をDiscordに添付送信し、CDN上のURLを返す（動画化の入力に使う）。"""
+    channel = orch.get_channel(cid) or await orch.fetch_channel(cid)
+    msg = await channel.send(
+        (text or "")[:1900],
+        file=discord.File(io.BytesIO(data), filename=filename),
+    )
+    return msg.attachments[0].url if msg.attachments else None
+
+
 IMAGE_ANALYSIS_PROMPT = (
     "この画像の内容を詳細に分析してください。\n"
     "① 画像内のすべてのテキストを正確に抽出（OCR）。改行や表の構造もできるだけ保つ。\n"
@@ -767,7 +800,8 @@ async def _pipeline_plan(cid, feedback=""):
 
 async def _pipeline_storyboard(cid, feedback=""):
     p = projects[cid]
-    if not HF_AVAILABLE:
+    # Gemini画像生成が既定なので、Higgsfield無しでも絵コンテは作れる
+    if IMAGE_GEN_ENGINE == "higgsfield" and not HF_AVAILABLE:
         await send_as(orch, cid, f"⚠️ Higgsfield が使えません: {HF_IMPORT_ERROR}")
         return
     prompt = (
@@ -787,20 +821,38 @@ async def _pipeline_storyboard(cid, feedback=""):
         return
     scenes = [ln.strip(" -*0123456789.、。") for ln in raw.splitlines() if ln.strip()]
     p["scenes"] = scenes[:NUM_SCENES]
-    await send_as(orch, cid, "🎨 絵コンテ画像を生成中…（Higgsfield）")
+    engine_label = "Gemini・無料枠" if IMAGE_GEN_ENGINE == "gemini" else "Higgsfield"
+    await send_as(orch, cid, f"🎨 絵コンテ画像を生成中…（{engine_label}）")
     images = []
     for i, sc in enumerate(p["scenes"], 1):
         if not _alive(cid, p):  # !stop で中止された
             return
-        try:
-            url = await hf_wrapper.generate_image(sc)
-            images.append(url)
-            await send_as(orch, cid, f"シーン{i}: {sc}\n{url}")
-        except Exception as e:  # noqa: BLE001
-            if _is_credit_error(e):
-                await send_as(orch, cid, CREDIT_MSG)
-                return
-            await send_as(orch, cid, f"⚠️ シーン{i} の画像生成に失敗: {e}")
+        url = None
+        # ① まず Gemini（無料枠）で生成 → Discordに添付し、そのCDN URLを動画化に使う
+        if IMAGE_GEN_ENGINE == "gemini":
+            try:
+                data = await asyncio.to_thread(_gemini_generate_image_sync, sc)
+                url = await send_image_bytes(cid, f"シーン{i}: {sc}", data, f"scene{i}.png")
+            except Exception as e:  # noqa: BLE001
+                print(f"[gemini_image] シーン{i} 失敗: {str(e)[:200]}")
+                if _is_quota_error(e):
+                    await send_as(orch, cid, "⚠️ Gemini画像生成の無料枠上限。Higgsfieldに切替えます…")
+                elif HF_AVAILABLE:
+                    await send_as(orch, cid, f"⚠️ シーン{i}: Gemini失敗 → Higgsfieldで再試行…")
+        # ② フォールバック：Higgsfield（クレジット消費）
+        if url is None and HF_AVAILABLE:
+            try:
+                url = await hf_wrapper.generate_image(sc)
+                await send_as(orch, cid, f"シーン{i}: {sc}\n{url}")
+            except Exception as e:  # noqa: BLE001
+                if _is_credit_error(e):
+                    await send_as(orch, cid, CREDIT_MSG)
+                    return
+                await send_as(orch, cid, f"⚠️ シーン{i} の画像生成に失敗: {e}")
+        if url is None:
+            await send_as(orch, cid, f"⚠️ シーン{i} の画像を生成できませんでした。")
+            continue
+        images.append(url)
     if not _alive(cid, p):
         return
     p["images"] = images

@@ -90,8 +90,11 @@ Higgsfield を使った承認フロー。各段階でテキスト返信して進
 !project 犬が主役の30秒CM
 ```
 1. **構成案**（Claudeが作成）→ `OK` で承認、直したいときは指示を返信
-2. **絵コンテ**（Higgsfieldで画像生成）→ `OK` or 修正指示
+2. **絵コンテ**（**Gemini画像生成・無料枠 約500枚/日**。失敗時はHiggsfieldにフォールバック）→ `OK` or 修正指示
 3. **編集チェック×3**（Higgsfieldで動画化）→ 最大3回まで修正、`OK` で完成
+
+絵コンテを Higgsfield で作りたい場合は `.env` に `IMAGE_GEN_ENGINE=higgsfield` を設定。
+※動画生成は Gemini API（Veo）だと無料枠が無く従量課金（$0.15〜0.60/秒）のため、Higgsfield のままです。
 
 `!cancel` で中止。
 
