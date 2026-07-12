@@ -216,6 +216,110 @@ def build_transcript(history):
     return "\n".join(lines) or "(まだ会話なし)"
 
 
+def _cid_of_history(history):
+    """history リストから channel_id を逆引き（同一オブジェクト参照で照合）。"""
+    for k, v in histories.items():
+        if v is history:
+            return k
+    return None
+
+
+RECALL_MAX_CHARS = int(os.getenv("RECALL_MAX_CHARS", "150000"))
+
+
+def _read_full_log(cid, max_chars=RECALL_MAX_CHARS):
+    """チャンネルの全ログを日時付きで読み出す（新しい方から max_chars 分）。"""
+    fp = _hist_path(cid)
+    if not fp.exists():
+        return ""
+    out, total = [], 0
+    for ln in reversed(fp.read_text(encoding="utf-8").splitlines()):
+        try:
+            d = json.loads(ln)
+        except Exception:  # noqa: BLE001
+            continue
+        ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(d.get("t", 0)))
+        s = f"[{ts}] {d.get('speaker', '?')}: {d.get('text', '')}"
+        total += len(s) + 1
+        if total > max_chars:
+            break
+        out.append(s)
+    return "\n".join(reversed(out))
+
+
+async def _recall_context(cid, question):
+    """過去ログ全文をGemini（大容量コンテキスト・無料枠）に読ませ、
+    質問に関係する部分を日時付きで抽出して返す。"""
+    log = _read_full_log(cid)
+    if not log:
+        return ""
+    prompt = (
+        "以下はDiscordチャンネルの過去ログ。質問に関係する出来事・決定事項・発言を、"
+        "日時付きで抜き出して簡潔にまとめる。無関係な話は省く。見つからなければ"
+        "『関連する記録なし』とだけ返す。\n\n"
+        f"質問: {question}\n\n過去ログ:\n{log}\n\n関連情報:"
+    )
+    try:
+        ans = await _gemini_call(prompt)
+    except Exception:  # noqa: BLE001
+        try:
+            # Claudeにフォールバック（コンテキストが小さいのでログを短縮）
+            ans = await run_claude_cli(prompt[-100000:])
+        except Exception:  # noqa: BLE001
+            return ""
+    ans = (ans or "").strip()
+    return f"【過去ログからの関連情報】\n{ans}" if ans else ""
+
+
+# ---------- 導入前の過去ログをDiscordから一度だけ取り込む ----------
+IMPORT_LIMIT = int(os.getenv("IMPORT_LIMIT", "2000"))  # 1チャンネルあたり最大取込件数
+_import_started = set()
+
+
+async def _backfill_channel_history(channel):
+    """ボット導入前・永続化導入前の古いメッセージをDiscord APIから遡って取り込む。
+    チャンネルごとに一度だけ実行（history/{cid}.imported が目印）。"""
+    cid = channel.id
+    marker = HISTORY_DIR / f"{cid}.imported"
+    if cid in _import_started or marker.exists():
+        return
+    _import_started.add(cid)
+    try:
+        from datetime import datetime, timezone
+
+        fp = _hist_path(cid)
+        existing = fp.read_text(encoding="utf-8") if fp.exists() else ""
+        before = None
+        for ln in existing.splitlines():
+            try:
+                before = datetime.fromtimestamp(json.loads(ln)["t"], tz=timezone.utc)
+                break
+            except Exception:  # noqa: BLE001
+                continue
+
+        rows = []
+        async for m in channel.history(limit=IMPORT_LIMIT, before=before):
+            text = (m.content or "").strip()
+            if not text:
+                continue
+            rows.append({
+                "t": m.created_at.timestamp(),
+                "speaker": m.author.display_name,
+                "text": text,
+            })
+        rows.reverse()  # 古い順に直す
+        if rows:
+            with open(fp, "w", encoding="utf-8") as f:
+                for r in rows:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                f.write(existing)
+            histories.pop(cid, None)  # 次アクセス時に再読込
+        marker.write_text("done", encoding="utf-8")
+        print(f"[history] 過去ログ取込完了: channel={cid}, {len(rows)}件")
+    except Exception as e:  # noqa: BLE001
+        print(f"[history] 過去ログ取込失敗（権限「メッセージ履歴を読む」を確認）: {str(e)[:200]}")
+
+
 # ---------- 各AIへの問い合わせ ----------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # .claude/settings.json のある場所
 
@@ -618,7 +722,7 @@ async def _route(history):
     """① モデル振り分け・多段化・Web検索要否を判定。JSONで受ける。"""
     prompt = (
         "あなたはルーター。次の会話の最後の要求に最適な処理方針をJSONだけで返す。\n"
-        '形式: {"mode":"single"|"debate","lead":"claude"|"gemini","search":true|false}\n'
+        '形式: {"mode":"single"|"debate","lead":"claude"|"gemini","search":true|false,"recall":true|false}\n'
         "- 原則 single（1モデルで即答）。debate は"
         "『重大な判断・設計・事実の突き合わせが本当に必要』な時だけ（省エネ重視）。\n"
         "- lead は適材適所で選ぶ（コスト節約ではなく品質基準で）：\n"
@@ -627,7 +731,9 @@ async def _route(history):
         "  gemini が得意 → 長文の要約・多言語翻訳・最新情報・画像や視覚の話題・"
         "大量の箇条書き整理・幅広いアイデア出し\n"
         "  どちらでも良いタスクは、その要求に本当に向いている方を選ぶ\n"
-        "- 最新情報・時事・製品/価格・実在の事実確認が要る → search=true、雑談や一般常識 → search=false\n\n"
+        "- 最新情報・時事・製品/価格・実在の事実確認が要る → search=true、雑談や一般常識 → search=false\n"
+        "- 『前に話した』『昨日の』『以前決めた』など過去の会話・経緯への言及や、"
+        "直近の会話に無い過去の情報が必要 → recall=true、それ以外 → recall=false\n\n"
         f"会話:\n{build_transcript(history)}\n\nJSON:"
     )
     try:
@@ -637,9 +743,10 @@ async def _route(history):
         mode = d.get("mode") if d.get("mode") in ("single", "debate") else "single"
         lead = d.get("lead") if d.get("lead") in ("claude", "gemini") else "claude"
         search = bool(d.get("search"))
-        return mode, lead, search
+        recall = bool(d.get("recall"))
+        return mode, lead, search, recall
     except Exception:  # noqa: BLE001
-        return "single", "claude", False
+        return "single", "claude", False, False
 
 
 async def _classify_task(latest_msg):
@@ -705,13 +812,21 @@ def _latest_user_msg(history):
 
 
 async def ask_orchestrator(history):
-    mode, lead, search = await _route(history)
-    return await _orchestrate(mode, lead, search, history)
+    mode, lead, search, recall = await _route(history)
+    return await _orchestrate(mode, lead, search, history, recall)
 
 
-async def _orchestrate(mode, lead, search, history):
+async def _orchestrate(mode, lead, search, history, recall=False):
     # 必要ならWeb検索して文脈を用意（ボット自身が検索＝権限プロンプト不要）
     ctx = await web_search_context(_latest_user_msg(history)) if search else ""
+
+    # 過去の会話が必要なら、全ログをGeminiに読ませて関連情報を抽出して文脈に足す
+    if recall:
+        cid = _cid_of_history(history)
+        if cid is not None:
+            rc = await _recall_context(cid, _latest_user_msg(history))
+            if rc:
+                ctx = (ctx + "\n\n" + rc).strip() if ctx else rc
 
     # ① 単発モード：簡単な要求は得意モデル1つで即答（コスト節約）
     if mode == "single":
@@ -779,12 +894,12 @@ async def _handle_orchestrator(message, cid):
         return
 
     # 通常会話（承認ダイアログは出さない）
-    mode, lead, search = await _route(history)
+    mode, lead, search, recall = await _route(history)
     async with message.channel.typing():
         try:
             # history に既に attachment_context が含まれているため、
             # _orchestrate で改めて attachment_context パラメータを渡さない
-            answer = await _orchestrate(mode, lead, search, history)
+            answer = await _orchestrate(mode, lead, search, history, recall)
         except Exception as e:  # noqa: BLE001
             if _is_quota_error(e):
                 try:
@@ -1245,6 +1360,9 @@ async def on_message(message):
     if not content and not message.attachments:
         return
     cid = message.channel.id
+
+    # 初回のみ：導入前の過去ログをDiscordから取り込む（バックグラウンド）
+    asyncio.create_task(_backfill_channel_history(message.channel))
 
     if content == "!stop" or _is_stop_phrase(content):
         await _do_stop(message, cid)
