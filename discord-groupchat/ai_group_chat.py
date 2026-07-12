@@ -302,30 +302,57 @@ def _has_attachments(message):
     return has_image, has_video
 
 
+def _detect_mime_type(data):
+    """画像データから MIME タイプを推測（magic number で判定）。"""
+    if data.startswith(b'\xff\xd8\xff'):
+        return "image/jpeg"
+    elif data.startswith(b'\x89PNG'):
+        return "image/png"
+    elif data.startswith(b'GIF8'):
+        return "image/gif"
+    elif data.startswith(b'RIFF') and b'WEBP' in data[:12]:
+        return "image/webp"
+    else:
+        return "image/jpeg"  # デフォルト
+
+
 def _gemini_analyze_image_sync(image_data):
     """Gemini API で画像を分析（OCR・構図・テキスト抽出）。同期版。"""
     try:
         from google.genai import types
-        resp = gemini_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[
-                types.Content(
-                    parts=[
-                        types.Part.from_data(data=image_data, mime_type="image/jpeg")
-                        if image_data.startswith(b'\xff\xd8')
-                        else types.Part.from_data(data=image_data, mime_type="image/png"),
-                        types.Part(text="この画像の内容を詳細に分析してください。"
-                                      "① 画像内のすべてのテキストを正確に抽出（OCR）。"
-                                      "② 構図・レイアウト・視点を説明。"
-                                      "③ 主要な要素・オブジェクト・配置を列挙。"),
-                    ]
-                )
-            ],
-        )
-        return resp.text or ""
-    except Exception as e:
-        print(f"[gemini_analyze_image] 失敗: {e}")
+
+        mime_type = _detect_mime_type(image_data)
+        print(f"[gemini_analyze_image] MIME type: {mime_type}, size: {len(image_data)} bytes")
+
+        # Gemini が無料枠切れの場合の fallback メッセージ
+        try:
+            resp = gemini_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[
+                    types.Content(
+                        parts=[
+                            types.Part.from_data(data=image_data, mime_type=mime_type),
+                            types.Part(text="この画像の内容を詳細に分析してください。"
+                                          "① 画像内のすべてのテキストを正確に抽出（OCR）。"
+                                          "② 構図・レイアウト・視点を説明。"
+                                          "③ 主要な要素・オブジェクト・配置を列挙。"),
+                        ]
+                    )
+                ],
+            )
+            text = resp.text or ""
+            if text:
+                return text
+        except Exception as e_analysis:
+            print(f"[gemini_analyze_image] Gemini 分析失敗: {str(e_analysis)[:200]}")
+            if _is_quota_error(e_analysis):
+                return "（Gemini の無料枠上限に達しました。画像内容をテキストで入力してください。）"
+            raise
+
         return ""
+    except Exception as e:
+        print(f"[gemini_analyze_image] 致命的エラー: {str(e)[:200]}")
+        return f"（画像分析エラー: {str(e)[:100]}）"
 
 
 async def extract_attachment_context(message):
@@ -351,12 +378,15 @@ async def extract_attachment_context(message):
                     if analysis:
                         contexts.append(f"【画像: {filename}】\n{analysis}")
                     else:
-                        contexts.append(f"【画像: {filename}】\n（分析に失敗しました）")
+                        contexts.append(f"【画像: {filename}】\n（分析に失敗しました。テキストで内容を説明してください。）")
+                except asyncio.TimeoutError:
+                    print(f"[image_analysis] タイムアウト: {filename}")
+                    contexts.append(f"【画像 {filename}】\n（分析がタイムアウトしました。テキストで内容を説明してください。）")
                 except Exception as e:
-                    print(f"[image_analysis] 失敗: {e}")
-                    contexts.append(f"【画像 {filename} の分析失敗】")
+                    print(f"[image_analysis] 失敗: {filename}: {str(e)[:100]}")
+                    contexts.append(f"【画像 {filename}】\n（分析エラー。テキストで内容を説明してください。）")
             else:
-                contexts.append(f"【画像 {filename} のダウンロード失敗】")
+                contexts.append(f"【画像 {filename}】\n（ダウンロード失敗。テキストで内容を説明してください。）")
 
         # 動画処理（メタデータのみ）
         elif ext in SUPPORTED_VIDEO_TYPES:
