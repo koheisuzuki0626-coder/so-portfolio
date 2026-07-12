@@ -17,11 +17,15 @@ MESSAGE CONTENT INTENT はオーケストレーター用にだけONにすれば�
 """
 
 import asyncio
+import base64
+import io
 import json
 import os
 import re
 import time
+from pathlib import Path
 
+import aiohttp
 import discord
 from dotenv import load_dotenv
 from google import genai
@@ -263,6 +267,69 @@ async def web_search_context(query):
     return await _ddg_context(query)
 
 
+# ---------- 添付ファイル処理（画像・動画） ----------
+MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024  # 20MB
+SUPPORTED_IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+SUPPORTED_VIDEO_TYPES = {".mp4", ".webm", ".mov", ".avi"}
+
+
+async def _download_file(url):
+    """URLからファイルをダウンロード。バイナリで返す。"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.read()
+                if len(data) > MAX_ATTACHMENT_SIZE:
+                    return None
+                return data
+    except Exception as e:
+        print(f"[attachment_download] 失敗: {e}")
+        return None
+
+
+async def extract_attachment_context(message):
+    """メッセージの添付ファイル（画像・動画）を処理してコンテキストを返す。
+    画像は base64エンコード、動画はメタデータのみ。"""
+    if not message.attachments:
+        return ""
+
+    contexts = []
+    for att in message.attachments:
+        filename = att.filename
+        ext = Path(filename).suffix.lower()
+        size_mb = att.size / (1024 * 1024)
+
+        # 画像処理
+        if ext in SUPPORTED_IMAGE_TYPES:
+            file_data = await _download_file(att.url)
+            if file_data:
+                b64 = base64.b64encode(file_data).decode()
+                # Claude の vision 形式で送信
+                mime_type = f"image/{ext[1:]}"
+                if ext == ".jpg":
+                    mime_type = "image/jpeg"
+                elif ext == ".webp":
+                    mime_type = "image/webp"
+                contexts.append(f"【画像: {filename}】\n[データ: {mime_type}; base64]\n{b64}")
+            else:
+                contexts.append(f"【画像 {filename} のダウンロード失敗】")
+
+        # 動画処理（メタデータのみ）
+        elif ext in SUPPORTED_VIDEO_TYPES:
+            contexts.append(f"【動画: {filename} (約{size_mb:.1f}MB)】")
+
+        # その他（スキップ）
+        else:
+            contexts.append(f"【ファイル: {filename}】")
+
+    if not contexts:
+        return ""
+
+    return "\n\n【メッセージに添付されたファイル】\n" + "\n".join(contexts)
+
+
 # ---------------------------------------------------------------------------
 # オーケストレーター：3層構造
 #   ① ルーティング（得意モデルへ振り分け／簡単なら単発）
@@ -414,22 +481,25 @@ async def _handle_orchestrator(message, cid):
     """オーケストレーター宛て。実際にコード/ファイルを触る指示のときだけ承認ダイアログ。
     それ以外（質問・相談・雑談）は普通に会話する。"""
     history = get_history(cid)
-    content = message.content.strip()
 
     # 厳密判定：exec（コードを触る）/ video（映像制作）/ chat（それ以外）
     kind = await _classify_task(_latest_user_msg(history))
     if kind == "video":
+        last_msg = _latest_user_msg(history)
         await message.channel.send("🎬 映像制作の依頼ですね。構成案から始めます…")
-        asyncio.create_task(pipeline_start(cid, content))
+        asyncio.create_task(pipeline_start(cid, last_msg))
         return
     if kind == "exec":
-        await _start_agent(message, cid, content)
+        last_msg = _latest_user_msg(history)
+        await _start_agent(message, cid, last_msg)
         return
 
     # 通常会話（承認ダイアログは出さない）
     mode, lead, search = await _route(history)
     async with message.channel.typing():
         try:
+            # history に既に attachment_context が含まれているため、
+            # _orchestrate で改めて attachment_context パラメータを渡さない
             answer = await _orchestrate(mode, lead, search, history)
         except Exception as e:  # noqa: BLE001
             if _is_quota_error(e):
@@ -868,7 +938,8 @@ async def on_message(message):
     if message.author.bot:
         return
     content = message.content.strip()
-    if not content:
+    # テキストまたは添付ファイルがない場合は無視
+    if not content and not message.attachments:
         return
     cid = message.channel.id
 
@@ -937,6 +1008,11 @@ async def on_message(message):
         async with message.channel.typing():
             await pipeline_reply(cid, content)
         return
+
+    # 添付ファイルのコンテキストを取得して content に合併
+    attachment_context = await extract_attachment_context(message)
+    if attachment_context:
+        content = content + attachment_context if content else attachment_context.strip()
 
     add_history(cid, message.author.display_name, content)
     targets = decide_targets(message, content)
