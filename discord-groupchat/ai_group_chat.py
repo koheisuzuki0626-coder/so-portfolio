@@ -56,7 +56,7 @@ GEMINI_MODEL = GEMINI_MODELS[0]  # 検索グラウンディング等で使う既
 MAX_TURNS = int(os.getenv("MAX_TURNS", "6"))
 REPLY_CHARS = 400
 SEND_DELAY = 2
-HISTORY_LIMIT = 24
+HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "40"))  # プロンプトに入れる直近発言数
 CLAUDE_TIMEOUT = 120
 
 gemini_client = genai.Client()  # 環境変数 GEMINI_API_KEY を自動参照
@@ -68,21 +68,152 @@ claude_bot = discord.Client(intents=discord.Intents.default())
 gemini_bot = discord.Client(intents=discord.Intents.default())
 
 state = {"running": False, "stop": False}
-histories = {}  # channel_id -> list[(speaker, text)]
+
+# ---------- 会話履歴（永続化＋長期記憶） ----------
+# 全発言は history/{channel_id}.jsonl に追記保存（再起動しても消えない）。
+# プロンプトには「長期記憶の要約 + 直近 HISTORY_LIMIT 件」を渡す。
+# 直近枠から溢れた古い発言は、自動で要約に畳み込まれる（圧縮された記憶）。
+_BASE = os.path.dirname(os.path.abspath(__file__))
+HISTORY_DIR = Path(os.getenv("HISTORY_DIR", os.path.join(_BASE, "history")))
+HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+SUMMARY_SPEAKER = "📝これまでの経緯"  # 履歴リスト先頭に置く長期記憶エントリの名前
+SUMMARIZE_BATCH = int(os.getenv("SUMMARIZE_BATCH", "12"))  # この件数たまったら要約
+SUMMARY_MAX_CHARS = 4000
+
+histories = {}   # channel_id -> list[(speaker, text)]（先頭に要約エントリを持つことがある）
+_pending_summary = {}  # channel_id -> 要約待ちの古い発言リスト
+_summarizing = set()   # 要約処理中の channel_id
+
+
+def _hist_path(cid):
+    return HISTORY_DIR / f"{cid}.jsonl"
+
+
+def _summary_path(cid):
+    return HISTORY_DIR / f"{cid}_summary.txt"
+
+
+def _append_jsonl(cid, speaker, text):
+    try:
+        with open(_hist_path(cid), "a", encoding="utf-8") as f:
+            f.write(json.dumps(
+                {"t": time.time(), "speaker": speaker, "text": text},
+                ensure_ascii=False,
+            ) + "\n")
+    except Exception as e:  # noqa: BLE001
+        print(f"[history] 保存失敗: {e}")
+
+
+def _load_history(cid):
+    """ディスクから長期記憶（要約）と直近の発言を復元する。"""
+    h = []
+    try:
+        sp = _summary_path(cid)
+        if sp.exists():
+            summary = sp.read_text(encoding="utf-8").strip()
+            if summary:
+                h.append((SUMMARY_SPEAKER, summary))
+    except Exception as e:  # noqa: BLE001
+        print(f"[history] 要約読込失敗: {e}")
+    try:
+        fp = _hist_path(cid)
+        if fp.exists():
+            for ln in fp.read_text(encoding="utf-8").splitlines()[-HISTORY_LIMIT:]:
+                try:
+                    d = json.loads(ln)
+                    h.append((d["speaker"], d["text"]))
+                except Exception:  # noqa: BLE001
+                    continue
+    except Exception as e:  # noqa: BLE001
+        print(f"[history] 履歴読込失敗: {e}")
+    return h
 
 
 def get_history(cid):
-    return histories.setdefault(cid, [])
+    if cid not in histories:
+        histories[cid] = _load_history(cid)
+    return histories[cid]
+
+
+def _has_summary(h):
+    return bool(h) and h[0][0] == SUMMARY_SPEAKER
 
 
 def add_history(cid, speaker, text):
     h = get_history(cid)
     h.append((speaker, text))
-    del h[:-HISTORY_LIMIT]
+    _append_jsonl(cid, speaker, text)
+    # 直近枠から溢れた古い発言は「要約待ち」に回す（要約エントリは先頭に保持）
+    head = 1 if _has_summary(h) else 0
+    excess = (len(h) - head) - HISTORY_LIMIT
+    if excess > 0:
+        _pending_summary.setdefault(cid, []).extend(h[head:head + excess])
+        del h[head:head + excess]
+        _schedule_summarize(cid)
+
+
+def _schedule_summarize(cid):
+    """要約待ちが一定量たまったら、バックグラウンドで長期記憶に畳み込む。"""
+    if len(_pending_summary.get(cid, [])) < SUMMARIZE_BATCH or cid in _summarizing:
+        return
+    try:
+        asyncio.get_running_loop().create_task(_summarize_pending(cid))
+    except RuntimeError:
+        pass  # イベントループ外（起動前など）は次の機会に
+
+
+async def _summarize_pending(cid):
+    """古い発言を既存の要約に統合し、長期記憶を更新する。"""
+    if cid in _summarizing:
+        return
+    _summarizing.add(cid)
+    batch = []
+    try:
+        batch = _pending_summary.get(cid) or []
+        if not batch:
+            return
+        _pending_summary[cid] = []
+        h = get_history(cid)
+        old_summary = h[0][1] if _has_summary(h) else ""
+        transcript = "\n".join(f"{s}: {t}" for s, t in batch)
+        prompt = (
+            "あなたはDiscordグループチャットの記憶係。既存の要約に新しい会話を統合し、"
+            "更新版の要約だけを日本語で出力する。\n"
+            "残すもの: 決定事項・約束・進行中の作業や依頼・人物の好みや事情・重要な事実。\n"
+            "捨てるもの: 挨拶・相づち・重複。\n"
+            f"{SUMMARY_MAX_CHARS}字以内。箇条書き中心で簡潔に。\n\n"
+            f"【既存の要約】\n{old_summary or '(まだ無し)'}\n\n"
+            f"【新しく統合する会話】\n{transcript}\n\n更新後の要約:"
+        )
+        try:
+            new_summary = await _gemini_call(prompt)
+        except Exception:  # noqa: BLE001
+            new_summary = await run_claude_cli(prompt)
+        new_summary = (new_summary or "").strip()[:SUMMARY_MAX_CHARS]
+        if not new_summary:
+            raise RuntimeError("要約が空でした")
+        if _has_summary(h):
+            h[0] = (SUMMARY_SPEAKER, new_summary)
+        else:
+            h.insert(0, (SUMMARY_SPEAKER, new_summary))
+        _summary_path(cid).write_text(new_summary, encoding="utf-8")
+        print(f"[history] 長期記憶を更新: channel={cid}, {len(batch)}件を統合")
+    except Exception as e:  # noqa: BLE001
+        # 失敗したら次回に持ち越し（発言は捨てない）
+        _pending_summary.setdefault(cid, [])[:0] = batch
+        print(f"[history] 要約失敗（次回再試行）: {str(e)[:200]}")
+    finally:
+        _summarizing.discard(cid)
 
 
 def build_transcript(history):
-    return "\n".join(f"{name}: {text}" for name, text in history) or "(まだ会話なし)"
+    lines = []
+    for name, text in history:
+        if name == SUMMARY_SPEAKER:
+            lines.append(f"【これまでの経緯（長期記憶の要約）】\n{text}\n【ここから直近の会話】")
+        else:
+            lines.append(f"{name}: {text}")
+    return "\n".join(lines) or "(まだ会話なし)"
 
 
 # ---------- 各AIへの問い合わせ ----------

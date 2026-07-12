@@ -116,6 +116,13 @@ Python 3.9 でもOK、追加SDK不要です。
 > `.env` に `HIGGSFIELD_API_KEY` / `HIGGSFIELD_API_SECRET` を設定してください。
 > クレジットが無いと該当段階で「not_enough_credits」となります（構成案までは無料）。
 
+### 会話の記憶（永続化＋長期記憶）
+- 全発言は `history/{チャンネルID}.jsonl` に自動保存。**再起動しても消えません**。
+- プロンプトには「長期記憶の要約 + 直近40件」を使用。
+- 直近枠から溢れた古い会話は自動で要約に圧縮され、`history/{チャンネルID}_summary.txt` に保存。
+  昨日の話題も要約経由でオーケストレーターが覚えています。
+- `.env` で調整可: `HISTORY_LIMIT`（直近件数, 既定40）, `SUMMARIZE_BATCH`（要約をまとめる単位, 既定12）
+
 ## 調整
 - `MAX_TURNS`（合計発言数）, `CLAUDE_MODEL`, `GEMINI_MODEL` は `.env` で変更可。
 - 1発言の長さや口調は `ai_group_chat.py` の `persona()` を編集。
