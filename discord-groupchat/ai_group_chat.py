@@ -502,10 +502,11 @@ async def web_search_context(query):
     return await _ddg_context(query)
 
 
-# ---------- 添付ファイル処理（画像・動画） ----------
+# ---------- 添付ファイル処理（画像・動画・音声） ----------
 MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024  # 20MB
 SUPPORTED_IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 SUPPORTED_VIDEO_TYPES = {".mp4", ".webm", ".mov", ".avi"}
+SUPPORTED_AUDIO_TYPES = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac"}
 
 # 一時画像ファイル保存先
 TEMP_IMAGE_DIR = Path(os.getenv("TEMP_IMAGE_DIR", "/tmp/discord_images"))
@@ -642,9 +643,66 @@ def _gemini_analyze_image_sync(image_data):
     return ""
 
 
+AUDIO_MIME_BY_EXT = {
+    ".mp3": "audio/mp3",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".flac": "audio/flac",
+}
+
+AUDIO_TRANSCRIBE_PROMPT = (
+    "この音声を正確に文字起こししてください。\n"
+    "① 話された内容をすべて日本語（音声が他言語ならその言語）で書き起こす。\n"
+    "② 複数の話者がいる場合は「話者A:」「話者B:」のように区別する。\n"
+    "③ 聞き取れない箇所は（聞き取り不能）と記す。\n"
+    "④ 最後に【要約】として2〜3行で内容をまとめる。"
+)
+
+
+def _gemini_transcribe_audio_sync(audio_data, ext):
+    """Gemini API で音声を書き起こす。画像分析と同じく、
+    無料枠切れモデルはクールダウンして次のモデルへ自動ローテーションする。"""
+    mime_type = AUDIO_MIME_BY_EXT.get(ext, "audio/mp3")
+    print(f"[gemini_transcribe_audio] MIME type: {mime_type}, size: {len(audio_data)} bytes")
+
+    try:
+        audio_part = _make_image_part(audio_data, mime_type)  # Part生成は画像と共通
+    except Exception as e:
+        print(f"[gemini_transcribe_audio] Part生成失敗: {str(e)[:200]}")
+        return ""
+
+    contents = [audio_part, AUDIO_TRANSCRIBE_PROMPT]
+
+    now = time.time()
+    last_err = None
+    for model in GEMINI_MODELS:
+        if _gemini_cooldown.get(model, 0) > now:
+            continue  # 枠切れクールダウン中は次のモデルへ
+        try:
+            resp = gemini_client.models.generate_content(model=model, contents=contents)
+            text = (resp.text or "").strip()
+            if text:
+                print(f"[gemini_transcribe_audio] 成功: {model}")
+                return text
+        except Exception as e:
+            last_err = e
+            print(f"[gemini_transcribe_audio] {model} 失敗: {str(e)[:200]}")
+            per_day = "PerDay" in str(e) or "PerProjectPerModel" in str(e)
+            if _is_quota_error(e) and per_day:
+                _gemini_cooldown[model] = time.time() + GEMINI_COOLDOWN_SEC
+
+    if last_err and _is_quota_error(last_err):
+        return "（Gemini の無料枠が全モデルで上限に達しています。時間をおいて再度お試しください。）"
+    return ""
+
+
 async def extract_attachment_context(message):
-    """メッセージの添付ファイル（画像・動画）を処理してコンテキストを返す。
-    画像はGeminiで分析（OCR＋構図分析）、動画はメタデータ。"""
+    """メッセージの添付ファイル（画像・動画・音声）を処理してコンテキストを返す。
+    画像はGeminiで分析（OCR＋構図分析）、音声はGeminiで書き起こし、動画はメタデータ。"""
     if not message.attachments:
         return ""
 
@@ -674,6 +732,35 @@ async def extract_attachment_context(message):
                     contexts.append(f"【画像 {filename}】\n（分析エラー。テキストで内容を説明してください。）")
             else:
                 contexts.append(f"【画像 {filename}】\n（ダウンロード失敗。テキストで内容を説明してください。）")
+
+        # 音声処理（Gemini で書き起こし）
+        elif ext in SUPPORTED_AUDIO_TYPES:
+            if att.size > MAX_ATTACHMENT_SIZE:
+                contexts.append(
+                    f"【音声 {filename} (約{size_mb:.1f}MB)】\n"
+                    "（20MBを超えるため書き起こしできません。分割して送ってください。）"
+                )
+                continue
+            file_data = await _download_file(att.url)
+            if file_data:
+                try:
+                    async with message.channel.typing():
+                        transcript = await asyncio.to_thread(
+                            _gemini_transcribe_audio_sync, file_data, ext
+                        )
+                    if transcript:
+                        contexts.append(f"【音声の書き起こし: {filename}】\n{transcript}")
+                        # 書き起こし本文をチャンネルにも投稿（長文はチャンク分割）
+                        full = f"📝 **{filename} の書き起こし**\n{transcript}"
+                        for i in range(0, len(full), 1900):
+                            await message.channel.send(full[i:i + 1900])
+                    else:
+                        contexts.append(f"【音声 {filename}】\n（書き起こしに失敗しました。）")
+                except Exception as e:
+                    print(f"[audio_transcribe] 失敗: {filename}: {str(e)[:100]}")
+                    contexts.append(f"【音声 {filename}】\n（書き起こしエラー。）")
+            else:
+                contexts.append(f"【音声 {filename}】\n（ダウンロード失敗。）")
 
         # 動画処理（メタデータのみ）
         elif ext in SUPPORTED_VIDEO_TYPES:
@@ -1431,11 +1518,20 @@ async def on_message(message):
         return
 
     # 添付ファイルのコンテキストを取得して content に合併
+    had_text = bool(content)
     attachment_context = await extract_attachment_context(message)
     if attachment_context:
         content = content + attachment_context if content else attachment_context.strip()
 
     add_history(cid, message.author.display_name, content)
+
+    # テキストなしで音声だけ添付 → 書き起こしの投稿のみで終了
+    # （内容は履歴に残るので、続けて質問すればAIが答えられる）
+    if not had_text and message.attachments and all(
+        Path(a.filename).suffix.lower() in SUPPORTED_AUDIO_TYPES
+        for a in message.attachments
+    ):
+        return
     targets = decide_targets(message, content)
 
     # オーケストレーター単独宛て → 実行/編集の指示なら承認フロー、それ以外は通常回答
