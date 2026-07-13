@@ -139,6 +139,24 @@ Python 3.9 でもOK、追加SDK不要です。
 
 読み取った内容は会話履歴に残るので、後から「さっきのPDFの〜」と質問できます。
 
+### YouTube急上昇の自動リサーチ（毎日）
+毎日決まった時刻に、YouTubeの急上昇TOP100を取得し、上位数本を Gemini が実際に「視聴」して
+**演出・カット割り・カメラワーク・顔の動きや表情の見せ方・CG/VFX・テロップ・音の使い方**を分析します。
+- ダイジェストを指定チャンネルに投稿し、**会話の記憶にも追加**（雑談や `!project` のアイデアに使える）
+- 全文レポートは `insights/日付.md` に保存。分析済み動画はスキップされ、知見が毎日蓄積される
+- `!trend` でいつでも手動実行できます
+
+セットアップ：
+1. [Google Cloud Console](https://console.cloud.google.com/apis/library/youtube.googleapis.com) で
+   **YouTube Data API v3** を有効化し、APIキーを発行（無料。Geminiキーとは別物）
+2. `.env` に `YOUTUBE_API_KEY` と `TREND_CHANNEL_ID`（投稿先チャンネルID）を設定
+3. `.env` で調整可: `TREND_HOUR`（実行時刻JST, 既定8時）, `TREND_DEEP_COUNT`（視聴する本数/日, 既定5）,
+   `TREND_MAX_MINUTES`（視聴する動画の最大分数, 既定20）, `TREND_REGION`（既定JP）
+
+※ 動画の「視聴」は Gemini API の YouTube URL 読み込み機能を使うためダウンロード不要です。
+　無料枠の制約（動画処理は1日あたり合計約8時間まで）があるため、TOP100全部ではなく
+　上位数本を深掘りする方式です。`TREND_DEEP_COUNT` を増やせば本数を増やせます。
+
 ## 調整
 - `MAX_TURNS`（合計発言数）, `CLAUDE_MODEL`, `GEMINI_MODEL` は `.env` で変更可。
 - 1発言の長さや口調は `ai_group_chat.py` の `persona()` を編集。

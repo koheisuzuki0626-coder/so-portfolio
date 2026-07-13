@@ -23,6 +23,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiohttp
@@ -606,20 +607,10 @@ def _make_media_part(data, mime_type):
     return types.Part(inline_data=types.Blob(data=data, mime_type=mime_type))
 
 
-def _gemini_analyze_media_sync(data, mime_type, prompt, tag):
-    """Gemini API にメディア（画像/音声/動画/PDF）を渡して分析結果を得る。
+def _gemini_contents_sync(contents, tag):
+    """Gemini API に contents（Part/テキストの混在リスト）を渡して応答を得る。
     テキスト版 _gemini_call と同じく、無料枠切れモデルはクールダウンして
     次のモデルへ自動ローテーションする。"""
-    print(f"[{tag}] MIME type: {mime_type}, size: {len(data)} bytes")
-
-    try:
-        media_part = _make_media_part(data, mime_type)
-    except Exception as e:
-        print(f"[{tag}] Part生成失敗: {str(e)[:200]}")
-        return ""
-
-    contents = [media_part, prompt]
-
     now = time.time()
     last_err = None
     for model in GEMINI_MODELS:
@@ -643,6 +634,17 @@ def _gemini_analyze_media_sync(data, mime_type, prompt, tag):
     if last_err and _is_quota_error(last_err):
         return "（Gemini の無料枠が全モデルで上限に達しています。時間をおいて再度お試しください。）"
     return ""
+
+
+def _gemini_analyze_media_sync(data, mime_type, prompt, tag):
+    """Gemini API にメディア（画像/音声/動画/PDF）を渡して分析結果を得る。"""
+    print(f"[{tag}] MIME type: {mime_type}, size: {len(data)} bytes")
+    try:
+        media_part = _make_media_part(data, mime_type)
+    except Exception as e:
+        print(f"[{tag}] Part生成失敗: {str(e)[:200]}")
+        return ""
+    return _gemini_contents_sync([media_part, prompt], tag)
 
 
 def _gemini_analyze_image_sync(image_data):
@@ -847,6 +849,209 @@ async def extract_attachment_context(message):
         return ""
 
     return "\n\n【メッセージに添付されたファイル】\n" + "\n".join(contexts)
+
+
+# ---------------------------------------------------------------------------
+# YouTube急上昇の自動リサーチ（毎日）
+#   ① YouTube Data API で急上昇TOP100を取得
+#   ② 上位数本（TREND_DEEP_COUNT）を Gemini が実際に「視聴」して
+#      演出・カット割り・カメラワーク・顔の動き・CG/VFX などを分析
+#   ③ レポートを insights/ に保存し、ダイジェストをDiscordに投稿＋会話の記憶に追加
+# ---------------------------------------------------------------------------
+JST = timezone(timedelta(hours=9))
+
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
+TREND_CHANNEL_ID = int(os.getenv("TREND_CHANNEL_ID", "0"))  # 毎日の投稿先チャンネル
+TREND_HOUR = int(os.getenv("TREND_HOUR", "8"))              # 実行時刻（JST・毎日）
+TREND_REGION = os.getenv("TREND_REGION", "JP")
+TREND_DEEP_COUNT = int(os.getenv("TREND_DEEP_COUNT", "5"))  # 実際に視聴する本数/日
+TREND_MAX_MINUTES = int(os.getenv("TREND_MAX_MINUTES", "20"))  # これより長い動画は視聴しない
+
+INSIGHTS_DIR = Path(os.getenv("INSIGHTS_DIR", os.path.join(_BASE, "insights")))
+INSIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+_ANALYZED_IDS_FILE = INSIGHTS_DIR / "analyzed_ids.txt"
+
+
+def _load_analyzed_ids():
+    try:
+        if _ANALYZED_IDS_FILE.exists():
+            return set(_ANALYZED_IDS_FILE.read_text(encoding="utf-8").split())
+    except Exception as e:  # noqa: BLE001
+        print(f"[trend] 分析済みID読込失敗: {e}")
+    return set()
+
+
+def _mark_analyzed(video_id):
+    try:
+        with open(_ANALYZED_IDS_FILE, "a", encoding="utf-8") as f:
+            f.write(video_id + "\n")
+    except Exception as e:  # noqa: BLE001
+        print(f"[trend] 分析済みID保存失敗: {e}")
+
+
+def _parse_iso_duration(s):
+    """ISO8601 の PT#H#M#S を秒に変換。"""
+    m = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", s or "")
+    if not m:
+        return 0
+    h, mi, se = (int(x) if x else 0 for x in m.groups())
+    return h * 3600 + mi * 60 + se
+
+
+async def _fetch_trending(limit=100):
+    """YouTube Data API で急上昇動画を取得（最大100件・2リクエスト）。"""
+    if not YOUTUBE_API_KEY:
+        raise RuntimeError("YOUTUBE_API_KEY が .env に設定されていません")
+    videos, page = [], None
+    async with aiohttp.ClientSession() as session:
+        while len(videos) < limit:
+            params = {
+                "part": "snippet,statistics,contentDetails",
+                "chart": "mostPopular",
+                "regionCode": TREND_REGION,
+                "maxResults": "50",
+                "key": YOUTUBE_API_KEY,
+            }
+            if page:
+                params["pageToken"] = page
+            async with session.get(
+                "https://www.googleapis.com/youtube/v3/videos", params=params
+            ) as resp:
+                data = await resp.json()
+                if resp.status != 200:
+                    raise RuntimeError(f"YouTube API エラー: {str(data)[:300]}")
+            for item in data.get("items", []):
+                videos.append({
+                    "id": item["id"],
+                    "title": item["snippet"]["title"],
+                    "channel": item["snippet"]["channelTitle"],
+                    "views": int(item.get("statistics", {}).get("viewCount", 0)),
+                    "duration": _parse_iso_duration(
+                        item.get("contentDetails", {}).get("duration")
+                    ),
+                    "url": f"https://www.youtube.com/watch?v={item['id']}",
+                })
+            page = data.get("nextPageToken")
+            if not page:
+                break
+    return videos[:limit]
+
+
+VIDEO_STUDY_PROMPT = (
+    "あなたは映像制作の研究者。次のYouTube動画を視聴し、映像制作の観点で分析して。\n"
+    "① 演出手法（企画構成・冒頭のフック・視聴維持の工夫）\n"
+    "② カット割り・編集（カットのテンポ、トランジション、ジャンプカットなど）\n"
+    "③ カメラワーク（アングル・寄り引き・手持ち/固定・ドローンなど）\n"
+    "④ 人物の顔の動き・表情・リアクションの見せ方\n"
+    "⑤ CG・VFX・テロップ・グラフィックの手法\n"
+    "⑥ 音の使い方（BGM・効果音・無音の演出）\n"
+    "⑦ 自分の映像制作に転用できるテクニック（箇条書き3つ）\n"
+    "確認できない項目は省略してよい。日本語で簡潔に。"
+)
+
+
+def _gemini_watch_youtube_sync(url):
+    """Gemini にYouTube動画のURLを渡して「視聴」させる（ダウンロード不要）。"""
+    from google.genai import types
+
+    part = types.Part(file_data=types.FileData(file_uri=url))
+    return _gemini_contents_sync([part, VIDEO_STUDY_PROMPT], "gemini_watch_youtube")
+
+
+async def _run_trend_study(cid):
+    """急上昇TOP100を取得 → 上位数本を視聴・分析 → レポート保存＆ダイジェスト投稿。"""
+    channel = orch.get_channel(cid) or await orch.fetch_channel(cid)
+    videos = await _fetch_trending(100)
+
+    # 視聴対象：未分析かつ長すぎない動画を、ランキング上位から選ぶ
+    analyzed = _load_analyzed_ids()
+    candidates = [
+        v for v in videos
+        if v["id"] not in analyzed and 0 < v["duration"] <= TREND_MAX_MINUTES * 60
+    ]
+    targets = candidates[:TREND_DEEP_COUNT]
+    await channel.send(
+        f"🎬 急上昇TOP{len(videos)}を取得しました。"
+        f"うち{len(targets)}本を視聴して映像分析します（数分かかります）…"
+    )
+
+    reports = []
+    for v in targets:
+        try:
+            analysis = await asyncio.to_thread(_gemini_watch_youtube_sync, v["url"])
+        except Exception as e:  # noqa: BLE001
+            analysis = ""
+            print(f"[trend] 視聴失敗 {v['id']}: {str(e)[:200]}")
+        if analysis:
+            reports.append((v, analysis))
+            _mark_analyzed(v["id"])
+
+    # ランキング全体の傾向分析（タイトル・チャンネル・再生数から）
+    listing = "\n".join(
+        f"{i + 1}. {v['title']}（{v['channel']} / {v['views']:,}回）"
+        for i, v in enumerate(videos)
+    )
+    overview_prompt = (
+        "以下は本日のYouTube急上昇TOP100のランキング。映像クリエイターの視点で、\n"
+        "① いま伸びているジャンル・企画の傾向 ② タイトル・サムネの傾向 "
+        "③ 映像制作のヒント を400字以内でまとめて。\n\n" + listing
+    )
+    overview = await asyncio.to_thread(
+        _gemini_contents_sync, [overview_prompt], "trend_overview"
+    )
+
+    # 全文レポートを insights/ に保存（日付ごと）
+    today = datetime.now(JST).strftime("%Y-%m-%d")
+    full = [f"# YouTube急上昇リサーチ {today}", "", "## トレンド概観", overview or "（取得失敗）"]
+    for v, a in reports:
+        full += ["", f"## {v['title']}（{v['channel']} / {v['views']:,}回）", v["url"], "", a]
+    try:
+        (INSIGHTS_DIR / f"{today}.md").write_text("\n".join(full), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        print(f"[trend] レポート保存失敗: {e}")
+
+    # ダイジェストを作ってDiscordに投稿＋会話の記憶に追加
+    digest = ""
+    if reports:
+        digest_src = "\n\n".join(f"■{v['title']}\n{a}" for v, a in reports)
+        digest_prompt = (
+            "以下はYouTube急上昇動画の映像分析。今後の映像制作や雑談のアイデアに"
+            "使える知見として、重要ポイントを800字以内の読みやすいダイジェストに"
+            "まとめて。\n\n【トレンド概観】\n" + (overview or "") +
+            "\n\n【個別分析】\n" + digest_src
+        )
+        digest = await asyncio.to_thread(
+            _gemini_contents_sync, [digest_prompt], "trend_digest"
+        )
+    if not digest:
+        digest = overview or "（本日は分析結果を取得できませんでした）"
+
+    text = (
+        f"🎬 **今日のYouTube急上昇リサーチ（{today}）**\n{digest}\n\n"
+        f"🔎 視聴した動画:\n" +
+        "\n".join(f"・{v['title']}（{v['url']}）" for v, _ in reports)
+    )
+    for i in range(0, len(text), 1900):
+        await channel.send(text[i:i + 1900])
+    add_history(cid, "🎬映像リサーチ", f"（YouTube急上昇の自動分析 {today}）\n{digest}")
+
+
+async def _daily_trend_loop():
+    """毎日 TREND_HOUR（JST）に急上昇リサーチを自動実行する。"""
+    if not TREND_CHANNEL_ID or not YOUTUBE_API_KEY:
+        print("[trend] TREND_CHANNEL_ID / YOUTUBE_API_KEY 未設定のため毎日の自動リサーチは無効")
+        return
+    while True:
+        now = datetime.now(JST)
+        run_at = now.replace(hour=TREND_HOUR, minute=0, second=0, microsecond=0)
+        if run_at <= now:
+            run_at += timedelta(days=1)
+        print(f"[trend] 次回の自動リサーチ: {run_at.isoformat()}")
+        await asyncio.sleep((run_at - now).total_seconds())
+        try:
+            await _run_trend_study(TREND_CHANNEL_ID)
+        except Exception as e:  # noqa: BLE001
+            print(f"[trend] 自動リサーチ失敗: {str(e)[:300]}")
 
 
 # ---------------------------------------------------------------------------
@@ -1503,9 +1708,16 @@ async def _do_stop(message, cid):
         await message.channel.send("⏹️ 停止しました。")
 
 
+_trend_task_started = False
+
+
 @orch.event
 async def on_ready():
+    global _trend_task_started
     print(f"オーケストレーター起動: {orch.user}")
+    if not _trend_task_started:
+        _trend_task_started = True
+        asyncio.create_task(_daily_trend_loop())
 
 
 @orch.event
@@ -1550,6 +1762,15 @@ async def on_message(message):
             return
         await message.channel.send(f"🤖 エージェント開始: {task}")
         asyncio.create_task(_run_agent_task(cid, task, message.author.id))
+        return
+    if content.startswith("!trend"):
+        if not YOUTUBE_API_KEY:
+            await message.channel.send(
+                "YOUTUBE_API_KEY が未設定です。Google Cloud Console で YouTube Data API v3 の"
+                "APIキーを発行し、.env に追加してください（README参照）。"
+            )
+            return
+        asyncio.create_task(_run_trend_study(cid))
         return
     if content.startswith("!search"):
         q = content[len("!search"):].strip()
