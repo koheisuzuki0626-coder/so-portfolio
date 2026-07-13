@@ -507,6 +507,9 @@ MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024  # 20MB
 SUPPORTED_IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 SUPPORTED_VIDEO_TYPES = {".mp4", ".webm", ".mov", ".avi"}
 SUPPORTED_AUDIO_TYPES = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac"}
+SUPPORTED_DOC_TYPES = {".pdf"}
+SUPPORTED_TEXT_TYPES = {".txt", ".md", ".csv", ".log", ".json", ".py", ".js", ".html"}
+TEXT_ATTACHMENT_MAX_CHARS = int(os.getenv("TEXT_ATTACHMENT_MAX_CHARS", "12000"))
 
 # 一時画像ファイル保存先
 TEMP_IMAGE_DIR = Path(os.getenv("TEMP_IMAGE_DIR", "/tmp/discord_images"))
@@ -593,30 +596,29 @@ IMAGE_ANALYSIS_PROMPT = (
 )
 
 
-def _make_image_part(image_data, mime_type):
-    """SDKバージョン差を吸収して画像Partを作る。"""
+def _make_media_part(data, mime_type):
+    """SDKバージョン差を吸収してメディアPart（画像/音声/動画/PDF）を作る。"""
     from google.genai import types
 
     # 新しめのSDK: Part.from_bytes / 古い呼び方: inline_data=Blob
     if hasattr(types.Part, "from_bytes"):
-        return types.Part.from_bytes(data=image_data, mime_type=mime_type)
-    return types.Part(inline_data=types.Blob(data=image_data, mime_type=mime_type))
+        return types.Part.from_bytes(data=data, mime_type=mime_type)
+    return types.Part(inline_data=types.Blob(data=data, mime_type=mime_type))
 
 
-def _gemini_analyze_image_sync(image_data):
-    """Gemini API で画像を分析（OCR・構図・テキスト抽出）。
+def _gemini_analyze_media_sync(data, mime_type, prompt, tag):
+    """Gemini API にメディア（画像/音声/動画/PDF）を渡して分析結果を得る。
     テキスト版 _gemini_call と同じく、無料枠切れモデルはクールダウンして
     次のモデルへ自動ローテーションする。"""
-    mime_type = _detect_mime_type(image_data)
-    print(f"[gemini_analyze_image] MIME type: {mime_type}, size: {len(image_data)} bytes")
+    print(f"[{tag}] MIME type: {mime_type}, size: {len(data)} bytes")
 
     try:
-        image_part = _make_image_part(image_data, mime_type)
+        media_part = _make_media_part(data, mime_type)
     except Exception as e:
-        print(f"[gemini_analyze_image] Part生成失敗: {str(e)[:200]}")
+        print(f"[{tag}] Part生成失敗: {str(e)[:200]}")
         return ""
 
-    contents = [image_part, IMAGE_ANALYSIS_PROMPT]
+    contents = [media_part, prompt]
 
     now = time.time()
     last_err = None
@@ -627,11 +629,11 @@ def _gemini_analyze_image_sync(image_data):
             resp = gemini_client.models.generate_content(model=model, contents=contents)
             text = (resp.text or "").strip()
             if text:
-                print(f"[gemini_analyze_image] 成功: {model}")
+                print(f"[{tag}] 成功: {model}")
                 return text
         except Exception as e:
             last_err = e
-            print(f"[gemini_analyze_image] {model} 失敗: {str(e)[:200]}")
+            print(f"[{tag}] {model} 失敗: {str(e)[:200]}")
             per_day = "PerDay" in str(e) or "PerProjectPerModel" in str(e)
             if _is_quota_error(e) and per_day:
                 # 日次枠切れ → このモデルをしばらく避ける（自動復帰あり）
@@ -641,6 +643,13 @@ def _gemini_analyze_image_sync(image_data):
     if last_err and _is_quota_error(last_err):
         return "（Gemini の無料枠が全モデルで上限に達しています。時間をおいて再度お試しください。）"
     return ""
+
+
+def _gemini_analyze_image_sync(image_data):
+    """Gemini API で画像を分析（OCR・構図・テキスト抽出）。"""
+    return _gemini_analyze_media_sync(
+        image_data, _detect_mime_type(image_data), IMAGE_ANALYSIS_PROMPT, "gemini_analyze_image"
+    )
 
 
 AUDIO_MIME_BY_EXT = {
@@ -654,6 +663,13 @@ AUDIO_MIME_BY_EXT = {
     ".flac": "audio/flac",
 }
 
+VIDEO_MIME_BY_EXT = {
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".avi": "video/x-msvideo",
+}
+
 AUDIO_TRANSCRIBE_PROMPT = (
     "この音声を正確に文字起こししてください。\n"
     "① 話された内容をすべて日本語（音声が他言語ならその言語）で書き起こす。\n"
@@ -662,47 +678,35 @@ AUDIO_TRANSCRIBE_PROMPT = (
     "④ 最後に【要約】として2〜3行で内容をまとめる。"
 )
 
+PDF_ANALYSIS_PROMPT = (
+    "このPDFの内容を人が読んだのと同じレベルで詳細に読み取ってください。\n"
+    "① 文書の種類と目的（例: 契約書・論文・請求書・スライド資料）。\n"
+    "② 本文の内容を章・節の構造を保って書き出す。表は表として整形する。\n"
+    "③ 図やグラフがあれば、何を示しているかを説明する。\n"
+    "④ 最後に【要約】として重要ポイントを箇条書きでまとめる。"
+)
+
+VIDEO_ANALYSIS_PROMPT = (
+    "この動画の内容を人が視聴したのと同じレベルで詳細に説明してください。\n"
+    "① 映像の流れを時系列で説明（場面の変化・登場人物・動き・テロップ）。\n"
+    "② 音声・ナレーション・会話があればすべて文字起こしする。\n"
+    "③ 画面に映るテキストや資料も読み取る。\n"
+    "④ 最後に【要約】として2〜3行で内容をまとめる。"
+)
+
 
 def _gemini_transcribe_audio_sync(audio_data, ext):
-    """Gemini API で音声を書き起こす。画像分析と同じく、
-    無料枠切れモデルはクールダウンして次のモデルへ自動ローテーションする。"""
+    """Gemini API で音声を書き起こす。"""
     mime_type = AUDIO_MIME_BY_EXT.get(ext, "audio/mp3")
-    print(f"[gemini_transcribe_audio] MIME type: {mime_type}, size: {len(audio_data)} bytes")
-
-    try:
-        audio_part = _make_image_part(audio_data, mime_type)  # Part生成は画像と共通
-    except Exception as e:
-        print(f"[gemini_transcribe_audio] Part生成失敗: {str(e)[:200]}")
-        return ""
-
-    contents = [audio_part, AUDIO_TRANSCRIBE_PROMPT]
-
-    now = time.time()
-    last_err = None
-    for model in GEMINI_MODELS:
-        if _gemini_cooldown.get(model, 0) > now:
-            continue  # 枠切れクールダウン中は次のモデルへ
-        try:
-            resp = gemini_client.models.generate_content(model=model, contents=contents)
-            text = (resp.text or "").strip()
-            if text:
-                print(f"[gemini_transcribe_audio] 成功: {model}")
-                return text
-        except Exception as e:
-            last_err = e
-            print(f"[gemini_transcribe_audio] {model} 失敗: {str(e)[:200]}")
-            per_day = "PerDay" in str(e) or "PerProjectPerModel" in str(e)
-            if _is_quota_error(e) and per_day:
-                _gemini_cooldown[model] = time.time() + GEMINI_COOLDOWN_SEC
-
-    if last_err and _is_quota_error(last_err):
-        return "（Gemini の無料枠が全モデルで上限に達しています。時間をおいて再度お試しください。）"
-    return ""
+    return _gemini_analyze_media_sync(
+        audio_data, mime_type, AUDIO_TRANSCRIBE_PROMPT, "gemini_transcribe_audio"
+    )
 
 
 async def extract_attachment_context(message):
-    """メッセージの添付ファイル（画像・動画・音声）を処理してコンテキストを返す。
-    画像はGeminiで分析（OCR＋構図分析）、音声はGeminiで書き起こし、動画はメタデータ。"""
+    """メッセージの添付ファイル（画像・音声・動画・PDF・テキスト）を処理してコンテキストを返す。
+    画像=OCR＋構図分析 / 音声=書き起こし / 動画=映像＋音声の内容分析 /
+    PDF=全文読み取り（いずれもGemini）/ テキスト系=そのまま読み込み。"""
     if not message.attachments:
         return ""
 
@@ -762,12 +766,78 @@ async def extract_attachment_context(message):
             else:
                 contexts.append(f"【音声 {filename}】\n（ダウンロード失敗。）")
 
-        # 動画処理（メタデータのみ）
+        # 動画処理（Gemini で映像＋音声を分析）
         elif ext in SUPPORTED_VIDEO_TYPES:
-            contexts.append(
-                f"【動画: {filename} (約{size_mb:.1f}MB)】\n"
-                "※動画ファイルが添付されています。内容について質問してください。"
-            )
+            if att.size > MAX_ATTACHMENT_SIZE:
+                contexts.append(
+                    f"【動画 {filename} (約{size_mb:.1f}MB)】\n"
+                    "（20MBを超えるため内容を読み取れません。短く切り出すか圧縮して送ってください。）"
+                )
+                continue
+            file_data = await _download_file(att.url)
+            if file_data:
+                try:
+                    async with message.channel.typing():
+                        analysis = await asyncio.to_thread(
+                            _gemini_analyze_media_sync,
+                            file_data,
+                            VIDEO_MIME_BY_EXT.get(ext, "video/mp4"),
+                            VIDEO_ANALYSIS_PROMPT,
+                            "gemini_analyze_video",
+                        )
+                    if analysis:
+                        contexts.append(f"【動画の内容: {filename}】\n{analysis}")
+                    else:
+                        contexts.append(f"【動画 {filename}】\n（内容の読み取りに失敗しました。）")
+                except Exception as e:
+                    print(f"[video_analysis] 失敗: {filename}: {str(e)[:100]}")
+                    contexts.append(f"【動画 {filename}】\n（分析エラー。）")
+            else:
+                contexts.append(f"【動画 {filename}】\n（ダウンロード失敗。）")
+
+        # PDF処理（Gemini で全文読み取り）
+        elif ext in SUPPORTED_DOC_TYPES:
+            if att.size > MAX_ATTACHMENT_SIZE:
+                contexts.append(
+                    f"【PDF {filename} (約{size_mb:.1f}MB)】\n"
+                    "（20MBを超えるため読み取れません。分割して送ってください。）"
+                )
+                continue
+            file_data = await _download_file(att.url)
+            if file_data:
+                try:
+                    async with message.channel.typing():
+                        analysis = await asyncio.to_thread(
+                            _gemini_analyze_media_sync,
+                            file_data,
+                            "application/pdf",
+                            PDF_ANALYSIS_PROMPT,
+                            "gemini_analyze_pdf",
+                        )
+                    if analysis:
+                        contexts.append(f"【PDFの内容: {filename}】\n{analysis}")
+                    else:
+                        contexts.append(f"【PDF {filename}】\n（読み取りに失敗しました。）")
+                except Exception as e:
+                    print(f"[pdf_analysis] 失敗: {filename}: {str(e)[:100]}")
+                    contexts.append(f"【PDF {filename}】\n（分析エラー。）")
+            else:
+                contexts.append(f"【PDF {filename}】\n（ダウンロード失敗。）")
+
+        # テキスト系ファイル（そのまま読み込み）
+        elif ext in SUPPORTED_TEXT_TYPES:
+            file_data = await _download_file(att.url)
+            if file_data:
+                try:
+                    text = file_data.decode("utf-8", errors="replace")
+                    if len(text) > TEXT_ATTACHMENT_MAX_CHARS:
+                        text = text[:TEXT_ATTACHMENT_MAX_CHARS] + "\n…（以下省略）"
+                    contexts.append(f"【ファイルの内容: {filename}】\n{text}")
+                except Exception as e:
+                    print(f"[text_attachment] 失敗: {filename}: {str(e)[:100]}")
+                    contexts.append(f"【ファイル {filename}】\n（読み込みエラー。）")
+            else:
+                contexts.append(f"【ファイル {filename}】\n（ダウンロード失敗。）")
 
         # その他（スキップ）
         else:
