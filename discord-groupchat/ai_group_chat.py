@@ -369,6 +369,10 @@ def _is_quota_error(e):
     return "429" in m or "RESOURCE_EXHAUSTED" in m or "quota" in m.lower()
 
 
+class GeminiQuotaExceeded(RuntimeError):
+    """Gemini の無料枠が全モデルで（一時的に）使い切られたことを表す。"""
+
+
 def _retry_delay(e, default=8):
     m = re.search(r"retry in ([0-9.]+)s", str(e)) or re.search(r"retryDelay'?:?\s*'?([0-9.]+)s", str(e))
     try:
@@ -421,6 +425,16 @@ async def _gemini_call(prompt):
 
 async def ask_gemini(history):
     return await _gemini_call(peer_prompt("Gemini", "Claude", history))
+
+
+async def _ai_text(prompt, tag="ai_text"):
+    """テキスト生成：Gemini優先、失敗（無料枠切れ等）したら例外を握りつぶさず
+    Claude CLI へ自動フォールバックする。両方失敗した場合のみ例外が伝播する。"""
+    try:
+        return await _gemini_call(prompt)
+    except Exception as e:  # noqa: BLE001
+        print(f"[{tag}] Gemini失敗 → Claudeへフォールバック: {str(e)[:150]}")
+        return await run_claude_cli(prompt)
 
 
 # ---------- Web検索：Google（Geminiグラウンディング）優先・DDGフォールバック ----------
@@ -610,12 +624,16 @@ def _make_media_part(data, mime_type):
 def _gemini_contents_sync(contents, tag):
     """Gemini API に contents（Part/テキストの混在リスト）を渡して応答を得る。
     テキスト版 _gemini_call と同じく、無料枠切れモデルはクールダウンして
-    次のモデルへ自動ローテーションする。"""
+    次のモデルへ自動ローテーションする。
+    全モデル失敗時は例外を握りつぶさず送出する（無料枠切れは GeminiQuotaExceeded）。
+    呼び出し側はこれを捕まえてフォールバック（メタ情報分析 / Claude切替）する。"""
     now = time.time()
     last_err = None
+    tried = False
     for model in GEMINI_MODELS:
         if _gemini_cooldown.get(model, 0) > now:
             continue  # 枠切れクールダウン中は次のモデルへ
+        tried = True
         try:
             resp = gemini_client.models.generate_content(model=model, contents=contents)
             text = (resp.text or "").strip()
@@ -632,7 +650,14 @@ def _gemini_contents_sync(contents, tag):
             # 枠切れ・その他エラーとも次のモデルで再挑戦
 
     if last_err and _is_quota_error(last_err):
-        return "（Gemini の無料枠が全モデルで上限に達しています。時間をおいて再度お試しください。）"
+        raise GeminiQuotaExceeded(
+            "Gemini の無料枠が全モデルで上限に達しています。時間をおいて再度お試しください。"
+        )
+    if last_err:
+        raise last_err
+    if not tried:
+        # 全モデルがクールダウン中＝実質的に枠切れ
+        raise GeminiQuotaExceeded("Gemini の全モデルがクールダウン中です（無料枠切れ）。")
     return ""
 
 
@@ -733,6 +758,9 @@ async def extract_attachment_context(message):
                 except asyncio.TimeoutError:
                     print(f"[image_analysis] タイムアウト: {filename}")
                     contexts.append(f"【画像 {filename}】\n（分析がタイムアウトしました。テキストで内容を説明してください。）")
+                except GeminiQuotaExceeded as e:
+                    print(f"[image_analysis] 枠切れ: {filename}")
+                    contexts.append(f"【画像 {filename}】\n（{e}）")
                 except Exception as e:
                     print(f"[image_analysis] 失敗: {filename}: {str(e)[:100]}")
                     contexts.append(f"【画像 {filename}】\n（分析エラー。テキストで内容を説明してください。）")
@@ -762,6 +790,10 @@ async def extract_attachment_context(message):
                             await message.channel.send(full[i:i + 1900])
                     else:
                         contexts.append(f"【音声 {filename}】\n（書き起こしに失敗しました。）")
+                except GeminiQuotaExceeded as e:
+                    print(f"[audio_transcribe] 枠切れ: {filename}")
+                    contexts.append(f"【音声 {filename}】\n（{e}）")
+                    await message.channel.send(f"⚠️ 書き起こしできませんでした: {e}")
                 except Exception as e:
                     print(f"[audio_transcribe] 失敗: {filename}: {str(e)[:100]}")
                     contexts.append(f"【音声 {filename}】\n（書き起こしエラー。）")
@@ -791,6 +823,9 @@ async def extract_attachment_context(message):
                         contexts.append(f"【動画の内容: {filename}】\n{analysis}")
                     else:
                         contexts.append(f"【動画 {filename}】\n（内容の読み取りに失敗しました。）")
+                except GeminiQuotaExceeded as e:
+                    print(f"[video_analysis] 枠切れ: {filename}")
+                    contexts.append(f"【動画 {filename}】\n（{e}）")
                 except Exception as e:
                     print(f"[video_analysis] 失敗: {filename}: {str(e)[:100]}")
                     contexts.append(f"【動画 {filename}】\n（分析エラー。）")
@@ -820,6 +855,9 @@ async def extract_attachment_context(message):
                         contexts.append(f"【PDFの内容: {filename}】\n{analysis}")
                     else:
                         contexts.append(f"【PDF {filename}】\n（読み取りに失敗しました。）")
+                except GeminiQuotaExceeded as e:
+                    print(f"[pdf_analysis] 枠切れ: {filename}")
+                    contexts.append(f"【PDF {filename}】\n（{e}）")
                 except Exception as e:
                     print(f"[pdf_analysis] 失敗: {filename}: {str(e)[:100]}")
                     contexts.append(f"【PDF {filename}】\n（分析エラー。）")
@@ -921,10 +959,13 @@ async def _fetch_trending(limit=100):
                 if resp.status != 200:
                     raise RuntimeError(f"YouTube API エラー: {str(data)[:300]}")
             for item in data.get("items", []):
+                sn = item["snippet"]
                 videos.append({
                     "id": item["id"],
-                    "title": item["snippet"]["title"],
-                    "channel": item["snippet"]["channelTitle"],
+                    "title": sn["title"],
+                    "channel": sn["channelTitle"],
+                    "desc": (sn.get("description") or "").replace("\n", " ")[:200],
+                    "tags": (sn.get("tags") or [])[:8],
                     "views": int(item.get("statistics", {}).get("viewCount", 0)),
                     "duration": _parse_iso_duration(
                         item.get("contentDetails", {}).get("duration")
@@ -975,18 +1016,29 @@ async def _run_trend_study(cid):
         f"うち{len(targets)}本を視聴して映像分析します（数分かかります）…"
     )
 
+    # 動画の「視聴」フェーズ。Gemini無料枠切れを検知したら以降の視聴はスキップし、
+    # メタ情報（タイトル・説明文・タグ・再生数）ベースの傾向分析にフォールバックする。
     reports = []
+    quota_hit = False
     for v in targets:
         try:
             analysis = await asyncio.to_thread(_gemini_watch_youtube_sync, v["url"])
+        except GeminiQuotaExceeded as e:
+            quota_hit = True
+            print(f"[trend] Gemini無料枠切れ → 視聴をスキップしメタ情報分析へ: {e}")
+            await channel.send(
+                "⚠️ Gemini無料枠切れのため動画の視聴はスキップし、"
+                "メタ情報（タイトル・説明文・タグ・再生数）ベースの傾向分析に切り替えます。"
+            )
+            break
         except Exception as e:  # noqa: BLE001
-            analysis = ""
             print(f"[trend] 視聴失敗 {v['id']}: {str(e)[:200]}")
+            continue
         if analysis:
             reports.append((v, analysis))
             _mark_analyzed(v["id"])
 
-    # ランキング全体の傾向分析（タイトル・チャンネル・再生数から）
+    # ランキング全体の傾向分析（Gemini枠切れ時はClaudeに自動切替）
     listing = "\n".join(
         f"{i + 1}. {v['title']}（{v['channel']} / {v['views']:,}回）"
         for i, v in enumerate(videos)
@@ -996,13 +1048,38 @@ async def _run_trend_study(cid):
         "① いま伸びているジャンル・企画の傾向 ② タイトル・サムネの傾向 "
         "③ 映像制作のヒント を400字以内でまとめて。\n\n" + listing
     )
-    overview = await asyncio.to_thread(
-        _gemini_contents_sync, [overview_prompt], "trend_overview"
-    )
+    try:
+        overview = await _ai_text(overview_prompt, "trend_overview")
+    except Exception as e:  # noqa: BLE001
+        print(f"[trend] 概観分析失敗: {str(e)[:200]}")
+        overview = ""
+
+    # 視聴できなかった場合のフォールバック：メタ情報ベースの深掘り分析
+    meta_analysis = ""
+    if quota_hit or not reports:
+        meta_src = "\n".join(
+            f"{i + 1}. {v['title']}（{v['channel']} / {v['views']:,}回 / 約{v['duration'] // 60}分）\n"
+            f"   説明: {v['desc'] or 'なし'}\n"
+            f"   タグ: {', '.join(v['tags']) if v['tags'] else 'なし'}"
+            for i, v in enumerate(videos[:20])
+        )
+        meta_prompt = (
+            "以下はYouTube急上昇上位20本のメタ情報（タイトル・説明文・タグ・再生数・長さ）。"
+            "映像そのものは見られない前提で、メタ情報から読み取れる映像制作のヒントを"
+            "600字以内でまとめて。\n"
+            "① 企画・構成の傾向 ② タイトル/サムネ戦略 ③ 想定される演出・編集手法 "
+            "④ 自分の映像制作への転用アイデア\n\n" + meta_src
+        )
+        try:
+            meta_analysis = await _ai_text(meta_prompt, "trend_meta_fallback")
+        except Exception as e:  # noqa: BLE001
+            print(f"[trend] メタ情報分析も失敗: {str(e)[:200]}")
 
     # 全文レポートを insights/ に保存（日付ごと）
     today = datetime.now(JST).strftime("%Y-%m-%d")
     full = [f"# YouTube急上昇リサーチ {today}", "", "## トレンド概観", overview or "（取得失敗）"]
+    if meta_analysis:
+        full += ["", "## メタ情報ベースの傾向分析", meta_analysis]
     for v, a in reports:
         full += ["", f"## {v['title']}（{v['channel']} / {v['views']:,}回）", v["url"], "", a]
     try:
@@ -1020,17 +1097,21 @@ async def _run_trend_study(cid):
             "まとめて。\n\n【トレンド概観】\n" + (overview or "") +
             "\n\n【個別分析】\n" + digest_src
         )
-        digest = await asyncio.to_thread(
-            _gemini_contents_sync, [digest_prompt], "trend_digest"
-        )
+        try:
+            digest = await _ai_text(digest_prompt, "trend_digest")
+        except Exception as e:  # noqa: BLE001
+            print(f"[trend] ダイジェスト生成失敗: {str(e)[:200]}")
     if not digest:
-        digest = overview or "（本日は分析結果を取得できませんでした）"
+        digest = "\n\n".join(x for x in (overview, meta_analysis) if x) \
+            or "（本日は分析結果を取得できませんでした）"
 
-    text = (
-        f"🎬 **今日のYouTube急上昇リサーチ（{today}）**\n{digest}\n\n"
-        f"🔎 視聴した動画:\n" +
-        "\n".join(f"・{v['title']}（{v['url']}）" for v, _ in reports)
-    )
+    text = f"🎬 **今日のYouTube急上昇リサーチ（{today}）**\n{digest}"
+    if reports:
+        text += "\n\n🔎 視聴した動画:\n" + "\n".join(
+            f"・{v['title']}（{v['url']}）" for v, _ in reports
+        )
+    elif quota_hit:
+        text += "\n\n（本日はGemini無料枠切れのためメタ情報ベースの分析です）"
     for i in range(0, len(text), 1900):
         await channel.send(text[i:i + 1900])
     add_history(cid, "🎬映像リサーチ", f"（YouTube急上昇の自動分析 {today}）\n{digest}")
