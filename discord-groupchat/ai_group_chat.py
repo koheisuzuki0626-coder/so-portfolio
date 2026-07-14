@@ -326,23 +326,47 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # .claude/settings.json �
 
 
 async def run_claude_cli(prompt):
-    """Claude Code CLI をヘッドレスで呼ぶ（サブスク利用・API課金なし）。"""
+    """Claude Code CLI をヘッドレスで呼ぶ（サブスク利用・API課金なし）。
+    プロンプトは stdin で渡す（長文でOSの引数上限を超えないように）。"""
     # cwd を固定 → discord-groupchat/.claude/settings.json（WebSearch許可）が読まれる。
     # ※ワークスペースを一度「信頼(trust)」しておかないと settings.json は無視される。
     proc = await asyncio.create_subprocess_exec(
-        CLAUDE_BIN, "-p", prompt,
+        CLAUDE_BIN, "-p",
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=BASE_DIR,
     )
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_TIMEOUT)
+        out, err = await asyncio.wait_for(
+            proc.communicate(input=prompt.encode()), timeout=CLAUDE_TIMEOUT
+        )
     except asyncio.TimeoutError:
         proc.kill()
-        raise RuntimeError("claude CLI がタイムアウトしました")
+        raise RuntimeError(f"claude CLI がタイムアウトしました（{CLAUDE_TIMEOUT}秒）")
+    out_s = out.decode(errors="replace").strip()
+    err_s = err.decode(errors="replace").strip()
     if proc.returncode != 0:
-        raise RuntimeError((err.decode() or "claude CLI error").strip()[:300])
-    return out.decode().strip()
+        # CLIはエラーを stdout に出すことがあるため両方見る。全文はターミナルへ。
+        detail = err_s or out_s or f"claude CLI error (exit={proc.returncode}, 出力なし)"
+        print(
+            f"[claude_cli] 失敗 exit={proc.returncode}\n"
+            f"  stderr: {err_s[:1000] or '(空)'}\n"
+            f"  stdout: {out_s[:1000] or '(空)'}"
+        )
+        low = detail.lower()
+        if "usage limit" in low or "rate limit" in low:
+            raise RuntimeError(
+                "Claude Code サブスクの利用上限に達しています。"
+                "時間をおいて再度お試しください。 / " + detail[:200]
+            )
+        if "log in" in low or "login" in low or "authent" in low or "api key" in low:
+            raise RuntimeError(
+                "claude CLI が未ログインの可能性があります。"
+                "Macのターミナルで `claude` を一度実行してログインしてください。 / " + detail[:200]
+            )
+        raise RuntimeError(detail[:500])
+    return out_s
 
 
 def peer_persona(me, partner):
@@ -1161,64 +1185,43 @@ def _critique_prompt(me, other, my_ans, other_ans, history):
     )
 
 
-async def _route(history):
-    """① モデル振り分け・多段化・Web検索要否を判定。JSONで受ける。"""
+async def _plan(history):
+    """要求の分類（exec/video/image/chat）と処理方針（mode/lead/search/recall）を
+    1回のAI呼び出しでまとめて判定する。以前は Claude CLI を2回直列に起動していて
+    毎回10〜30秒かかっていたが、Gemini優先（高速・無料枠）の1回に統合。
+    失敗時は Claude にフォールバックし、それも駄目なら安全な既定値で続行する。"""
     prompt = (
-        "あなたはルーター。次の会話の最後の要求に最適な処理方針をJSONだけで返す。\n"
-        '形式: {"mode":"single"|"debate","lead":"claude"|"gemini","search":true|false,"recall":true|false}\n'
-        "- 原則 single（1モデルで即答）。debate は"
-        "『重大な判断・設計・事実の突き合わせが本当に必要』な時だけ（省エネ重視）。\n"
-        "- lead は適材適所で選ぶ（コスト節約ではなく品質基準で）：\n"
-        "  claude が得意 → コード・デバッグ・論理的推論・設計判断・"
-        "丁寧で構成の良い日本語の文章・長文の執筆\n"
-        "  gemini が得意 → 長文の要約・多言語翻訳・最新情報・画像や視覚の話題・"
-        "大量の箇条書き整理・幅広いアイデア出し\n"
-        "  どちらでも良いタスクは、その要求に本当に向いている方を選ぶ\n"
-        "- 最新情報・時事・製品/価格・実在の事実確認が要る → search=true、雑談や一般常識 → search=false\n"
-        "- 『前に話した』『昨日の』『以前決めた』など過去の会話・経緯への言及や、"
-        "直近の会話に無い過去の情報が必要 → recall=true、それ以外 → recall=false\n\n"
+        "あなたはルーター。次の会話の最後の要求を分類し、処理方針をJSONだけで返す。\n"
+        '形式: {"kind":"chat"|"exec"|"video"|"image","mode":"single"|"debate",'
+        '"lead":"claude"|"gemini","search":true|false,"recall":true|false}\n'
+        "- kind: exec=ファイルやコードを実際に作成・編集・削除、またはコマンドを実行する"
+        "明確な作業指示のみ（例:『server.pyのバグを直して』）。"
+        "video=動画・映像・CM・PVの制作依頼。image=画像・イラスト・ロゴの生成依頼。"
+        "chat=それ以外すべて（質問・相談・意見・雑談）。迷ったら必ずchat。\n"
+        "- mode: 原則single。『重大な判断・設計・事実の突き合わせが本当に必要』な時だけdebate。\n"
+        "- lead: claudeが得意=コード・デバッグ・論理的推論・設計判断・丁寧な日本語の長文 / "
+        "geminiが得意=要約・多言語翻訳・最新情報・画像や視覚の話題・箇条書き整理・アイデア出し。\n"
+        "- search: 最新情報・時事・製品/価格・実在の事実確認が要るときだけtrue。\n"
+        "- recall: 『前に話した』『昨日の』『以前決めた』など、直近の会話に無い"
+        "過去の記憶が必要なときだけtrue。\n\n"
         f"会話:\n{build_transcript(history)}\n\nJSON:"
     )
+    kind, mode, lead, search, recall = "chat", "single", "claude", False, False
     try:
-        raw = await run_claude_cli(prompt)
+        raw = await _ai_text(prompt, "plan")
         m = re.search(r"\{.*\}", raw, re.S)
         d = json.loads(m.group(0)) if m else {}
-        mode = d.get("mode") if d.get("mode") in ("single", "debate") else "single"
-        lead = d.get("lead") if d.get("lead") in ("claude", "gemini") else "claude"
+        if d.get("kind") in ("chat", "exec", "video", "image"):
+            kind = d["kind"]
+        if d.get("mode") in ("single", "debate"):
+            mode = d["mode"]
+        if d.get("lead") in ("claude", "gemini"):
+            lead = d["lead"]
         search = bool(d.get("search"))
         recall = bool(d.get("recall"))
-        return mode, lead, search, recall
-    except Exception:  # noqa: BLE001
-        return "single", "claude", False, False
-
-
-async def _classify_task(latest_msg):
-    """最後の発言を厳密に分類：exec（実際にコード/ファイルを触る）/ video / image / chat。
-    迷ったら chat（＝普段の会話を邪魔しない）。"""
-    prompt = (
-        "次のユーザー発言を1語だけで分類して返す: exec / video / image / chat\n"
-        "exec = ファイルやコードを実際に作成・編集・削除する、またはコマンドを実行する"
-        "明確な作業指示。例:『requirements.txtにyt-dlpを追加して』『server.pyのバグを直して』"
-        "『このコード書き換えて』『npm installして』\n"
-        "video = 動画・映像・CM・PVの制作依頼。例:『犬の動画作って』\n"
-        "image = 画像・イラスト・ロゴ・絵の生成依頼。例:『猫のイラスト描いて』『ロゴ画像作って』\n"
-        "chat = それ以外すべて（質問・相談・意見・説明・提案・雑談）。"
-        "例:『どう思う?』『Pythonって何?』『どう直すのがいい?』\n"
-        "重要：実際にファイルを触る/コマンドを走らせる明確な指示だけが exec。"
-        "単なる質問や相談は必ず chat。迷ったら chat。\n\n"
-        f"発言: {latest_msg}\n\n分類（1語だけ）:"
-    )
-    try:
-        raw = (await run_claude_cli(prompt)).strip().lower()
-    except Exception:  # noqa: BLE001
-        return "chat"
-    if "exec" in raw:
-        return "exec"
-    if "video" in raw:
-        return "video"
-    if "image" in raw:
-        return "image"
-    return "chat"
+    except Exception as e:  # noqa: BLE001
+        print(f"[plan] 判定失敗（既定値で続行）: {str(e)[:150]}")
+    return kind, mode, lead, search, recall
 
 
 async def _handle_image_request(cid, request):
@@ -1255,7 +1258,7 @@ def _latest_user_msg(history):
 
 
 async def ask_orchestrator(history):
-    mode, lead, search, recall = await _route(history)
+    _, mode, lead, search, recall = await _plan(history)
     return await _orchestrate(mode, lead, search, history, recall)
 
 
@@ -1321,23 +1324,21 @@ async def _handle_orchestrator(message, cid):
     それ以外（質問・相談・雑談）は普通に会話する。"""
     history = get_history(cid)
 
-    # 厳密判定：exec（コードを触る）/ video（映像制作）/ chat（それ以外）
-    kind = await _classify_task(_latest_user_msg(history))
+    # 分類＋処理方針を1回のAI呼び出しで判定（旧: Claude CLI 2回直列で遅かった）
+    async with message.channel.typing():
+        kind, mode, lead, search, recall = await _plan(history)
     if kind == "video":
-        last_msg = _latest_user_msg(history)
         await message.channel.send("🎬 映像制作の依頼ですね。構成案から始めます…")
-        asyncio.create_task(pipeline_start(cid, last_msg))
+        asyncio.create_task(pipeline_start(cid, _latest_user_msg(history)))
         return
     if kind == "exec":
-        last_msg = _latest_user_msg(history)
-        await _start_agent(message, cid, last_msg)
+        await _start_agent(message, cid, _latest_user_msg(history))
         return
     if kind == "image":
         asyncio.create_task(_handle_image_request(cid, _latest_user_msg(history)))
         return
 
     # 通常会話（承認ダイアログは出さない）
-    mode, lead, search, recall = await _route(history)
     async with message.channel.typing():
         try:
             # history に既に attachment_context が含まれているため、
@@ -1812,7 +1813,8 @@ async def on_message(message):
     cid = message.channel.id
 
     # 初回のみ：導入前の過去ログをDiscordから取り込む（バックグラウンド）
-    asyncio.create_task(_backfill_channel_history(message.channel))
+    if cid not in _import_started:
+        asyncio.create_task(_backfill_channel_history(message.channel))
 
     if content == "!stop" or _is_stop_phrase(content):
         await _do_stop(message, cid)
