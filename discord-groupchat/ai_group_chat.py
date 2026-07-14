@@ -1015,12 +1015,69 @@ VIDEO_STUDY_PROMPT = (
 )
 
 
-def _gemini_watch_youtube_sync(url):
+def _gemini_watch_youtube_sync(url, prompt=None, tag="gemini_watch_youtube"):
     """Gemini にYouTube動画のURLを渡して「視聴」させる（ダウンロード不要）。"""
     from google.genai import types
 
     part = types.Part(file_data=types.FileData(file_uri=url))
-    return _gemini_contents_sync([part, VIDEO_STUDY_PROMPT], "gemini_watch_youtube")
+    return _gemini_contents_sync([part, prompt or VIDEO_STUDY_PROMPT], tag)
+
+
+# ---------- 会話中のYouTubeリンク：貼られたら中身を視聴して文脈に加える ----------
+YOUTUBE_URL_RE = re.compile(
+    r"https?://(?:www\.|m\.)?"
+    r"(?:youtube\.com/(?:watch\?\S*v=[\w\-]+\S*|shorts/[\w\-]+\S*|live/[\w\-]+\S*)"
+    r"|youtu\.be/[\w\-]+\S*)"
+)
+
+YOUTUBE_CHAT_PROMPT = (
+    "このYouTube動画を視聴して、内容を日本語で分かりやすくまとめて。\n"
+    "① 何の動画か（ジャンル・テーマ・出演者）\n"
+    "② 内容の要約（話の流れ・主要なポイント。会話や解説は要点を書き起こす）\n"
+    "③ 印象的な場面・見どころ\n"
+    "④ 画面に映る重要なテキスト・数字・資料があれば紹介"
+)
+
+
+async def _apply_youtube_context(message, content):
+    """メッセージ内のYouTubeリンク（最大2本）をGeminiが視聴し、内容を文脈に合併する。
+    返り値: (合併後のcontent, リンクのみの投稿でまとめを投稿済みならTrue)"""
+    urls = YOUTUBE_URL_RE.findall(content)
+    if not urls:
+        return content, False
+
+    summaries = []
+    async with message.channel.typing():
+        for url in urls[:2]:
+            try:
+                summary = await asyncio.to_thread(
+                    _gemini_watch_youtube_sync, url, YOUTUBE_CHAT_PROMPT, "youtube_link"
+                )
+            except GeminiQuotaExceeded as e:
+                await message.channel.send(f"⚠️ 動画を視聴できませんでした: {e}")
+                continue
+            except Exception as e:  # noqa: BLE001
+                print(f"[youtube_link] 視聴失敗 {url}: {str(e)[:200]}")
+                await message.channel.send(
+                    "⚠️ この動画は読み取れませんでした"
+                    "（非公開・年齢制限・配信中・長すぎる等の可能性）。"
+                )
+                continue
+            if summary:
+                summaries.append((url, summary))
+
+    for url, summary in summaries:
+        content += f"\n\n【YouTube動画の内容（{url}）】\n{summary}"
+
+    # リンクだけの投稿なら、まとめをそのまま投稿（内容は会話の記憶にも残る）
+    text_wo_urls = YOUTUBE_URL_RE.sub("", message.content).strip()
+    bare_link = bool(summaries) and not text_wo_urls and not message.attachments
+    if bare_link:
+        for url, summary in summaries:
+            full = f"📺 **動画の内容まとめ**\n{summary}"
+            for i in range(0, len(full), 1900):
+                await message.channel.send(full[i:i + 1900])
+    return content, bare_link
 
 
 async def _run_trend_study(cid):
@@ -1897,7 +1954,15 @@ async def on_message(message):
     if attachment_context:
         content = content + attachment_context if content else attachment_context.strip()
 
+    # YouTubeリンクが貼られていたら、Geminiが動画を視聴して内容を文脈に合併
+    content, yt_bare_link = await _apply_youtube_context(message, content)
+
     add_history(cid, message.author.display_name, content)
+
+    # リンクだけの投稿 → 内容まとめは投稿済みなので、AIの雑談応答はしない
+    # （内容は記憶に残るので、続けて「この動画どう思う？」と聞けば答えられる）
+    if yt_bare_link:
+        return
 
     # テキストなしで音声だけ添付 → 書き起こしの投稿のみで終了
     # （内容は履歴に残るので、続けて質問すればAIが答えられる）
