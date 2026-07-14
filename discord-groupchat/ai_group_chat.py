@@ -186,10 +186,8 @@ async def _summarize_pending(cid):
             f"【既存の要約】\n{old_summary or '(まだ無し)'}\n\n"
             f"【新しく統合する会話】\n{transcript}\n\n更新後の要約:"
         )
-        try:
-            new_summary = await _gemini_call(prompt)
-        except Exception:  # noqa: BLE001
-            new_summary = await run_claude_cli(prompt)
+        # 速度不問のバックグラウンド処理なので Claude 優先（Gemini無料枠を温存）
+        new_summary = await _ai_text_bg(prompt, "summarize")
         new_summary = (new_summary or "").strip()[:SUMMARY_MAX_CHARS]
         if not new_summary:
             raise RuntimeError("要約が空でした")
@@ -452,13 +450,23 @@ async def ask_gemini(history):
 
 
 async def _ai_text(prompt, tag="ai_text"):
-    """テキスト生成：Gemini優先、失敗（無料枠切れ等）したら例外を握りつぶさず
-    Claude CLI へ自動フォールバックする。両方失敗した場合のみ例外が伝播する。"""
+    """テキスト生成（応答速度が要る場面用）：Gemini優先、失敗（無料枠切れ等）したら
+    例外を握りつぶさず Claude CLI へ自動フォールバック。両方失敗時のみ例外が伝播。"""
     try:
         return await _gemini_call(prompt)
     except Exception as e:  # noqa: BLE001
         print(f"[{tag}] Gemini失敗 → Claudeへフォールバック: {str(e)[:150]}")
         return await run_claude_cli(prompt)
+
+
+async def _ai_text_bg(prompt, tag="ai_text_bg"):
+    """バックグラウンド処理用テキスト生成：速度不問なので Claude（サブスク定額）を
+    優先して Gemini の無料枠を温存する。Claude 失敗時のみ Gemini へ。"""
+    try:
+        return await run_claude_cli(prompt)
+    except Exception as e:  # noqa: BLE001
+        print(f"[{tag}] Claude失敗 → Geminiへフォールバック: {str(e)[:150]}")
+        return await _gemini_call(prompt)
 
 
 # ---------- Web検索：Google（Geminiグラウンディング）優先・DDGフォールバック ----------
@@ -1130,7 +1138,7 @@ async def _run_trend_study(cid):
         "③ 映像制作のヒント を400字以内でまとめて。\n\n" + listing
     )
     try:
-        overview = await _ai_text(overview_prompt, "trend_overview")
+        overview = await _ai_text_bg(overview_prompt, "trend_overview")
     except Exception as e:  # noqa: BLE001
         print(f"[trend] 概観分析失敗: {str(e)[:200]}")
         overview = ""
@@ -1152,7 +1160,7 @@ async def _run_trend_study(cid):
             "④ 自分の映像制作への転用アイデア\n\n" + meta_src
         )
         try:
-            meta_analysis = await _ai_text(meta_prompt, "trend_meta_fallback")
+            meta_analysis = await _ai_text_bg(meta_prompt, "trend_meta_fallback")
         except Exception as e:  # noqa: BLE001
             print(f"[trend] メタ情報分析も失敗: {str(e)[:200]}")
 
@@ -1179,7 +1187,7 @@ async def _run_trend_study(cid):
             "\n\n【個別分析】\n" + digest_src
         )
         try:
-            digest = await _ai_text(digest_prompt, "trend_digest")
+            digest = await _ai_text_bg(digest_prompt, "trend_digest")
         except Exception as e:  # noqa: BLE001
             print(f"[trend] ダイジェスト生成失敗: {str(e)[:200]}")
     if not digest:
@@ -1242,11 +1250,25 @@ def _critique_prompt(me, other, my_ans, other_ans, history):
     )
 
 
+# AI判定が必要そうなキーワード（作業指示・生成依頼・検索・過去記憶）。
+# これに全く該当しない短い発言は、AIを呼ばず雑談として即処理（Gemini無料枠の節約）。
+_PLAN_TRIGGER_RE = re.compile(
+    "作って|作成|生成|描いて|書いて|直して|修正|書き換え|編集|実行|インストール|コマンド|"
+    "デバッグ|バグ|動画|映像|ＣＭ|CM|PV|画像|イラスト|ロゴ|絵|"
+    "最新|ニュース|調べ|検索|比較|価格|いくら|発売|リリース|"
+    "前に|昨日|以前|この前|先週|先月|過去|話した|決めた|約束"
+)
+
+
 async def _plan(history):
     """要求の分類（exec/video/image/chat）と処理方針（mode/lead/search/recall）を
     1回のAI呼び出しでまとめて判定する。以前は Claude CLI を2回直列に起動していて
     毎回10〜30秒かかっていたが、Gemini優先（高速・無料枠）の1回に統合。
+    さらに、トリガー語を含まない短い発言はAIを呼ばずに即・雑談扱い（枠の節約）。
     失敗時は Claude にフォールバックし、それも駄目なら安全な既定値で続行する。"""
+    latest = _latest_user_msg(history)
+    if len(latest) <= 60 and not _PLAN_TRIGGER_RE.search(latest):
+        return "chat", "single", "claude", False, False
     prompt = (
         "あなたはルーター。次の会話の最後の要求を分類し、処理方針をJSONだけで返す。\n"
         '形式: {"kind":"chat"|"exec"|"video"|"image","mode":"single"|"debate",'
