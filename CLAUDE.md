@@ -6,8 +6,11 @@
 **毎回必ず**、返信の最後にユーザーがMacで実行する再起動コマンドを添えること：
 
 ```bash
-pkill -f ai_group_chat.py; cd ~/so-portfolio && git pull && cd discord-groupchat && source venv/bin/activate && python ai_group_chat.py
+pkill -f ai_group_chat.py; cd ~/so-portfolio && git stash && git pull && cd discord-groupchat && source venv/bin/activate && python ai_group_chat.py
 ```
+
+※ `git stash` を必ず含めること（Mac側に手元の変更が残っていると pull が
+アボートするトラブルが実際に起きたため）。
 
 理由：Bot は起動時にコードを読み込むため、変更は再起動しないと反映されない。
 ユーザーは毎回このコマンドを必要とするので、聞かれる前に送る。
