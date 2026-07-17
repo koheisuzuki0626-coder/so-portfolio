@@ -270,6 +270,100 @@ async def _recall_context(cid, question):
     return f"【過去ログからの関連情報】\n{ans}" if ans else ""
 
 
+# ---------- 人間のプロファイル（パーソナライズ） ----------
+# 発言が PROFILE_UPDATE_EVERY 件たまるごとに、その人の発言サンプルから
+# 人物像（性格・口調・好み・興味・価値観）を自動学習して保存。
+# 保存先: history/profile_{名前}.md。全AIの応答プロンプトに常時注入される。
+PROFILE_UPDATE_EVERY = int(os.getenv("PROFILE_UPDATE_EVERY", "20"))
+PROFILE_MAX_CHARS = int(os.getenv("PROFILE_MAX_CHARS", "1500"))
+_profile_counts = {}   # speaker -> 前回更新からの発言数
+_profiling = set()     # 更新処理中の speaker
+
+
+def _profile_path(speaker):
+    safe = re.sub(r"[^\w぀-ヿ一-鿿]+", "_", speaker)[:40]
+    return HISTORY_DIR / f"profile_{safe}.md"
+
+
+def _load_profiles():
+    """保存済みの全員分のプロファイルをまとめて返す（プロンプト注入用）。"""
+    parts = []
+    try:
+        for fp in sorted(HISTORY_DIR.glob("profile_*.md")):
+            text = fp.read_text(encoding="utf-8").strip()
+            if text:
+                parts.append(text)
+    except Exception as e:  # noqa: BLE001
+        print(f"[profile] 読込失敗: {e}")
+    return "\n\n".join(parts)[:PROFILE_MAX_CHARS * 2]
+
+
+def _profiles_context():
+    p = _load_profiles()
+    if not p:
+        return ""
+    return (
+        "【参加者のプロファイル（これまでの会話から学習した人物像。"
+        "口調・好み・関心に合わせて応答すること）】\n" + p + "\n\n"
+    )
+
+
+def _speaker_recent_msgs(cid, speaker, n=60):
+    """チャンネルの全ログから、その人の直近の発言を集める。"""
+    fp = _hist_path(cid)
+    if not fp.exists():
+        return []
+    out = []
+    for ln in reversed(fp.read_text(encoding="utf-8").splitlines()):
+        try:
+            d = json.loads(ln)
+        except Exception:  # noqa: BLE001
+            continue
+        if d.get("speaker") == speaker:
+            out.append(d.get("text", "")[:300])
+            if len(out) >= n:
+                break
+    return list(reversed(out))
+
+
+async def _update_profile(cid, speaker):
+    """発言サンプルから人物プロファイルを更新（バックグラウンド・Claude優先）。"""
+    if speaker in _profiling:
+        return
+    _profiling.add(speaker)
+    try:
+        msgs = _speaker_recent_msgs(cid, speaker)
+        if len(msgs) < 5:
+            return  # 材料不足
+        old = ""
+        try:
+            fp = _profile_path(speaker)
+            if fp.exists():
+                old = fp.read_text(encoding="utf-8").strip()
+        except Exception:  # noqa: BLE001
+            pass
+        prompt = (
+            f"あなたは観察眼の鋭い記憶係。Discordでの {speaker} の発言サンプルをもとに、"
+            "本人の人物像プロファイルを更新する。\n"
+            "含める: 性格、話し方・口調の特徴、好き/嫌い、興味関心、よく話す話題、"
+            "仕事や活動、目標・やりたいこと、大事にしている価値観、接し方のコツ。\n"
+            "発言に根拠のある特徴だけを書き、決めつけや過度な推測はしない。"
+            "古い情報と矛盾したら新しい発言を優先。\n"
+            f"{PROFILE_MAX_CHARS}字以内、箇条書き中心。冒頭は『## {speaker} のプロファイル』。\n\n"
+            f"【既存プロファイル】\n{old or '(まだ無し)'}\n\n"
+            f"【{speaker} の最近の発言】\n" + "\n".join(f"- {m}" for m in msgs) +
+            "\n\n更新後のプロファイル:"
+        )
+        new = (await _ai_text_bg(prompt, "profile") or "").strip()[:PROFILE_MAX_CHARS]
+        if new:
+            _profile_path(speaker).write_text(new, encoding="utf-8")
+            print(f"[profile] {speaker} のプロファイルを更新（発言{len(msgs)}件から）")
+    except Exception as e:  # noqa: BLE001
+        print(f"[profile] 更新失敗: {str(e)[:200]}")
+    finally:
+        _profiling.discard(speaker)
+
+
 # ---------- 導入前の過去ログをDiscordから一度だけ取り込む ----------
 IMPORT_LIMIT = int(os.getenv("IMPORT_LIMIT", "2000"))  # 1チャンネルあたり最大取込件数
 _import_started = set()
@@ -377,7 +471,8 @@ def peer_persona(me, partner):
 
 def peer_prompt(me, partner, history):
     return (
-        peer_persona(me, partner) + "\n\nこれまでの会話ログ:\n"
+        peer_persona(me, partner) + "\n\n" + _profiles_context()
+        + "これまでの会話ログ:\n"
         f"{build_transcript(history)}\n\n次の {me} の発言:"
     )
 
@@ -1315,6 +1410,7 @@ def _answer_prompt(who, history, extra=""):
     return (
         f"あなたは{who}。次の会話の最後の要求に、正確で役立つ回答を日本語で簡潔に述べる。"
         "前置きや名乗りは不要、回答本体のみ。\n\n"
+        + _profiles_context()
         + (extra + "\n\n" if extra else "")
         + f"{build_transcript(history)}\n\nあなたの回答:"
     )
@@ -2006,6 +2102,16 @@ async def on_message(message):
         await message.channel.send(f"🤖 エージェント開始: {task}")
         asyncio.create_task(_run_agent_task(cid, task, message.author.id))
         return
+    if content == "!profile":
+        p = _load_profiles()
+        if p:
+            for i in range(0, len(p), 1900):
+                await message.channel.send(("🧠 " if i == 0 else "") + p[i:i + 1900])
+        else:
+            await message.channel.send(
+                "まだプロファイルはありません（会話がたまると自動で作られます）。"
+            )
+        return
     if content.startswith("!trend"):
         if not YOUTUBE_API_KEY:
             await message.channel.send(
@@ -2062,6 +2168,17 @@ async def on_message(message):
     content, yt_bare_link = await _apply_youtube_context(message, content)
 
     add_history(cid, message.author.display_name, content)
+
+    # パーソナライズ：発言が一定数たまるごとに人物プロファイルを自動更新。
+    # プロファイルがまだ無い人は初回発言時にも作成を試みる（バックグラウンド）。
+    sp = message.author.display_name
+    _profile_counts[sp] = _profile_counts.get(sp, 0) + 1
+    if _profile_counts[sp] >= PROFILE_UPDATE_EVERY or (
+        _profile_counts[sp] == 1 and not _profile_path(sp).exists()
+    ):
+        if _profile_counts[sp] >= PROFILE_UPDATE_EVERY:
+            _profile_counts[sp] = 0
+        asyncio.create_task(_update_profile(cid, sp))
 
     # リンクだけの投稿 → 内容まとめは投稿済みなので、AIの雑談応答はしない
     # （内容は記憶に残るので、続けて「この動画どう思う？」と聞けば答えられる）
