@@ -152,6 +152,9 @@ Python 3.9 でもOK、追加SDK不要です。
 - ダイジェストを指定チャンネルに投稿し、**会話の記憶にも追加**（雑談や `!project` のアイデアに使える）
 - 全文レポートは `insights/日付.md` に保存。分析済み動画はスキップされ、知見が毎日蓄積される
 - `!trend` でいつでも手動実行できます
+- **お題を指定して絞り込みも可能**：`!trend 料理系Vlogの編集`、`!trend ゲーム実況のオープニング演出` のように
+  書くと、そのお題で検索した人気動画（直近90日・再生数順、`TREND_SEARCH_DAYS`で調整可）を、
+  お題の観点を最優先にして視聴・分析します
 
 セットアップ：
 1. [Google Cloud Console](https://console.cloud.google.com/apis/library/youtube.googleapis.com) で

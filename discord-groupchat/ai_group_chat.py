@@ -968,6 +968,23 @@ def _parse_iso_duration(s):
     return h * 3600 + mi * 60 + se
 
 
+def _video_dict(item):
+    """videos.list のレスポンス1件を内部形式に変換。"""
+    sn = item["snippet"]
+    return {
+        "id": item["id"],
+        "title": sn["title"],
+        "channel": sn["channelTitle"],
+        "desc": (sn.get("description") or "").replace("\n", " ")[:200],
+        "tags": (sn.get("tags") or [])[:8],
+        "views": int(item.get("statistics", {}).get("viewCount", 0)),
+        "duration": _parse_iso_duration(
+            item.get("contentDetails", {}).get("duration")
+        ),
+        "url": f"https://www.youtube.com/watch?v={item['id']}",
+    }
+
+
 async def _fetch_trending(limit=100):
     """YouTube Data API で急上昇動画を取得（最大100件・2リクエスト）。"""
     if not YOUTUBE_API_KEY:
@@ -990,24 +1007,62 @@ async def _fetch_trending(limit=100):
                 data = await resp.json()
                 if resp.status != 200:
                     raise RuntimeError(f"YouTube API エラー: {str(data)[:300]}")
-            for item in data.get("items", []):
-                sn = item["snippet"]
-                videos.append({
-                    "id": item["id"],
-                    "title": sn["title"],
-                    "channel": sn["channelTitle"],
-                    "desc": (sn.get("description") or "").replace("\n", " ")[:200],
-                    "tags": (sn.get("tags") or [])[:8],
-                    "views": int(item.get("statistics", {}).get("viewCount", 0)),
-                    "duration": _parse_iso_duration(
-                        item.get("contentDetails", {}).get("duration")
-                    ),
-                    "url": f"https://www.youtube.com/watch?v={item['id']}",
-                })
+            videos.extend(_video_dict(item) for item in data.get("items", []))
             page = data.get("nextPageToken")
             if not page:
                 break
     return videos[:limit]
+
+
+TREND_SEARCH_DAYS = int(os.getenv("TREND_SEARCH_DAYS", "90"))  # 検索対象は直近N日
+
+
+async def _search_videos(query, limit=50):
+    """YouTube Data API でキーワード検索し、直近N日の人気動画を再生数順に取得。"""
+    if not YOUTUBE_API_KEY:
+        raise RuntimeError("YOUTUBE_API_KEY が .env に設定されていません")
+    published_after = (
+        datetime.now(timezone.utc) - timedelta(days=TREND_SEARCH_DAYS)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    async with aiohttp.ClientSession() as session:
+        params = {
+            "part": "id",
+            "q": query,
+            "type": "video",
+            "order": "viewCount",
+            "publishedAfter": published_after,
+            "maxResults": str(min(limit, 50)),
+            "regionCode": TREND_REGION,
+            "relevanceLanguage": "ja",
+            "key": YOUTUBE_API_KEY,
+        }
+        async with session.get(
+            "https://www.googleapis.com/youtube/v3/search", params=params
+        ) as resp:
+            data = await resp.json()
+            if resp.status != 200:
+                raise RuntimeError(f"YouTube検索エラー: {str(data)[:300]}")
+        ids = [
+            it["id"]["videoId"]
+            for it in data.get("items", [])
+            if it.get("id", {}).get("videoId")
+        ]
+        if not ids:
+            return []
+        params2 = {
+            "part": "snippet,statistics,contentDetails",
+            "id": ",".join(ids),
+            "key": YOUTUBE_API_KEY,
+        }
+        async with session.get(
+            "https://www.googleapis.com/youtube/v3/videos", params=params2
+        ) as resp:
+            data2 = await resp.json()
+            if resp.status != 200:
+                raise RuntimeError(f"YouTube API エラー: {str(data2)[:300]}")
+    videos = [_video_dict(item) for item in data2.get("items", [])]
+    videos.sort(key=lambda v: v["views"], reverse=True)
+    return videos
 
 
 VIDEO_STUDY_PROMPT = (
@@ -1088,21 +1143,36 @@ async def _apply_youtube_context(message, content):
     return content, bare_link
 
 
-async def _run_trend_study(cid):
-    """急上昇TOP100を取得 → 上位数本を視聴・分析 → レポート保存＆ダイジェスト投稿。"""
+async def _run_trend_study(cid, query=None):
+    """YouTube動画のリサーチ。query なし＝急上昇TOP100 / query あり＝そのお題で
+    検索した人気動画。上位数本を視聴・分析 → レポート保存＆ダイジェスト投稿。"""
     channel = orch.get_channel(cid) or await orch.fetch_channel(cid)
-    videos = await _fetch_trending(100)
+    label = f"「{query}」" if query else "急上昇"
 
-    # 視聴対象：未分析かつ長すぎない動画を、ランキング上位から選ぶ
-    analyzed = _load_analyzed_ids()
+    if query:
+        videos = await _search_videos(query)
+        if not videos:
+            await channel.send(f"🔎 {label}に合う動画が見つかりませんでした。")
+            return
+    else:
+        videos = await _fetch_trending(100)
+
+    # 視聴対象：長すぎない動画を上位から選ぶ。急上昇モードは分析済みをスキップして
+    # 毎日知見を蓄積、お題指定モードは目的優先で分析済みも対象にする。
+    analyzed = set() if query else _load_analyzed_ids()
     candidates = [
         v for v in videos
         if v["id"] not in analyzed and 0 < v["duration"] <= TREND_MAX_MINUTES * 60
     ]
     targets = candidates[:TREND_DEEP_COUNT]
     await channel.send(
-        f"🎬 急上昇TOP{len(videos)}を取得しました。"
+        f"🎬 {label}の動画{len(videos)}本を取得しました。"
         f"うち{len(targets)}本を視聴して映像分析します（数分かかります）…"
+    )
+
+    # お題指定時は、その観点を重視して視聴する
+    study_prompt = VIDEO_STUDY_PROMPT + (
+        f"\n特にリサーチ目的『{query}』の観点を最優先で分析して。" if query else ""
     )
 
     # 動画の「視聴」フェーズ。Gemini無料枠切れを検知したら以降の視聴はスキップし、
@@ -1111,7 +1181,9 @@ async def _run_trend_study(cid):
     quota_hit = False
     for v in targets:
         try:
-            analysis = await asyncio.to_thread(_gemini_watch_youtube_sync, v["url"])
+            analysis = await asyncio.to_thread(
+                _gemini_watch_youtube_sync, v["url"], study_prompt
+            )
         except GeminiQuotaExceeded as e:
             quota_hit = True
             print(f"[trend] Gemini無料枠切れ → 視聴をスキップしメタ情報分析へ: {e}")
@@ -1125,16 +1197,22 @@ async def _run_trend_study(cid):
             continue
         if analysis:
             reports.append((v, analysis))
-            _mark_analyzed(v["id"])
+            if not query:
+                _mark_analyzed(v["id"])
 
     # ランキング全体の傾向分析（Gemini枠切れ時はClaudeに自動切替）
     listing = "\n".join(
         f"{i + 1}. {v['title']}（{v['channel']} / {v['views']:,}回）"
         for i, v in enumerate(videos)
     )
+    overview_src = (
+        f"以下は「{query}」で検索したYouTube人気動画（直近{TREND_SEARCH_DAYS}日・再生数順）。"
+        if query else
+        "以下は本日のYouTube急上昇TOP100のランキング。"
+    )
     overview_prompt = (
-        "以下は本日のYouTube急上昇TOP100のランキング。映像クリエイターの視点で、\n"
-        "① いま伸びているジャンル・企画の傾向 ② タイトル・サムネの傾向 "
+        overview_src + "映像クリエイターの視点で、\n"
+        "① 伸びているジャンル・企画の傾向 ② タイトル・サムネの傾向 "
         "③ 映像制作のヒント を400字以内でまとめて。\n\n" + listing
     )
     try:
@@ -1164,15 +1242,18 @@ async def _run_trend_study(cid):
         except Exception as e:  # noqa: BLE001
             print(f"[trend] メタ情報分析も失敗: {str(e)[:200]}")
 
-    # 全文レポートを insights/ に保存（日付ごと）
+    # 全文レポートを insights/ に保存（日付ごと。お題指定はお題入りファイル名）
     today = datetime.now(JST).strftime("%Y-%m-%d")
-    full = [f"# YouTube急上昇リサーチ {today}", "", "## トレンド概観", overview or "（取得失敗）"]
+    fname = today + (
+        "_" + re.sub(r"[^\w぀-ヿ一-鿿]+", "_", query)[:24] if query else ""
+    ) + ".md"
+    full = [f"# YouTube{label}リサーチ {today}", "", "## トレンド概観", overview or "（取得失敗）"]
     if meta_analysis:
         full += ["", "## メタ情報ベースの傾向分析", meta_analysis]
     for v, a in reports:
         full += ["", f"## {v['title']}（{v['channel']} / {v['views']:,}回）", v["url"], "", a]
     try:
-        (INSIGHTS_DIR / f"{today}.md").write_text("\n".join(full), encoding="utf-8")
+        (INSIGHTS_DIR / fname).write_text("\n".join(full), encoding="utf-8")
     except Exception as e:  # noqa: BLE001
         print(f"[trend] レポート保存失敗: {e}")
 
@@ -1194,7 +1275,7 @@ async def _run_trend_study(cid):
         digest = "\n\n".join(x for x in (overview, meta_analysis) if x) \
             or "（本日は分析結果を取得できませんでした）"
 
-    text = f"🎬 **今日のYouTube急上昇リサーチ（{today}）**\n{digest}"
+    text = f"🎬 **YouTube{label}リサーチ（{today}）**\n{digest}"
     if reports:
         text += "\n\n🔎 視聴した動画:\n" + "\n".join(
             f"・{v['title']}（{v['url']}）" for v, _ in reports
@@ -1203,7 +1284,7 @@ async def _run_trend_study(cid):
         text += "\n\n（本日はGemini無料枠切れのためメタ情報ベースの分析です）"
     for i in range(0, len(text), 1900):
         await channel.send(text[i:i + 1900])
-    add_history(cid, "🎬映像リサーチ", f"（YouTube急上昇の自動分析 {today}）\n{digest}")
+    add_history(cid, "🎬映像リサーチ", f"（YouTube{label}リサーチ {today}）\n{digest}")
 
 
 async def _daily_trend_loop():
@@ -1932,7 +2013,8 @@ async def on_message(message):
                 "APIキーを発行し、.env に追加してください（README参照）。"
             )
             return
-        asyncio.create_task(_run_trend_study(cid))
+        topic = content[len("!trend"):].strip()
+        asyncio.create_task(_run_trend_study(cid, topic or None))
         return
     if content.startswith("!search"):
         q = content[len("!search"):].strip()
