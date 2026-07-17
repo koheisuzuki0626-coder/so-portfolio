@@ -476,6 +476,7 @@ def peer_persona(me, partner):
         f"あなたは{me}。人間たちと{partner}が参加するDiscordのグループチャットにいる。"
         f"{partner}も人間も対等な仲間。日本語で{REPLY_CHARS}字以内、1発言だけで自然に参加する。"
         "前置きや名乗りは不要。直前の流れを踏まえ、自分の視点も述べること。"
+        "自分や相手の過去の発言と同じ内容の繰り返しは厳禁。毎回、新しい内容を足すこと。"
     )
 
 
@@ -1651,35 +1652,43 @@ async def send_as(bot, channel_id, text, view=None):
 
 async def respond(cid, name, bot, ask):
     text = await ask(get_history(cid))
+    # 同じ発言の繰り返しは送信しない（Geminiが同文を連投するバグへの保険）
+    h = get_history(cid)
+    last_own = next((t for s, t in reversed(h) if s == name), None)
+    if last_own and text.strip() and text.strip() == last_own.strip():
+        print(f"[respond] {name} の重複発言を抑制しました")
+        return
     add_history(cid, name, text)
     await send_as(bot, cid, text)
 
 
 def decide_targets(message, content):
-    """宛先から反応者を決める。宛先が無ければオーケストレーターが統合回答。"""
-    low = content.lower()
-    named_claude = (
-        "claude" in low or "クロード" in content
-        or (claude_bot.user and claude_bot.user in message.mentions)
-    )
-    named_gemini = (
-        "gemini" in low or "ジェミニ" in content or "ジェミナイ" in content
-        or (gemini_bot.user and gemini_bot.user in message.mentions)
-    )
-    named_orch = (
-        "オーケストレーター" in content or "orchestrator" in low
-        or (orch.user and orch.user in message.mentions)
-    )
-    targets = []
-    if named_orch:
-        targets.append(("Orchestrator", orch, ask_orchestrator))
-    if named_claude:
-        targets.append(("Claude", claude_bot, ask_claude))
-    if named_gemini:
-        targets.append(("Gemini", gemini_bot, ask_gemini))
-    if not targets:  # 宛先指定なし → 既定はオーケストレーターの統合回答
-        targets.append(("Orchestrator", orch, ask_orchestrator))
-    return targets
+    """宛先から反応者を決める。@メンションが最優先。名前呼びは【文頭のみ】有効
+    （『GEMINIのバグを直して』のように文中に名前が出ただけでは反応しない＝
+    誤ルーティング防止）。宛先が無ければオーケストレーターが統合回答。"""
+    m_orch = orch.user and orch.user in message.mentions
+    m_claude = claude_bot.user and claude_bot.user in message.mentions
+    m_gemini = gemini_bot.user and gemini_bot.user in message.mentions
+    if m_orch or m_claude or m_gemini:
+        # 明示的な@メンションがあれば、それだけに従う
+        targets = []
+        if m_orch:
+            targets.append(("Orchestrator", orch, ask_orchestrator))
+        if m_claude:
+            targets.append(("Claude", claude_bot, ask_claude))
+        if m_gemini:
+            targets.append(("Gemini", gemini_bot, ask_gemini))
+        return targets
+
+    head = content.lstrip()[:14].lower()
+    if head.startswith(("claude", "クロード")):
+        return [("Claude", claude_bot, ask_claude)]
+    if head.startswith(("gemini", "ジェミニ", "ジェミナイ")):
+        return [("Gemini", gemini_bot, ask_gemini)]
+    if head.startswith(("オーケストレーター", "orchestrator")):
+        return [("Orchestrator", orch, ask_orchestrator)]
+    # 宛先指定なし → 既定はオーケストレーターの統合回答
+    return [("Orchestrator", orch, ask_orchestrator)]
 
 
 async def run_auto(cid, topic):
