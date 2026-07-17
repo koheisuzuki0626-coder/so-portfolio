@@ -1663,14 +1663,12 @@ async def respond(cid, name, bot, ask):
 
 
 def decide_targets(message, content):
-    """宛先から反応者を決める。@メンションが最優先。名前呼びは【文頭のみ】有効
-    （『GEMINIのバグを直して』のように文中に名前が出ただけでは反応しない＝
-    誤ルーティング防止）。宛先が無ければオーケストレーターが統合回答。"""
+    """宛先から反応者を決める。@メンションされたBotだけが反応し、
+    @メンションが無ければ常にオーケストレーター宛て（統合回答）。"""
     m_orch = orch.user and orch.user in message.mentions
     m_claude = claude_bot.user and claude_bot.user in message.mentions
     m_gemini = gemini_bot.user and gemini_bot.user in message.mentions
     if m_orch or m_claude or m_gemini:
-        # 明示的な@メンションがあれば、それだけに従う
         targets = []
         if m_orch:
             targets.append(("Orchestrator", orch, ask_orchestrator))
@@ -1679,15 +1677,7 @@ def decide_targets(message, content):
         if m_gemini:
             targets.append(("Gemini", gemini_bot, ask_gemini))
         return targets
-
-    head = content.lstrip()[:14].lower()
-    if head.startswith(("claude", "クロード")):
-        return [("Claude", claude_bot, ask_claude)]
-    if head.startswith(("gemini", "ジェミニ", "ジェミナイ")):
-        return [("Gemini", gemini_bot, ask_gemini)]
-    if head.startswith(("オーケストレーター", "orchestrator")):
-        return [("Orchestrator", orch, ask_orchestrator)]
-    # 宛先指定なし → 既定はオーケストレーターの統合回答
+    # @メンションなし → 常にオーケストレーター宛て
     return [("Orchestrator", orch, ask_orchestrator)]
 
 

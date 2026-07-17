@@ -3,8 +3,9 @@
 Discord Bot を3体（オーケストレーター / Claude / Gemini）1つの Python プロセスで動かし、
 チャンネルで **人間・Claude・Gemini が一緒に会話**できます。
 
-- 普通に発言 → Claude と Gemini の**両方が会話に参加**
-- 「クロード ○○」「gemini ○○」や @メンション → **その子だけ**が反応
+- 普通に発言（@メンションなし）→ **常にオーケストレーター**が Claude と Gemini を
+  使い分けて統合回答
+- @メンション → **メンションした子だけ**が反応（@Claude と @Gemini 両方で二人が個別に返答）
 - `!talk お題` → Claude と Gemini **だけ**で自動トーク（最大 `MAX_TURNS` 発言）
 - `!stop` → 自動トークを停止
 
