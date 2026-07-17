@@ -22,6 +22,8 @@ import io
 import json
 import os
 import re
+import shutil
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1436,7 +1438,8 @@ _PLAN_TRIGGER_RE = re.compile(
     "作って|作成|生成|描いて|書いて|直して|修正|書き換え|編集|実行|インストール|コマンド|"
     "デバッグ|バグ|動画|映像|ＣＭ|CM|PV|画像|イラスト|ロゴ|絵|"
     "最新|ニュース|調べ|検索|比較|価格|いくら|発売|リリース|"
-    "前に|昨日|以前|この前|先週|先月|過去|話した|決めた|約束"
+    "前に|昨日|以前|この前|先週|先月|過去|話した|決めた|約束|"
+    "機能|追加|変更|挙動|ボット|bot|自分|きみ|君|あなた|お前|再起動|短く|長く|口調"
 )
 
 
@@ -1450,11 +1453,17 @@ async def _plan(history):
     if len(latest) <= 60 and not _PLAN_TRIGGER_RE.search(latest):
         return "chat", "single", "claude", False, False
     prompt = (
-        "あなたはルーター。次の会話の最後の要求を分類し、処理方針をJSONだけで返す。\n"
-        '形式: {"kind":"chat"|"exec"|"video"|"image","mode":"single"|"debate",'
+        "あなたはDiscordボット（オーケストレーター）のルーター。"
+        "次の会話の最後の要求を分類し、処理方針をJSONだけで返す。\n"
+        '形式: {"kind":"chat"|"exec"|"video"|"image"|"selffix"|"restart",'
+        '"mode":"single"|"debate",'
         '"lead":"claude"|"gemini","search":true|false,"recall":true|false}\n'
-        "- kind: exec=ファイルやコードを実際に作成・編集・削除、またはコマンドを実行する"
-        "明確な作業指示のみ（例:『server.pyのバグを直して』）。"
+        "- kind: selffix=このボット自身の機能追加・修正・挙動変更の依頼"
+        "（例:『返答をもっと短くして』『!trendで視聴する本数を増やして』"
+        "『きみのコードのバグ直して』『〜という機能つけて』）。"
+        "restart=ボットの再起動依頼。"
+        "exec=ボット以外のファイルやコードを作成・編集・削除、コマンド実行する"
+        "明確な作業指示（例:『server.pyのバグを直して』）。"
         "video=動画・映像・CM・PVの制作依頼。image=画像・イラスト・ロゴの生成依頼。"
         "chat=それ以外すべて（質問・相談・意見・雑談）。迷ったら必ずchat。\n"
         "- mode: 原則single。『重大な判断・設計・事実の突き合わせが本当に必要』な時だけdebate。\n"
@@ -1470,7 +1479,7 @@ async def _plan(history):
         raw = await _ai_text(prompt, "plan")
         m = re.search(r"\{.*\}", raw, re.S)
         d = json.loads(m.group(0)) if m else {}
-        if d.get("kind") in ("chat", "exec", "video", "image"):
+        if d.get("kind") in ("chat", "exec", "video", "image", "selffix", "restart"):
             kind = d["kind"]
         if d.get("mode") in ("single", "debate"):
             mode = d["mode"]
@@ -1595,6 +1604,14 @@ async def _handle_orchestrator(message, cid):
         return
     if kind == "image":
         asyncio.create_task(_handle_image_request(cid, _latest_user_msg(history)))
+        return
+    if kind == "selffix":
+        asyncio.create_task(
+            _run_self_fix(cid, _latest_user_msg(history), message.author.id)
+        )
+        return
+    if kind == "restart":
+        await _restart_self(cid)
         return
 
     # 通常会話（承認ダイアログは出さない）
@@ -2026,6 +2043,133 @@ async def _run_agent_task(cid, task, owner_id):
     await send_as(orch, cid, result)
 
 
+# ---------- 自己改修＆自己再起動（Discord内で完結） ----------
+SELF_FILE = Path(os.path.abspath(__file__))
+SELF_BACKUP = SELF_FILE.with_suffix(".py.bak")
+RESTART_MARKER = HISTORY_DIR / "restart_notify.json"
+
+
+async def _restart_self(cid, note=""):
+    """自分自身を再起動する（プロセスを入れ替え。Mac操作不要）。"""
+    try:
+        RESTART_MARKER.write_text(
+            json.dumps({"cid": cid, "note": note}, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[restart] マーカー保存失敗: {e}")
+    await send_as(orch, cid, "🔄 再起動します…（数秒で戻ります）")
+    print("[restart] 自己再起動を実行")
+    os.execv(sys.executable, [sys.executable, str(SELF_FILE)])
+
+
+async def _selfcheck():
+    """修正後の自分のコードを検証（構文チェック＋インポートのスモークテスト）。"""
+    checks = (
+        [sys.executable, "-m", "py_compile", str(SELF_FILE)],
+        [sys.executable, "-c", f"import {SELF_FILE.stem}"],
+    )
+    for args in checks:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=BASE_DIR,
+        )
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return False, "検証がタイムアウトしました"
+        if proc.returncode != 0:
+            detail = (err.decode(errors="replace") or out.decode(errors="replace")).strip()
+            return False, detail
+    return True, ""
+
+
+async def _git_self(args):
+    """自己改修のgit操作（ベストエフォート）。(returncode, 出力) を返す。"""
+    proc = await asyncio.create_subprocess_exec(
+        "git", *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=BASE_DIR,
+    )
+    out, err = await proc.communicate()
+    return proc.returncode, (out.decode(errors="replace") + err.decode(errors="replace")).strip()
+
+
+async def _run_self_fix(cid, request, owner_id):
+    """ボット自身のコードを Claude Code に修正させ、検証→承認→適用→自己再起動。
+    検証失敗・却下時はバックアップから自動ロールバックする。"""
+    await send_as(
+        orch, cid,
+        f"🛠 ボット自身の改修ですね：{request[:200]}\n"
+        "コードを修正して検証します（1〜3分ほど）…"
+    )
+    try:
+        shutil.copy2(SELF_FILE, SELF_BACKUP)
+    except Exception as e:  # noqa: BLE001
+        await send_as(orch, cid, f"⚠️ バックアップ作成に失敗したため中止します: {str(e)[:200]}")
+        return
+
+    task = (
+        f"このフォルダの {SELF_FILE.name}（Discordボット本体）を、次の要望どおりに修正して。\n"
+        f"要望: {request}\n"
+        "注意: 既存の機能を壊さない最小限の変更にすること。"
+        f"修正後に `python3 -m py_compile {SELF_FILE.name}` で構文チェックし、"
+        "エラーがあれば直すこと。最後に修正内容の要約を3行以内で出力して。"
+    )
+    result = await _run_claude_exec(task)
+
+    ok, detail = await _selfcheck()
+    if not ok:
+        shutil.copy2(SELF_BACKUP, SELF_FILE)
+        await send_as(
+            orch, cid,
+            f"⚠️ 修正後のコードが検証に失敗したため、自動で元に戻しました。\n"
+            f"エラー: {detail[:500]}"
+        )
+        return
+
+    _, diffstat = await _git_self(["diff", "--stat", "--", SELF_FILE.name])
+    fut = asyncio.get_running_loop().create_future()
+    await send_as(
+        orch, cid,
+        f"📋 修正完了・検証OKです。\n\n【修正内容】\n{result[:1000]}\n\n"
+        f"【変更規模】\n{diffstat[:300] or '(差分なし)'}\n\n"
+        "適用して再起動しますか？（❌で元のコードに戻します・5分で自動却下）",
+        view=PermissionView(fut, owner_id),
+    )
+    try:
+        approved = await asyncio.wait_for(fut, timeout=310)
+    except asyncio.TimeoutError:
+        approved = False
+    if not approved:
+        shutil.copy2(SELF_BACKUP, SELF_FILE)
+        await send_as(orch, cid, "🛑 元のコードに戻しました。適用していません。")
+        return
+
+    # 記録用にコミット（プッシュできればプッシュ。失敗しても適用は続行）
+    await _git_self(["add", SELF_FILE.name])
+    rc, _ = await _git_self(["commit", "-m", f"Discordからの自己改修: {request[:60]}"])
+    note = "修正を適用しました。"
+    if rc == 0:
+        rc_push, _ = await _git_self(["push"])
+        note += "（GitHubへプッシュ済み）" if rc_push == 0 else "（ローカルコミットのみ）"
+    add_history(cid, "Orchestrator", f"（自己改修を適用: {request[:100]}）")
+    await _restart_self(cid, note)
+
+
+# 自然言語での「再起動」。短いフレーズだけを拾う（誤爆防止）。
+_RESTART_PHRASES = {
+    "再起動", "再起動して", "リスタート", "リスタートして", "restart", "リブート", "リブートして",
+}
+
+
+def _is_restart_phrase(content):
+    return content.strip().rstrip("。.!！?？ 　").lower() in _RESTART_PHRASES
+
+
 # 自然言語での「停止」。短い停止フレーズだけを拾う（誤爆防止）。
 _STOP_PHRASES = {
     "止めて", "止めて。", "とめて", "やめて", "やめ", "ストップ", "すとっぷ",
@@ -2056,6 +2200,15 @@ _trend_task_started = False
 async def on_ready():
     global _trend_task_started
     print(f"オーケストレーター起動: {orch.user}")
+    # 自己再起動からの復帰なら、元のチャンネルに完了を知らせる
+    if RESTART_MARKER.exists():
+        try:
+            d = json.loads(RESTART_MARKER.read_text(encoding="utf-8"))
+            RESTART_MARKER.unlink()
+            note = d.get("note") or ""
+            await send_as(orch, int(d["cid"]), f"✅ 再起動完了！{note}".strip())
+        except Exception as e:  # noqa: BLE001
+            print(f"[restart] 復帰通知失敗: {e}")
     if not _trend_task_started:
         _trend_task_started = True
         asyncio.create_task(_daily_trend_loop())
@@ -2077,6 +2230,9 @@ async def on_message(message):
 
     if content == "!stop" or _is_stop_phrase(content):
         await _do_stop(message, cid)
+        return
+    if content == "!restart" or _is_restart_phrase(content):
+        await _restart_self(cid)
         return
     if content.startswith("!project"):
         topic = content[len("!project"):].strip()
