@@ -60,7 +60,10 @@ MAX_TURNS = int(os.getenv("MAX_TURNS", "6"))
 REPLY_CHARS = 400
 SEND_DELAY = 2
 HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "40"))  # プロンプトに入れる直近発言数
-CLAUDE_TIMEOUT = 120
+CLAUDE_TIMEOUT = int(os.getenv("CLAUDE_TIMEOUT", "300"))
+# claude CLI の同時実行を制限（プロファイル学習・要約などのバックグラウンド処理と
+# 会話応答が同時に走ってタイムアウトするのを防ぐ。超過分は順番待ち）
+_claude_sem = asyncio.Semaphore(int(os.getenv("CLAUDE_CONCURRENCY", "2")))
 
 gemini_client = genai.Client()  # 環境変数 GEMINI_API_KEY を自動参照
 
@@ -424,23 +427,25 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # .claude/settings.json �
 
 async def run_claude_cli(prompt):
     """Claude Code CLI をヘッドレスで呼ぶ（サブスク利用・API課金なし）。
-    プロンプトは stdin で渡す（長文でOSの引数上限を超えないように）。"""
+    プロンプトは stdin で渡す（長文でOSの引数上限を超えないように）。
+    同時実行はセマフォで制限し、渋滞によるタイムアウトを防ぐ。"""
     # cwd を固定 → discord-groupchat/.claude/settings.json（WebSearch許可）が読まれる。
     # ※ワークスペースを一度「信頼(trust)」しておかないと settings.json は無視される。
-    proc = await asyncio.create_subprocess_exec(
-        CLAUDE_BIN, "-p",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=BASE_DIR,
-    )
-    try:
-        out, err = await asyncio.wait_for(
-            proc.communicate(input=prompt.encode()), timeout=CLAUDE_TIMEOUT
+    async with _claude_sem:
+        proc = await asyncio.create_subprocess_exec(
+            CLAUDE_BIN, "-p",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=BASE_DIR,
         )
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise RuntimeError(f"claude CLI がタイムアウトしました（{CLAUDE_TIMEOUT}秒）")
+        try:
+            out, err = await asyncio.wait_for(
+                proc.communicate(input=prompt.encode()), timeout=CLAUDE_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise RuntimeError(f"claude CLI がタイムアウトしました（{CLAUDE_TIMEOUT}秒）")
     out_s = out.decode(errors="replace").strip()
     err_s = err.decode(errors="replace").strip()
     if proc.returncode != 0:
@@ -1549,7 +1554,12 @@ async def _orchestrate(mode, lead, search, history, recall=False):
                 return await _gemini_call(_answer_prompt("Gemini", history, ctx))
             except Exception:  # noqa: BLE001
                 pass  # Gemini不可ならClaudeへ
-        return await run_claude_cli(_answer_prompt("Claude", history, ctx))
+        try:
+            return await run_claude_cli(_answer_prompt("Claude", history, ctx))
+        except Exception as e:  # noqa: BLE001
+            # Claudeがタイムアウト・上限などで落ちたらGeminiで応答（無応答を防ぐ）
+            print(f"[orchestrate] Claude失敗 → Geminiへ: {str(e)[:150]}")
+            return await _gemini_call(_answer_prompt("Gemini", history, ctx))
 
     # ② ディベートモード：まず両者が独立に回答（検索結果があれば共有）
     results = await asyncio.gather(
