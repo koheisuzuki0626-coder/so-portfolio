@@ -478,12 +478,21 @@ async def run_claude_cli(prompt):
     return out_s
 
 
+# ボットの全応答に共通の運用ルール（ターミナル案内の禁止＝Discord内で完結）
+BOT_OPS_GUIDE = (
+    "運用ルール: ボットのコード反映・再起動が話題になったら、ターミナルコマンドは"
+    "案内せず『Discordで「再起動して」と送るだけでOK（自動で最新コードを取得して"
+    "再起動される）』と案内する。ユーザーの操作は常にDiscord内で完結させる。"
+)
+
+
 def peer_persona(me, partner):
     return (
         f"あなたは{me}。人間たちと{partner}が参加するDiscordのグループチャットにいる。"
         f"{partner}も人間も対等な仲間。日本語で{REPLY_CHARS}字以内、1発言だけで自然に参加する。"
         "前置きや名乗りは不要。直前の流れを踏まえ、自分の視点も述べること。"
         "自分や相手の過去の発言と同じ内容の繰り返しは厳禁。毎回、新しい内容を足すこと。"
+        + BOT_OPS_GUIDE
     )
 
 
@@ -1554,7 +1563,7 @@ async def _daily_trend_loop():
 def _answer_prompt(who, history, extra=""):
     return (
         f"あなたは{who}。次の会話の最後の要求に、正確で役立つ回答を日本語で簡潔に述べる。"
-        "前置きや名乗りは不要、回答本体のみ。\n\n"
+        "前置きや名乗りは不要、回答本体のみ。" + BOT_OPS_GUIDE + "\n\n"
         + _profiles_context()
         + (extra + "\n\n" if extra else "")
         + f"{build_transcript(history)}\n\nあなたの回答:"
