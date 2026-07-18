@@ -747,6 +747,92 @@ def _detect_mime_type(data):
 # gemini-2.5-flash-image（Nano Banana）は無料枠 約500枚/日。
 # IMAGE_GEN_ENGINE=higgsfield にすると従来どおり Higgsfield を使う。
 IMAGE_GEN_ENGINE = os.getenv("IMAGE_GEN_ENGINE", "gemini")
+
+# ---------- 生成モデルの実行時切替（Discordの発言で変更・再起動後も保持） ----------
+GEN_SETTINGS_FILE = HISTORY_DIR / "gen_settings.json"
+
+
+def _load_gen_settings():
+    d = {"image_engine": IMAGE_GEN_ENGINE, "image_app": None, "video_app": None}
+    try:
+        if GEN_SETTINGS_FILE.exists():
+            d.update(json.loads(GEN_SETTINGS_FILE.read_text(encoding="utf-8")))
+    except Exception as e:  # noqa: BLE001
+        print(f"[gen_settings] 読込失敗: {e}")
+    return d
+
+
+gen_settings = _load_gen_settings()
+
+
+def _save_gen_settings():
+    try:
+        GEN_SETTINGS_FILE.write_text(
+            json.dumps(gen_settings, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[gen_settings] 保存失敗: {e}")
+
+
+# モデル名の呼び名 → 設定。target: video(Higgsfield動画) / image_hf(Higgsfield画像) /
+# image_gemini(Gemini画像=Nano Banana・無料枠)
+GEN_ALIASES = {
+    "クリング": ("video", "kling-video/v2.5-turbo/pro/image-to-video"),
+    "kling": ("video", "kling-video/v2.5-turbo/pro/image-to-video"),
+    "シーダンス": ("video", "bytedance/seedance/v1/pro/image-to-video"),
+    "seedance": ("video", "bytedance/seedance/v1/pro/image-to-video"),
+    "ハイルオ": ("video", "minimax/hailuo-02/pro/image-to-video"),
+    "hailuo": ("video", "minimax/hailuo-02/pro/image-to-video"),
+    "minimax": ("video", "minimax/hailuo-02/pro/image-to-video"),
+    "dop": ("video", "higgsfield/dop-turbo/image2video"),
+    "ナノバナナ": ("image_gemini", None),
+    "nano banana": ("image_gemini", None),
+    "nanobanana": ("image_gemini", None),
+    "gemini画像": ("image_gemini", None),
+    "シードリーム": ("image_hf", "bytedance/seedream/v4/text-to-image"),
+    "seedream": ("image_hf", "bytedance/seedream/v4/text-to-image"),
+    "フラックス": ("image_hf", "flux-pro/kontext/max/text-to-image"),
+    "flux": ("image_hf", "flux-pro/kontext/max/text-to-image"),
+}
+
+# モデル指定の意図を示す語（「クリングってどう？」のような雑談での誤発動を防ぐ）
+_GEN_INTENT_RE = re.compile(
+    "使って|つかって|がいい|にして|に設定|に変更|に切り替|切替|指定|で生成|で作|でお願い"
+)
+
+
+def _apply_model_mentions(content):
+    """発言中のモデル名を検出して生成設定に反映。変更内容の説明リストを返す。"""
+    if not _GEN_INTENT_RE.search(content):
+        return []
+    low = content.lower()
+    changed = []
+    for name, (target, value) in GEN_ALIASES.items():
+        if name not in low:
+            continue
+        if target == "video":
+            if gen_settings.get("video_app") != value:
+                gen_settings["video_app"] = value
+                changed.append(f"🎬 動画モデル → {name}（{value}）")
+        elif target == "image_gemini":
+            if gen_settings.get("image_engine") != "gemini":
+                gen_settings["image_engine"] = "gemini"
+                changed.append(f"🎨 画像モデル → {name}（Gemini・無料枠）")
+        elif target == "image_hf":
+            if (gen_settings.get("image_engine"), gen_settings.get("image_app")) != ("higgsfield", value):
+                gen_settings["image_engine"] = "higgsfield"
+                gen_settings["image_app"] = value
+                changed.append(f"🎨 画像モデル → {name}（Higgsfield: {value}）")
+    if changed:
+        _save_gen_settings()
+    return changed
+
+
+def _gen_settings_summary():
+    img = ("Gemini（Nano Banana・無料枠）" if gen_settings["image_engine"] == "gemini"
+           else f"Higgsfield: {gen_settings['image_app'] or 'flux-pro/kontext/max（既定）'}")
+    vid = gen_settings["video_app"] or "higgsfield 既定（dop）"
+    return f"🎨 画像: {img}\n🎬 動画: {vid}"
 GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
 
 
@@ -1565,7 +1651,21 @@ async def _plan(history):
 
 
 async def _handle_image_request(cid, request):
-    """画像生成の依頼は Gemini（無料枠 約500枚/日）で完結。クレジット消費なし。"""
+    """画像生成の依頼。既定は Gemini（無料枠 約500枚/日）。設定で Higgsfield も選べる。"""
+    if gen_settings["image_engine"] == "higgsfield" and HF_AVAILABLE:
+        await send_as(
+            orch, cid,
+            f"🎨 Higgsfield（{gen_settings['image_app'] or '既定'}）で画像を生成中…"
+        )
+        try:
+            url = await hf_wrapper.generate_image(request, model=gen_settings["image_app"])
+            await send_as(orch, cid, f"✅ できました！修正したい点があれば教えてください。\n{url}")
+            add_history(cid, "Orchestrator",
+                        f"（依頼「{request[:60]}」の画像をHiggsfieldで生成して投稿した）")
+            return
+        except Exception as e:  # noqa: BLE001
+            print(f"[image_request] Higgsfield失敗: {str(e)[:200]}")
+            await send_as(orch, cid, "⚠️ Higgsfieldで失敗 → Gemini（無料枠）で再試行します…")
     await send_as(orch, cid, "🎨 Gemini で画像を生成中…（無料枠）")
     try:
         data = await asyncio.to_thread(_gemini_generate_image_sync, request)
@@ -1675,6 +1775,22 @@ async def _handle_orchestrator(message, cid):
     """オーケストレーター宛て。実際にコード/ファイルを触る指示のときだけ承認ダイアログ。
     それ以外（質問・相談・雑談）は普通に会話する。"""
     history = get_history(cid)
+    latest = _latest_user_msg(history)
+
+    # モデル設定の確認（「今のモデル設定教えて」等）
+    if re.search("モデル", latest) and re.search("設定|確認|見せて|教えて|どれ|なに|何", latest):
+        await message.channel.send("🔧 現在の生成モデル設定:\n" + _gen_settings_summary())
+        return
+
+    # 発言中のモデル名（クリング/ナノバナナ等）を検出して生成設定に反映
+    changes = _apply_model_mentions(latest)
+    if changes:
+        await message.channel.send("🔧 生成モデルを切り替えました:\n" + "\n".join(changes))
+        # モデル指定だけの発言（作る対象が無い）ならここで完了
+        if len(latest) <= 30 and not re.search(
+            "作って|作りたい|生成して|生成したい|やって|始めて|プロジェクト", latest
+        ):
+            return
 
     # 分類＋処理方針を1回のAI呼び出しで判定（旧: Claude CLI 2回直列で遅かった）
     async with message.channel.typing():
@@ -1908,7 +2024,7 @@ async def _pipeline_plan(cid, feedback=""):
 async def _pipeline_storyboard(cid, feedback=""):
     p = projects[cid]
     # Gemini画像生成が既定なので、Higgsfield無しでも絵コンテは作れる
-    if IMAGE_GEN_ENGINE == "higgsfield" and not HF_AVAILABLE:
+    if gen_settings["image_engine"] == "higgsfield" and not HF_AVAILABLE:
         await send_as(orch, cid, f"⚠️ Higgsfield が使えません: {HF_IMPORT_ERROR}")
         return
     prompt = (
@@ -1928,7 +2044,10 @@ async def _pipeline_storyboard(cid, feedback=""):
         return
     scenes = [ln.strip(" -*0123456789.、。") for ln in raw.splitlines() if ln.strip()]
     p["scenes"] = scenes[:NUM_SCENES]
-    engine_label = "Gemini・無料枠" if IMAGE_GEN_ENGINE == "gemini" else "Higgsfield"
+    engine_label = (
+        "Gemini・無料枠" if gen_settings["image_engine"] == "gemini"
+        else f"Higgsfield: {gen_settings['image_app'] or '既定'}"
+    )
     await send_as(orch, cid, f"🎨 絵コンテ画像を生成中…（{engine_label}）")
     images = []
     for i, sc in enumerate(p["scenes"], 1):
@@ -1936,7 +2055,7 @@ async def _pipeline_storyboard(cid, feedback=""):
             return
         url = None
         # ① まず Gemini（無料枠）で生成 → Discordに添付し、そのCDN URLを動画化に使う
-        if IMAGE_GEN_ENGINE == "gemini":
+        if gen_settings["image_engine"] == "gemini":
             try:
                 data = await asyncio.to_thread(_gemini_generate_image_sync, sc)
                 url = await send_image_bytes(cid, f"シーン{i}: {sc}", data, f"scene{i}.png")
@@ -1949,7 +2068,7 @@ async def _pipeline_storyboard(cid, feedback=""):
         # ② フォールバック：Higgsfield（クレジット消費）
         if url is None and HF_AVAILABLE:
             try:
-                url = await hf_wrapper.generate_image(sc)
+                url = await hf_wrapper.generate_image(sc, model=gen_settings["image_app"])
                 await send_as(orch, cid, f"シーン{i}: {sc}\n{url}")
             except Exception as e:  # noqa: BLE001
                 if _is_credit_error(e):
@@ -1988,7 +2107,9 @@ async def _pipeline_edit(cid, feedback=""):
         if not _alive(cid, p):  # !stop で中止された
             return
         try:
-            vurl = await hf_wrapper.generate_video(img, prompt=(feedback or p["topic"]))
+            vurl = await hf_wrapper.generate_video(
+                img, prompt=(feedback or p["topic"]), model=gen_settings["video_app"]
+            )
             videos.append(vurl)
             await send_as(orch, cid, f"シーン{i} 動画: {vurl}")
         except Exception as e:  # noqa: BLE001

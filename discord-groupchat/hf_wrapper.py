@@ -63,12 +63,12 @@ async def generate_image(prompt, model=None, **arguments):
     return url
 
 
-async def generate_video(image_url, prompt="", **arguments):
+async def generate_video(image_url, prompt="", model=None, **arguments):
     _ensure_env()
     args = {"image_url": image_url, **arguments}
     if prompt:
         args["prompt"] = prompt
-    result = await _hf.subscribe_async(VIDEO_APP, arguments=args)
+    result = await _hf.subscribe_async(model or VIDEO_APP, arguments=args)
     try:
         return result["videos"][0]["url"]
     except (KeyError, IndexError, TypeError):

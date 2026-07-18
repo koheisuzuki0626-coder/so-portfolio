@@ -95,6 +95,14 @@ Higgsfield を使った承認フロー。各段階でテキスト返信して進
 3. **編集チェック×3**（Higgsfieldで動画化）→ 最大3回まで修正、`OK` で完成
 
 絵コンテを Higgsfield で作りたい場合は `.env` に `IMAGE_GEN_ENGINE=higgsfield` を設定。
+
+**生成モデルは Discord の発言で切り替え可能**（設定は再起動後も保持）：
+- 「**クリング使って**」「**動画はklingで**」→ 動画生成が Kling に
+- 「**ナノバナナがいい**」→ 画像生成が Gemini（Nano Banana・無料枠）に
+- 「**シードリームにして**」「**fluxで生成して**」→ 画像生成が Higgsfield の該当モデルに
+- 対応: kling / seedance / hailuo(minimax) / dop（動画）、nano banana / seedream / flux（画像）
+- 「**今のモデル設定教えて**」で現在の設定を確認
+- 「クリングで犬のCM作って」のように制作依頼と同時に指定してもOK
 ※動画生成は Gemini API（Veo）だと無料枠が無く従量課金（$0.15〜0.60/秒）のため、Higgsfield のままです。
 
 `!cancel` で中止。
