@@ -2217,8 +2217,15 @@ async def _run_self_fix(cid, request, owner_id):
     rc, _ = await _git_self(["commit", "-m", f"Discordからの自己改修: {request[:60]}"])
     note = "修正を適用しました。"
     if rc == 0:
-        rc_push, _ = await _git_self(["push"])
-        note += "（GitHubへプッシュ済み）" if rc_push == 0 else "（ローカルコミットのみ）"
+        rc_push, _ = await _git_self(["push", "origin", "HEAD"])
+        if rc_push == 0:
+            note += "（GitHubへプッシュ済み）"
+        else:
+            note += (
+                "（⚠️GitHubへのプッシュに失敗＝ローカルのみ。"
+                "次のコード同期で消える可能性があるため、この修正が重要なら "
+                "Claude Code 側でも同じ修正を反映してください）"
+            )
     add_history(cid, "Orchestrator", f"（自己改修を適用: {request[:100]}）")
     await _restart_self(cid, note)
 

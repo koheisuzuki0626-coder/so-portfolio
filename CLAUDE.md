@@ -6,11 +6,14 @@
 **毎回必ず**、返信の最後にユーザーがMacで実行する再起動コマンドを添えること：
 
 ```bash
-pkill -f ai_group_chat.py; cd ~/so-portfolio && git stash && git pull && cd discord-groupchat && source venv/bin/activate && python ai_group_chat.py
+pkill -f ai_group_chat.py; cd ~/so-portfolio && git fetch origin && git reset --hard origin/claude/line-webhook-claude-integration-l3hff3 && cd discord-groupchat && source venv/bin/activate && python ai_group_chat.py
 ```
 
-※ `git stash` を必ず含めること（Mac側に手元の変更が残っていると pull が
-アボートするトラブルが実際に起きたため）。
+※ `git pull`（stash付き含む）ではなく **fetch + reset --hard** を使うこと。
+Mac側ではボットの自己改修機能がローカルコミットを作ることがあり、pull だと
+divergent branches エラーで止まるトラブルが実際に起きたため。reset 方式なら
+Mac側を常にリモートと同一にできる（ボットの自己改修はプッシュされていれば残る。
+プッシュ失敗時は自己改修フローが「ローカルコミットのみ」と警告する）。
 
 理由：Bot は起動時にコードを読み込むため、変更は再起動しないと反映されない。
 ユーザーは毎回このコマンドを必要とするので、聞かれる前に送る。
