@@ -1477,9 +1477,10 @@ async def _plan(history):
         '形式: {"kind":"chat"|"exec"|"video"|"image"|"selffix"|"restart",'
         '"mode":"single"|"debate",'
         '"lead":"claude"|"gemini","search":true|false,"recall":true|false}\n'
-        "- kind: selffix=このボット自身の機能追加・修正・挙動変更の依頼"
-        "（例:『返答をもっと短くして』『!trendで視聴する本数を増やして』"
-        "『きみのコードのバグ直して』『〜という機能つけて』）。"
+        "- kind: selffix=このボット自身（そっち・きみ・システム側）の機能追加・修正・"
+        "挙動変更・自動化の依頼（例:『返答をもっと短くして』『!trendの本数を増やして』"
+        "『きみのコードのバグ直して』『〜という機能つけて』"
+        "『そっちで自動で定期的に確認するシステムにして』）。"
         "restart=ボットの再起動依頼。"
         "exec=ボット以外のファイルやコードを作成・編集・削除、コマンド実行する"
         "明確な作業指示（例:『server.pyのバグを直して』）。"
@@ -2006,6 +2007,39 @@ class PermissionView(discord.ui.View):
             self.future.set_result(False)
 
 
+# テキストでの承認/却下（ボタンを押さなくても「許可」「拒否」の返信で反応できる）
+_pending_approvals = {}  # cid -> (future, owner_id)
+
+_APPROVE_PHRASES = {
+    "許可", "許可する", "承認", "承認する", "ok", "okay", "おk", "オーケー",
+    "おっけー", "おっけ", "いいよ", "いいですよ", "はい", "うん", "やって",
+    "実行", "実行して", "go", "ゴー", "頼む", "お願い", "お願いします", "進めて",
+}
+_DENY_PHRASES = {
+    "拒否", "拒否する", "だめ", "ダメ", "駄目", "やめて", "やめ", "中止",
+    "中止して", "キャンセル", "cancel", "no", "いいえ", "なし", "却下",
+}
+
+
+def _try_text_approval(cid, user_id, content):
+    """承認待ちがあるとき、テキストの「許可/拒否」でも解決する。
+    承認=True / 却下=False / 対象外=None を返す。"""
+    entry = _pending_approvals.get(cid)
+    if not entry:
+        return None
+    fut, owner_id = entry
+    if fut.done() or (owner_id and user_id != owner_id):
+        return None
+    norm = content.strip().rstrip("。.!！?？ 　").lower()
+    if norm in _APPROVE_PHRASES:
+        fut.set_result(True)
+        return True
+    if norm in _DENY_PHRASES:
+        fut.set_result(False)
+        return False
+    return None
+
+
 async def _run_claude_exec(task):
     """承認済みタスクをフル権限で実行し、標準出力を返す。"""
     proc = await asyncio.create_subprocess_exec(
@@ -2036,19 +2070,22 @@ async def run_claude_agent(cid, task, owner_id):
     except Exception as e:  # noqa: BLE001
         return f"⚠️ 計画の作成に失敗: {str(e)[:300]}"
 
-    # ② Discordで承認（ボタン）
+    # ② Discordで承認（ボタン or テキストの「許可/拒否」）
     fut = asyncio.get_running_loop().create_future()
+    _pending_approvals[cid] = (fut, owner_id)
     await send_as(
         orch, cid,
         f"🤖 タスク: {task}\n\n📋 実行プラン:\n{plan[:1500]}\n\n"
-        "この計画で実行しますか？ [✅許可] を押すと **Mac上で実際に実行**します"
-        "（実行した本人のみ操作可・5分で自動却下）。",
+        "この計画で実行しますか？ [✅許可] を押すか「**許可**」と返信すると "
+        "**Mac上で実際に実行**します（本人のみ・5分で自動却下）。",
         view=PermissionView(fut, owner_id),
     )
     try:
         approved = await asyncio.wait_for(fut, timeout=310)
     except asyncio.TimeoutError:
         approved = False
+    finally:
+        _pending_approvals.pop(cid, None)
     if not approved:
         return "🛑 却下されました。実行しません。"
 
@@ -2155,17 +2192,21 @@ async def _run_self_fix(cid, request, owner_id):
 
     _, diffstat = await _git_self(["diff", "--stat", "--", SELF_FILE.name])
     fut = asyncio.get_running_loop().create_future()
+    _pending_approvals[cid] = (fut, owner_id)
     await send_as(
         orch, cid,
         f"📋 修正完了・検証OKです。\n\n【修正内容】\n{result[:1000]}\n\n"
         f"【変更規模】\n{diffstat[:300] or '(差分なし)'}\n\n"
-        "適用して再起動しますか？（❌で元のコードに戻します・5分で自動却下）",
+        "適用して再起動しますか？ [✅許可] を押すか「**許可**」と返信でOK"
+        "（❌または「拒否」で元のコードに戻します・5分で自動却下）",
         view=PermissionView(fut, owner_id),
     )
     try:
         approved = await asyncio.wait_for(fut, timeout=310)
     except asyncio.TimeoutError:
         approved = False
+    finally:
+        _pending_approvals.pop(cid, None)
     if not approved:
         shutil.copy2(SELF_BACKUP, SELF_FILE)
         await send_as(orch, cid, "🛑 元のコードに戻しました。適用していません。")
@@ -2249,6 +2290,14 @@ async def on_message(message):
     # 初回のみ：導入前の過去ログをDiscordから取り込む（バックグラウンド）
     if cid not in _import_started:
         asyncio.create_task(_backfill_channel_history(message.channel))
+
+    # 承認待ちがあれば、テキストの「許可/拒否」でも受け付ける（ボタン不要）
+    approval = _try_text_approval(cid, message.author.id, content)
+    if approval is not None:
+        await message.channel.send(
+            "✅ 承認を受け付けました。進めます…" if approval else "🛑 却下を受け付けました。"
+        )
+        return
 
     if content == "!stop" or _is_stop_phrase(content):
         await _do_stop(message, cid)
