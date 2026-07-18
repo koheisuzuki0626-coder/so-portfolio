@@ -290,17 +290,24 @@ def _profile_path(speaker):
     return HISTORY_DIR / f"profile_{safe}.md"
 
 
+_profiles_cache = {"key": None, "text": ""}
+
+
 def _load_profiles():
-    """保存済みの全員分のプロファイルをまとめて返す（プロンプト注入用）。"""
-    parts = []
+    """保存済みの全員分のプロファイルをまとめて返す（プロンプト注入用）。
+    毎メッセージで呼ばれるため、ファイル更新時刻ベースでキャッシュする。"""
     try:
-        for fp in sorted(HISTORY_DIR.glob("profile_*.md")):
-            text = fp.read_text(encoding="utf-8").strip()
-            if text:
-                parts.append(text)
+        files = sorted(HISTORY_DIR.glob("profile_*.md"))
+        key = tuple((f.name, f.stat().st_mtime) for f in files)
+        if key == _profiles_cache["key"]:
+            return _profiles_cache["text"]
+        parts = [f.read_text(encoding="utf-8").strip() for f in files]
+        text = "\n\n".join(p for p in parts if p)[:PROFILE_MAX_CHARS * 2]
+        _profiles_cache["key"], _profiles_cache["text"] = key, text
+        return text
     except Exception as e:  # noqa: BLE001
         print(f"[profile] 読込失敗: {e}")
-    return "\n\n".join(parts)[:PROFILE_MAX_CHARS * 2]
+        return _profiles_cache["text"]
 
 
 def _profiles_context():
@@ -1438,6 +1445,12 @@ def _critique_prompt(me, other, my_ans, other_ans, history):
     )
 
 
+# 軽い雑談の担当モデル。claude=サブスク定額でGemini枠を温存（応答5〜20秒）/
+# gemini=高速応答1〜3秒（無料枠を消費）。.env の CASUAL_LEAD で切替。
+CASUAL_LEAD = os.getenv("CASUAL_LEAD", "claude")
+if CASUAL_LEAD not in ("claude", "gemini"):
+    CASUAL_LEAD = "claude"
+
 # AI判定が必要そうなキーワード（作業指示・生成依頼・検索・過去記憶）。
 # これに全く該当しない短い発言は、AIを呼ばず雑談として即処理（Gemini無料枠の節約）。
 _PLAN_TRIGGER_RE = re.compile(
@@ -1457,7 +1470,7 @@ async def _plan(history):
     失敗時は Claude にフォールバックし、それも駄目なら安全な既定値で続行する。"""
     latest = _latest_user_msg(history)
     if len(latest) <= 60 and not _PLAN_TRIGGER_RE.search(latest):
-        return "chat", "single", "claude", False, False
+        return "chat", "single", CASUAL_LEAD, False, False
     prompt = (
         "あなたはDiscordボット（オーケストレーター）のルーター。"
         "次の会話の最後の要求を分類し、処理方針をJSONだけで返す。\n"
