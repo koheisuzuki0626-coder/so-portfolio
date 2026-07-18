@@ -1629,7 +1629,9 @@ async def _plan(history):
         "video=あなたに新しく動画・映像・CM・PVを【制作】してほしい依頼"
         "（例:『犬の30秒CM作って』）。既存動画を調べる話は video ではなく trend。"
         "image=画像・イラスト・ロゴの生成依頼。"
-        "chat=それ以外すべて（質問・相談・意見・雑談）。迷ったら必ずchat。\n"
+        "chat=それ以外すべて（質問・相談・意見・雑談）。迷ったら必ずchat。"
+        "『（ファイル共有）』で始まる発言＝添付ファイルを共有しただけなので、"
+        "明確な依頼文が無い限り必ずchat（video/execにしない）。\n"
         "- mode: 原則single。『重大な判断・設計・事実の突き合わせが本当に必要』な時だけdebate。\n"
         "- lead: claudeが得意=コード・デバッグ・論理的推論・設計判断・丁寧な日本語の長文 / "
         "geminiが得意=要約・多言語翻訳・最新情報・画像や視覚の話題・箇条書き整理・アイデア出し。\n"
@@ -1686,6 +1688,11 @@ async def _handle_image_request(cid, request):
             await send_as(orch, cid, "⚠️ Gemini画像生成の本日の無料枠が上限です。時間をおいて再度お試しください。")
         else:
             await send_as(orch, cid, f"⚠️ 画像生成に失敗: {str(e)[:200]}")
+
+
+# モーションコントロールの依頼待ち（cid -> {"req": 依頼文, "ts": 時刻}）。
+# 「モーションコントロールで作りたい」→ 後から動画添付、の分割メッセージに対応。
+_pending_motion = {}
 
 
 async def _run_motion_control(message, request, ref_att):
@@ -2711,27 +2718,34 @@ async def on_message(message):
     if content.startswith("!"):
         return
 
-    # モーションコントロール：動画を添付して「この動きで」「モーションコントロールで」
-    # と依頼したら、参照動画の動きを転写して1発で動画生成（構成案フローを通さない）
-    if message.attachments and re.search(
+    # モーションコントロール：「この動きで」「モーションコントロールで」と依頼されたら
+    # 参照動画の動きを転写して1発で動画生成（構成案フローを通さない）。
+    # 動画がまだ添付されていなければ依頼を覚えておき、後から添付されたら実行する。
+    _motion_kw = re.search(
         "モーション|この動き|動きで生成|動きを真似|動きをコピー|動きを転写", content
-    ):
-        ref = next(
-            (a for a in message.attachments
-             if Path(a.filename).suffix.lower() in SUPPORTED_VIDEO_TYPES),
-            None,
-        )
-        if ref:
+    )
+    _video_att = next(
+        (a for a in message.attachments
+         if Path(a.filename).suffix.lower() in SUPPORTED_VIDEO_TYPES),
+        None,
+    ) if message.attachments else None
+    pm = _pending_motion.get(cid)
+    if _motion_kw or (pm and _video_att and time.time() - pm["ts"] < 900):
+        if _video_att:
+            req = content if _motion_kw else (pm["req"] + " " + content).strip()
+            _pending_motion.pop(cid, None)
             add_history(
                 cid, message.author.display_name,
                 content + "（参照動画を添付してモーションコントロール生成を依頼）",
             )
-            asyncio.create_task(_run_motion_control(message, content, ref))
+            asyncio.create_task(_run_motion_control(message, req, _video_att))
             return
+        _pending_motion[cid] = {"req": content, "ts": time.time()}
+        add_history(cid, message.author.display_name, content)
         await message.channel.send(
-            "🎭 モーションコントロールには参照動画が必要です。"
-            "動きの元になる動画（mp4/mov・2〜60秒・720p/1080p）を添付して、"
-            "もう一度依頼してください。キャラ画像も一緒に添付するとその見た目で生成します。"
+            "🎭 了解です。動きの元になる動画（mp4/mov・2〜60秒・720p/1080p）を"
+            "このチャンネルに添付して送ってください。**添付されたらそのまま生成を始めます**。"
+            "キャラの見た目を指定したい場合は、画像も同じメッセージに添付してください。"
         )
         return
 
@@ -2746,6 +2760,9 @@ async def on_message(message):
     attachment_context = await extract_attachment_context(message)
     if attachment_context:
         content = content + attachment_context if content else attachment_context.strip()
+        if not had_text:
+            # 添付だけの投稿＝共有。制作パイプライン等の誤発動を防ぐ目印を付ける
+            content = "（ファイル共有）" + content
 
     # YouTubeリンクが貼られていたら、Geminiが動画を視聴して内容を文脈に合併
     content, yt_bare_link = await _apply_youtube_context(message, content)
