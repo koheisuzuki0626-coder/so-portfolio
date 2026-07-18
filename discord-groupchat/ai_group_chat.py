@@ -2200,15 +2200,48 @@ SELF_BACKUP = SELF_FILE.with_suffix(".py.bak")
 RESTART_MARKER = HISTORY_DIR / "restart_notify.json"
 
 
+async def _sync_to_origin():
+    """GitHubに新しいコードがあれば取り込む（再起動前に呼ぶ）。
+    ローカルにしか無いコミットや未コミット変更がある場合は、壊さないようスキップ。"""
+    rc, branch = await _git_self(["rev-parse", "--abbrev-ref", "HEAD"])
+    branch = branch.strip()
+    if rc != 0 or not branch:
+        return "ブランチ不明のためスキップ"
+    rc, _ = await _git_self(["fetch", "origin", branch])
+    if rc != 0:
+        return "fetch失敗のためスキップ（オフライン？）"
+    rc, dirty = await _git_self(["status", "--porcelain", "--untracked-files=no"])
+    if rc == 0 and dirty.strip():
+        return "未コミットの変更があるためスキップ"
+    rc, ahead = await _git_self(["rev-list", "--count", f"origin/{branch}..HEAD"])
+    if rc != 0:
+        return "状態確認失敗のためスキップ"
+    if int(ahead.strip() or "0") > 0:
+        return "ローカル独自コミット（未プッシュの自己改修）があるためスキップ"
+    rc, behind = await _git_self(["rev-list", "--count", f"HEAD..origin/{branch}"])
+    if rc != 0:
+        return "状態確認失敗のためスキップ"
+    n = int(behind.strip() or "0")
+    if n == 0:
+        return "既に最新"
+    rc, out = await _git_self(["reset", "--hard", f"origin/{branch}"])
+    return f"最新コードを取得（{n}コミット）" if rc == 0 else "reset失敗のためスキップ"
+
+
 async def _restart_self(cid, note=""):
-    """自分自身を再起動する（プロセスを入れ替え。Mac操作不要）。"""
+    """自分自身を再起動する（プロセスを入れ替え。Mac操作不要）。
+    再起動前にGitHubの最新コードを自動で取り込む＝Discordだけで更新が完結する。"""
+    sync = await _sync_to_origin()
+    print(f"[restart] コード同期: {sync}")
     try:
         RESTART_MARKER.write_text(
-            json.dumps({"cid": cid, "note": note}, ensure_ascii=False), encoding="utf-8"
+            json.dumps({"cid": cid, "note": (note + f"（コード同期: {sync}）").strip()},
+                       ensure_ascii=False),
+            encoding="utf-8",
         )
     except Exception as e:  # noqa: BLE001
         print(f"[restart] マーカー保存失敗: {e}")
-    await send_as(orch, cid, "🔄 再起動します…（数秒で戻ります）")
+    await send_as(orch, cid, f"🔄 再起動します…（コード同期: {sync}／数秒で戻ります）")
     print("[restart] 自己再起動を実行")
     os.execv(sys.executable, [sys.executable, str(SELF_FILE)])
 
