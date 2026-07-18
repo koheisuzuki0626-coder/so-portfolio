@@ -1177,17 +1177,25 @@ async def _search_videos(query, limit=50):
             "relevanceLanguage": "ja",
             "key": YOUTUBE_API_KEY,
         }
-        async with session.get(
-            "https://www.googleapis.com/youtube/v3/search", params=params
-        ) as resp:
-            data = await resp.json()
-            if resp.status != 200:
-                raise RuntimeError(f"YouTube検索エラー: {str(data)[:300]}")
-        ids = [
-            it["id"]["videoId"]
-            for it in data.get("items", [])
-            if it.get("id", {}).get("videoId")
-        ]
+        # まず直近N日で検索し、ヒットしなければ全期間で再検索
+        # （Fatboy Slim のMVのような昔の名作が期間フィルタで消えるのを防ぐ）
+        ids = []
+        for attempt in range(2):
+            if attempt == 1:
+                params.pop("publishedAfter", None)
+            async with session.get(
+                "https://www.googleapis.com/youtube/v3/search", params=params
+            ) as resp:
+                data = await resp.json()
+                if resp.status != 200:
+                    raise RuntimeError(f"YouTube検索エラー: {str(data)[:300]}")
+            ids = [
+                it["id"]["videoId"]
+                for it in data.get("items", [])
+                if it.get("id", {}).get("videoId")
+            ]
+            if ids:
+                break
         if not ids:
             return []
         params2 = {
@@ -1516,13 +1524,16 @@ async def _plan(history):
         "『きみのコードのバグ直して』『〜という機能つけて』"
         "『そっちで自動で定期的に確認するシステムにして』）。"
         "restart=ボットの再起動依頼。"
-        "trend=YouTube急上昇や動画トレンドのリサーチ依頼"
-        "（例:『トレンド調べて』『料理動画のトレンドをリサーチして』）。"
+        "trend=既存のYouTube動画の調査・分析・人気動画のリサーチ依頼"
+        "（例:『トレンド調べて』『fatboyslimのMVリサーチして』『人気の動画10本』"
+        "『〜系の動画を調べて』。直前の会話がリサーチの流れならその続きもtrend）。"
         "talk=ClaudeとGeminiだけで自動会話させる依頼（例:『二人で雑談して』）。"
         "profile=学習済みの人物プロファイルを見たい（例:『プロフィール見せて』）。"
         "exec=ボット以外のファイルやコードを作成・編集・削除、コマンド実行する"
         "明確な作業指示（例:『server.pyのバグを直して』）。"
-        "video=動画・映像・CM・PVの制作依頼。image=画像・イラスト・ロゴの生成依頼。"
+        "video=あなたに新しく動画・映像・CM・PVを【制作】してほしい依頼"
+        "（例:『犬の30秒CM作って』）。既存動画を調べる話は video ではなく trend。"
+        "image=画像・イラスト・ロゴの生成依頼。"
         "chat=それ以外すべて（質問・相談・意見・雑談）。迷ったら必ずchat。\n"
         "- mode: 原則single。『重大な判断・設計・事実の突き合わせが本当に必要』な時だけdebate。\n"
         "- lead: claudeが得意=コード・デバッグ・論理的推論・設計判断・丁寧な日本語の長文 / "
