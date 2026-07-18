@@ -1491,7 +1491,8 @@ _PLAN_TRIGGER_RE = re.compile(
     "デバッグ|バグ|動画|映像|ＣＭ|CM|PV|画像|イラスト|ロゴ|絵|"
     "最新|ニュース|調べ|検索|比較|価格|いくら|発売|リリース|"
     "前に|昨日|以前|この前|先週|先月|過去|話した|決めた|約束|"
-    "機能|追加|変更|挙動|ボット|bot|自分|きみ|君|あなた|お前|再起動|短く|長く|口調"
+    "機能|追加|変更|挙動|ボット|bot|自分|きみ|君|あなた|お前|再起動|短く|長く|口調|"
+    "トレンド|急上昇|リサーチ|雑談|会話して|話して|プロフィール|プロファイル"
 )
 
 
@@ -1515,6 +1516,10 @@ async def _plan(history):
         "『きみのコードのバグ直して』『〜という機能つけて』"
         "『そっちで自動で定期的に確認するシステムにして』）。"
         "restart=ボットの再起動依頼。"
+        "trend=YouTube急上昇や動画トレンドのリサーチ依頼"
+        "（例:『トレンド調べて』『料理動画のトレンドをリサーチして』）。"
+        "talk=ClaudeとGeminiだけで自動会話させる依頼（例:『二人で雑談して』）。"
+        "profile=学習済みの人物プロファイルを見たい（例:『プロフィール見せて』）。"
         "exec=ボット以外のファイルやコードを作成・編集・削除、コマンド実行する"
         "明確な作業指示（例:『server.pyのバグを直して』）。"
         "video=動画・映像・CM・PVの制作依頼。image=画像・イラスト・ロゴの生成依頼。"
@@ -1532,7 +1537,10 @@ async def _plan(history):
         raw = await _ai_text(prompt, "plan")
         m = re.search(r"\{.*\}", raw, re.S)
         d = json.loads(m.group(0)) if m else {}
-        if d.get("kind") in ("chat", "exec", "video", "image", "selffix", "restart"):
+        if d.get("kind") in (
+            "chat", "exec", "video", "image", "selffix", "restart",
+            "trend", "talk", "profile",
+        ):
             kind = d["kind"]
         if d.get("mode") in ("single", "debate"):
             mode = d["mode"]
@@ -1677,6 +1685,37 @@ async def _handle_orchestrator(message, cid):
         return
     if kind == "restart":
         await _restart_self(cid)
+        return
+    if kind == "trend":
+        if not YOUTUBE_API_KEY:
+            await message.channel.send(
+                "YOUTUBE_API_KEY が未設定のためリサーチできません（README参照）。"
+            )
+            return
+        topic = re.sub(
+            r"(の)?(トレンド|急上昇|リサーチ|調査|分析|調べて|して|ちょうだい|ください|お願い(します)?|よ|ね)+$",
+            "", _latest_user_msg(history).strip(),
+        ).strip("　 。、")
+        asyncio.create_task(_run_trend_study(cid, topic or None))
+        return
+    if kind == "talk":
+        if state["running"]:
+            await message.channel.send("自動トークが進行中です。「止めて」で停止できます。")
+            return
+        await message.channel.send(
+            f"🎙️ ClaudeとGeminiで話します（最大 {MAX_TURNS} 発言。「止めて」で停止）"
+        )
+        asyncio.create_task(run_auto(cid, _latest_user_msg(history)))
+        return
+    if kind == "profile":
+        p = _load_profiles()
+        if p:
+            for i in range(0, len(p), 1900):
+                await message.channel.send(("🧠 " if i == 0 else "") + p[i:i + 1900])
+        else:
+            await message.channel.send(
+                "まだプロファイルはありません（会話がたまると自動で作られます）。"
+            )
         return
 
     # 通常会話（承認ダイアログは出さない）
