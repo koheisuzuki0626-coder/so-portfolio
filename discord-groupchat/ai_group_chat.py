@@ -1711,6 +1711,31 @@ def _is_model_not_found(e):
     return "model_not_found" in m or "not found" in m or "unknown model" in m
 
 
+async def _mcp_motion_control(image_url, video_url, request):
+    """Higgsfield MCP（mcp.higgsfield.ai）経由でモーション転写を実行。
+    claude CLI に MCP ツールを呼ばせる（要: Mac側で一度 claude mcp add ＋認証）。
+    成功時は動画URL、MCP未設定・失敗時は例外。"""
+    task = (
+        "Higgsfield の MCP ツール（motion_control。無ければ generate_video の"
+        "video reference / kling 系モデル）を使って、モーション転写動画を生成して。\n"
+        f"キャラクター画像URL: {image_url}\n"
+        f"参照動画URL（この動きを転写）: {video_url}\n"
+        f"内容の希望: {request[:300]}\n"
+        "生成ジョブは完了まで待つこと。出力の最終行は、成功なら生成された動画のURLだけ、"
+        "失敗なら『ERROR: 理由』だけにすること。"
+    )
+    out = await _run_claude_exec(task)
+    if not out or out.startswith("⚠️"):
+        raise RuntimeError(f"claude CLI実行失敗: {out[:200]}")
+    last = out.strip().splitlines()[-1].strip()
+    if last.upper().startswith("ERROR"):
+        raise RuntimeError(last[:300])
+    urls = re.findall(r"https?://\S+", out)
+    if not urls:
+        raise RuntimeError(f"動画URLが出力されませんでした: {out[-300:]}")
+    return urls[-1].rstrip(")。、」")
+
+
 async def _discover_hf_models():
     """Higgsfieldプラットフォームのモデルカタログを直接照会し、
     動画/モーション系のモデルIDを抽出して返す（ターミナル不要のDiscord内診断）。"""
@@ -1804,7 +1829,19 @@ async def _run_motion_control(message, request, ref_att):
             return
 
     await send_as(orch, cid, "🎬 モーション転写で動画を生成中…（数分かかります）")
-    # 通ったモデルIDは記憶し、次回からはそれを最初に試す
+
+    # ① まず Higgsfield MCP 経由（claude CLI が MCP ツールを呼ぶ）。
+    # MCPには Kling / motion_control 等、APIキーに無いモデルがある。
+    try:
+        vurl = await _mcp_motion_control(image_url, video_url, request)
+        if vurl:
+            add_history(cid, "Orchestrator", f"（モーション転写動画を生成した: {vurl}）")
+            await send_as(orch, cid, f"✅ できました！（Higgsfield MCP経由）\n{vurl}")
+            return
+    except Exception as e:  # noqa: BLE001
+        print(f"[motion] MCP経由失敗 → プラットフォームAPIへ: {str(e)[:200]}")
+
+    # ② プラットフォームAPI：通ったモデルIDは記憶し、次回からはそれを最初に試す
     saved = gen_settings.get("motion_app")
     candidates = ([saved] if saved else []) + [
         c for c in MOTION_CANDIDATES if c != saved
