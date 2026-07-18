@@ -521,6 +521,34 @@ GEMINI_COOLDOWN_SEC = int(os.getenv("GEMINI_COOLDOWN_SEC", "1800"))  # 既定30�
 _gemini_cooldown = {}
 _gemini_rr = {"i": 0}  # ラウンドロビン用インデックス
 
+# Gemini全滅（枠切れ）を検知したチャンネル。復活監視ループが復活を通知する。
+_gemini_watch = {"outage_cid": None}
+
+
+def _gemini_all_cooling():
+    """全モデルがクールダウン中（＝実質的にGemini全滅）かどうか。"""
+    now = time.time()
+    return bool(GEMINI_MODELS) and all(
+        _gemini_cooldown.get(m, 0) > now for m in GEMINI_MODELS
+    )
+
+
+async def _gemini_recovery_loop():
+    """Gemini無料枠の復活を5分おきに自動確認し、復活したらチャンネルに知らせる。"""
+    while True:
+        await asyncio.sleep(300)
+        cid = _gemini_watch.get("outage_cid")
+        if cid and not _gemini_all_cooling():
+            _gemini_watch["outage_cid"] = None
+            try:
+                await send_as(
+                    orch, cid,
+                    "✅ Gemini が復活しました（クールダウン明け）。"
+                    "動画の視聴・画像分析・リサーチがまた使えます。"
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"[gemini_watch] 復活通知の送信失敗: {e}")
+
 
 def _gen_sync(model, prompt):
     return gemini_client.models.generate_content(model=model, contents=prompt).text
@@ -1230,7 +1258,11 @@ async def _apply_youtube_context(message, content):
                     _gemini_watch_youtube_sync, url, YOUTUBE_CHAT_PROMPT, "youtube_link"
                 )
             except GeminiQuotaExceeded as e:
-                await message.channel.send(f"⚠️ 動画を視聴できませんでした: {e}")
+                _gemini_watch["outage_cid"] = message.channel.id
+                await message.channel.send(
+                    f"⚠️ 動画を視聴できませんでした: {e}\n"
+                    "（復活を5分おきに自動確認して、復活したら知らせます）"
+                )
                 continue
             except Exception as e:  # noqa: BLE001
                 print(f"[youtube_link] 視聴失敗 {url}: {str(e)[:200]}")
@@ -1299,6 +1331,7 @@ async def _run_trend_study(cid, query=None):
             )
         except GeminiQuotaExceeded as e:
             quota_hit = True
+            _gemini_watch["outage_cid"] = cid
             print(f"[trend] Gemini無料枠切れ → 視聴をスキップしメタ情報分析へ: {e}")
             await channel.send(
                 "⚠️ Gemini無料枠切れのため動画の視聴はスキップし、"
@@ -1574,7 +1607,14 @@ async def _orchestrate(mode, lead, search, history, recall=False):
         except Exception as e:  # noqa: BLE001
             # Claudeがタイムアウト・上限などで落ちたらGeminiで応答（無応答を防ぐ）
             print(f"[orchestrate] Claude失敗 → Geminiへ: {str(e)[:150]}")
-            return await _gemini_call(_answer_prompt("Gemini", history, ctx))
+            try:
+                return await _gemini_call(_answer_prompt("Gemini", history, ctx))
+            except Exception as e2:  # noqa: BLE001
+                # 両方ダウン：本当の原因（Claude側）を隠さず両方報告する
+                raise RuntimeError(
+                    f"ClaudeもGeminiも応答できません。\n"
+                    f"・Claude: {str(e)[:180]}\n・Gemini: {str(e2)[:120]}"
+                )
 
     # ② ディベートモード：まず両者が独立に回答（検索結果があれば共有）
     results = await asyncio.gather(
@@ -1652,6 +1692,8 @@ async def _handle_orchestrator(message, cid):
                 except Exception:  # noqa: BLE001
                     answer = "⚠️ 一時的に応答できませんでした。少し後で試してください。"
             else:
+                if "gemini" in str(e).lower():
+                    _gemini_watch["outage_cid"] = cid
                 answer = f"⚠️ 応答に失敗: {str(e)[:300]}"
     add_history(cid, "Orchestrator", answer)
     await send_as(orch, cid, answer)
@@ -2282,6 +2324,7 @@ async def on_ready():
     if not _trend_task_started:
         _trend_task_started = True
         asyncio.create_task(_daily_trend_loop())
+        asyncio.create_task(_gemini_recovery_loop())
 
 
 @orch.event
