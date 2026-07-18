@@ -1694,6 +1694,66 @@ async def _handle_image_request(cid, request):
 # 「モーションコントロールで作りたい」→ 後から動画添付、の分割メッセージに対応。
 _pending_motion = {}
 
+# モーション転写のモデルID候補。上から順に試し、通ったIDを gen_settings に記憶する。
+# （Higgsfieldのカタログは非公開のため、fal互換パスと参照動画対応モデルを網羅的に試す）
+MOTION_CANDIDATES = [
+    "kling-video/v2.6/pro/motion-control",
+    "kling-video/v2.6/standard/motion-control",
+    "fal-ai/kling-video/v2.6/pro/motion-control",
+    "kling-video/v3/standard/motion-control",
+    "bytedance/seedance/v2/pro/reference-to-video",
+    "bytedance/seedance/v1/pro/reference-to-video",
+]
+
+
+def _is_model_not_found(e):
+    m = str(e).lower()
+    return "model_not_found" in m or "not found" in m or "unknown model" in m
+
+
+async def _discover_hf_models():
+    """Higgsfieldプラットフォームのモデルカタログを直接照会し、
+    動画/モーション系のモデルIDを抽出して返す（ターミナル不要のDiscord内診断）。"""
+    key = os.getenv("HIGGSFIELD_API_KEY", "")
+    secret = os.getenv("HIGGSFIELD_API_SECRET", "")
+    if not key:
+        return "APIキー未設定のためカタログを照会できません。"
+    auth_headers = [
+        {"Authorization": f"Key {key}:{secret}"},
+        {"hf-api-key": key, "hf-secret": secret},
+        {"Authorization": f"Bearer {key}:{secret}"},
+    ]
+    bases = ["https://platform.higgsfield.ai", "https://api.higgsfield.ai",
+             "https://cloud.higgsfield.ai/api"]
+    paths = ["/v1/models", "/models", "/v1/apps", "/apps", "/v1/catalog"]
+    async with aiohttp.ClientSession() as session:
+        for base in bases:
+            for path in paths:
+                for headers in auth_headers:
+                    try:
+                        async with session.get(
+                            base + path, headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=20),
+                        ) as resp:
+                            if resp.status != 200:
+                                continue
+                            text = await resp.text()
+                    except Exception:  # noqa: BLE001
+                        continue
+                    # 動画/モーション系のIDらしき文字列を抽出
+                    ids = sorted(set(re.findall(
+                        r'"([\w\-./]*(?:kling|motion|video|seedance|dop)[\w\-./]*)"',
+                        text, re.I,
+                    )))
+                    hits = [i for i in ids if "/" in i or "-" in i][:40]
+                    if hits:
+                        return (
+                            f"✅ カタログ取得成功（{base + path}）。動画/モーション系のID候補:\n"
+                            + "\n".join(f"・{h}" for h in hits)
+                        )
+                    return f"カタログは取得できましたがIDを抽出できず。先頭部分:\n{text[:800]}"
+    return "モデルカタログのエンドポイントが見つかりませんでした（全候補で失敗）。"
+
 
 async def _run_motion_control(message, request, ref_att):
     """参照動画の動きを転写して動画生成（Kling モーションコントロール・1発実行）。
@@ -1743,22 +1803,52 @@ async def _run_motion_control(message, request, ref_att):
             await send_as(orch, cid, "⚠️ キャラクター画像を用意できませんでした。")
             return
 
-    await send_as(orch, cid, "🎬 Kling モーションコントロールで生成中…（数分かかります）")
-    try:
-        vurl = await hf_wrapper.motion_control_video(image_url, video_url, prompt=request)
-    except Exception as e:  # noqa: BLE001
-        if _is_credit_error(e):
-            await send_as(orch, cid, CREDIT_MSG)
-        else:
-            await send_as(
-                orch, cid,
-                f"⚠️ モーションコントロール生成に失敗: {str(e)[:300]}\n"
-                "（モデルIDが違う可能性があります。Macで `python hf_models.py` を実行した"
-                "結果を教えてもらえれば正しいIDに直せます）"
+    await send_as(orch, cid, "🎬 モーション転写で動画を生成中…（数分かかります）")
+    # 通ったモデルIDは記憶し、次回からはそれを最初に試す
+    saved = gen_settings.get("motion_app")
+    candidates = ([saved] if saved else []) + [
+        c for c in MOTION_CANDIDATES if c != saved
+    ]
+    vurl = None
+    for cand in candidates:
+        try:
+            vurl = await hf_wrapper.motion_control_video(
+                image_url, video_url, prompt=request, model=cand
             )
+        except Exception as e:  # noqa: BLE001
+            if _is_model_not_found(e):
+                print(f"[motion] {cand}: モデルなし → 次の候補へ")
+                continue
+            if _is_credit_error(e):
+                await send_as(orch, cid, CREDIT_MSG)
+            else:
+                await send_as(
+                    orch, cid,
+                    f"⚠️ モーション転写に失敗（モデル: {cand}）: {str(e)[:300]}"
+                )
+            return
+        if vurl:
+            if gen_settings.get("motion_app") != cand:
+                gen_settings["motion_app"] = cand
+                _save_gen_settings()
+            break
+    if not vurl:
+        # 全候補がmodel_not_found → カタログを直接照会して使えるIDを提示
+        await send_as(
+            orch, cid,
+            "⚠️ モーション転写に使えるモデルIDが見つかりませんでした。"
+            "Higgsfieldのモデルカタログを照会します…"
+        )
+        report = await _discover_hf_models()
+        await send_as(orch, cid, report[:1900])
+        await send_as(
+            orch, cid,
+            "上の一覧にモーション/参照動画系のIDがあれば、"
+            "「モーションのモデルを ○○○ にして」と送ってください。設定して再試行できます。"
+        )
         return
-    add_history(cid, "Orchestrator", f"（モーションコントロール動画を生成した: {vurl}）")
-    await send_as(orch, cid, f"✅ できました！\n{vurl}")
+    add_history(cid, "Orchestrator", f"（モーション転写動画を生成した: {vurl}）")
+    await send_as(orch, cid, f"✅ できました！（モデル: {gen_settings['motion_app']}）\n{vurl}")
 
 
 async def _synthesize(claude_ans, gemini_ans, history, extra=""):
@@ -1858,6 +1948,17 @@ async def _handle_orchestrator(message, cid):
     それ以外（質問・相談・雑談）は普通に会話する。"""
     history = get_history(cid)
     latest = _latest_user_msg(history)
+
+    # モーション転写モデルのID直接指定（「モーションのモデルを ○○ にして」）
+    m = re.search(r"モーション\S*の?モデル\S*を\s*([\w\-./]{4,})\s*に", latest)
+    if m:
+        gen_settings["motion_app"] = m.group(1)
+        _save_gen_settings()
+        await message.channel.send(
+            f"🔧 モーション転写のモデルを {m.group(1)} に設定しました。"
+            "もう一度、動画を添付して依頼してください。"
+        )
+        return
 
     # モデル設定の確認（「今のモデル設定教えて」等）
     if re.search("モデル", latest) and re.search("設定|確認|見せて|教えて|どれ|なに|何", latest):
