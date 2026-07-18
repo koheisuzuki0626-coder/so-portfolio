@@ -103,6 +103,14 @@ Higgsfield を使った承認フロー。各段階でテキスト返信して進
 - 対応: kling / seedance / hailuo(minimax) / dop（動画）、nano banana / seedream / flux（画像）
 - 「**今のモデル設定教えて**」で現在の設定を確認
 - 「クリングで犬のCM作って」のように制作依頼と同時に指定してもOK
+
+**モーションコントロール（動きの転写・1発生成）**：
+参照動画（mp4/mov・2〜60秒・720p/1080p）を添付して
+「**この動きでモーションコントロールで生成して**」と頼むと、Kling が参照動画の動きを
+キャラクターに転写した動画を1発で生成します（構成案フローは通しません）。
+- キャラ画像も一緒に添付 → その見た目で生成
+- 画像なし → 依頼文からキャラ画像を自動生成（Gemini無料枠→Higgsfieldの順）
+- モデルは `.env` の `HIGGSFIELD_MOTION_APP` で変更可（既定: kling-video/v2.6/pro/motion-control）
 ※動画生成は Gemini API（Veo）だと無料枠が無く従量課金（$0.15〜0.60/秒）のため、Higgsfield のままです。
 
 `!cancel` で中止。

@@ -17,6 +17,8 @@ import higgsfield_client as _hf  # 公式SDK（pip install higgsfield_client）
 # Higgsfield のモデルID（公式SDK実例のパス形式）。.env で上書き可能。
 IMAGE_APP = os.getenv("HIGGSFIELD_IMAGE_APP", "flux-pro/kontext/max/text-to-image")
 VIDEO_APP = os.getenv("HIGGSFIELD_VIDEO_APP", "/v1/image2video/dop")
+# モーションコントロール（参照動画の動きをキャラ画像に転写）
+MOTION_APP = os.getenv("HIGGSFIELD_MOTION_APP", "kling-video/v2.6/pro/motion-control")
 
 
 def _ensure_env():
@@ -60,6 +62,23 @@ async def generate_image(prompt, model=None, **arguments):
     url = _find_url(result)
     if not url:
         raise RuntimeError(f"画像URLが取れません（形が想定と違う）: {str(result)[:600]}")
+    return url
+
+
+async def motion_control_video(image_url, video_url, prompt="", model=None, **arguments):
+    """参照動画（video_url）の動きを、キャラ画像（image_url）に転写して動画生成。"""
+    _ensure_env()
+    args = {"image_url": image_url, "video_url": video_url, **arguments}
+    if prompt:
+        args["prompt"] = prompt
+    result = await _hf.subscribe_async(model or MOTION_APP, arguments=args)
+    try:
+        return result["videos"][0]["url"]
+    except (KeyError, IndexError, TypeError):
+        pass
+    url = _find_url(result)
+    if not url:
+        raise RuntimeError(f"動画URLが取れません（形が想定と違う）: {str(result)[:600]}")
     return url
 
 

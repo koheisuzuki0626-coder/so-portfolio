@@ -1679,6 +1679,72 @@ async def _handle_image_request(cid, request):
             await send_as(orch, cid, f"⚠️ 画像生成に失敗: {str(e)[:200]}")
 
 
+async def _run_motion_control(message, request, ref_att):
+    """参照動画の動きを転写して動画生成（Kling モーションコントロール・1発実行）。
+    キャラ画像：画像も添付されていればそれを使用、無ければ依頼文から自動生成。"""
+    cid = message.channel.id
+    if not HF_AVAILABLE:
+        await send_as(orch, cid, f"⚠️ Higgsfield が使えません: {HF_IMPORT_ERROR}")
+        return
+    video_url = ref_att.url
+
+    # キャラクター画像を決める
+    img_att = next(
+        (a for a in message.attachments
+         if Path(a.filename).suffix.lower() in SUPPORTED_IMAGE_TYPES),
+        None,
+    )
+    if img_att:
+        image_url = img_att.url
+        await send_as(orch, cid, "🎭 添付画像のキャラクターに、参照動画の動きを転写します…")
+    else:
+        await send_as(orch, cid, "🎭 キャラクター画像を生成してから、参照動画の動きを転写します…")
+        img_prompt = (
+            "次の依頼に登場するキャラクター/被写体の画像生成プロンプトを、"
+            "英語1行・カンマ区切りで出力（プロンプトのみ）。\n依頼: " + request
+        )
+        try:
+            sc = (await _ai_text_bg(img_prompt, "motion_char_prompt")).strip().splitlines()[0]
+        except Exception:  # noqa: BLE001
+            sc = request
+        image_url = None
+        try:
+            data = await asyncio.to_thread(_gemini_generate_image_sync, sc)
+            image_url = await send_image_bytes(
+                cid, f"キャラクター: {sc[:120]}", data, "character.png"
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[motion] Geminiキャラ画像失敗: {str(e)[:150]}")
+            try:
+                image_url = await hf_wrapper.generate_image(
+                    sc, model=gen_settings["image_app"]
+                )
+                await send_as(orch, cid, f"キャラクター画像: {image_url}")
+            except Exception as e2:  # noqa: BLE001
+                await send_as(orch, cid, f"⚠️ キャラクター画像の生成に失敗: {str(e2)[:200]}")
+                return
+        if not image_url:
+            await send_as(orch, cid, "⚠️ キャラクター画像を用意できませんでした。")
+            return
+
+    await send_as(orch, cid, "🎬 Kling モーションコントロールで生成中…（数分かかります）")
+    try:
+        vurl = await hf_wrapper.motion_control_video(image_url, video_url, prompt=request)
+    except Exception as e:  # noqa: BLE001
+        if _is_credit_error(e):
+            await send_as(orch, cid, CREDIT_MSG)
+        else:
+            await send_as(
+                orch, cid,
+                f"⚠️ モーションコントロール生成に失敗: {str(e)[:300]}\n"
+                "（モデルIDが違う可能性があります。Macで `python hf_models.py` を実行した"
+                "結果を教えてもらえれば正しいIDに直せます）"
+            )
+        return
+    add_history(cid, "Orchestrator", f"（モーションコントロール動画を生成した: {vurl}）")
+    await send_as(orch, cid, f"✅ できました！\n{vurl}")
+
+
 async def _synthesize(claude_ans, gemini_ans, history, extra=""):
     """③ 司令塔が統合。合意点を軸に、対立点があれば触れて単一回答へ。"""
     prompt = (
@@ -2634,6 +2700,30 @@ async def on_message(message):
         asyncio.create_task(run_auto(cid, topic))
         return
     if content.startswith("!"):
+        return
+
+    # モーションコントロール：動画を添付して「この動きで」「モーションコントロールで」
+    # と依頼したら、参照動画の動きを転写して1発で動画生成（構成案フローを通さない）
+    if message.attachments and re.search(
+        "モーション|この動き|動きで生成|動きを真似|動きをコピー|動きを転写", content
+    ):
+        ref = next(
+            (a for a in message.attachments
+             if Path(a.filename).suffix.lower() in SUPPORTED_VIDEO_TYPES),
+            None,
+        )
+        if ref:
+            add_history(
+                cid, message.author.display_name,
+                content + "（参照動画を添付してモーションコントロール生成を依頼）",
+            )
+            asyncio.create_task(_run_motion_control(message, content, ref))
+            return
+        await message.channel.send(
+            "🎭 モーションコントロールには参照動画が必要です。"
+            "動きの元になる動画（mp4/mov・2〜60秒・720p/1080p）を添付して、"
+            "もう一度依頼してください。キャラ画像も一緒に添付するとその見た目で生成します。"
+        )
         return
 
     # 進行中プロジェクトがあれば、その返信（承認/修正）として扱う
