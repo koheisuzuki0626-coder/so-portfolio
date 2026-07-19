@@ -1617,10 +1617,13 @@ async def _plan(history):
         '形式: {"kind":"chat"|"exec"|"video"|"image"|"selffix"|"restart",'
         '"mode":"single"|"debate",'
         '"lead":"claude"|"gemini","search":true|false,"recall":true|false}\n'
-        "- kind: selffix=このボット自身（そっち・きみ・システム側）の機能追加・修正・"
-        "挙動変更・自動化の依頼（例:『返答をもっと短くして』『!trendの本数を増やして』"
-        "『きみのコードのバグ直して』『〜という機能つけて』"
-        "『そっちで自動で定期的に確認するシステムにして』）。"
+        "- kind: selffix=このボット自身のコードを【今すぐ実際に書き換える】明確な命令のみ"
+        "（例:『返答をもっと短くして』『!trendの本数を3本に変えて』"
+        "『きみのコードのバグを直して』）。"
+        "【重要】次はselffixではなくchat: 質問（『〜は？』『どう思う？』『なんで？』）、"
+        "アイデアや構想の相談（『〜みたいなの作れる？』『〜を入れたい』『〜してもいいと思う』）、"
+        "原因の議論、進捗の確認。迷ったらchat。実際に『直して/変えて/修正して』と"
+        "命令された時だけselffix。"
         "restart=ボットの再起動依頼。"
         "trend=既存のYouTube動画の調査・分析・人気動画のリサーチ依頼"
         "（例:『トレンド調べて』『fatboyslimのMVリサーチして』『人気の動画10本』"
@@ -2312,6 +2315,16 @@ async def _handle_orchestrator(message, cid):
     # 分類＋処理方針を1回のAI呼び出しで判定（旧: Claude CLI 2回直列で遅かった）
     async with message.channel.typing():
         kind, mode, lead, search, recall = await _plan(history)
+    # 保険：質問や相談っぽい発言が作業系(selffix/exec)に誤分類されたらchatに戻す
+    # （「〜は？」「どう思う？」「〜作れる？」「〜してもいい」等は会話であって命令ではない）
+    if kind in ("selffix", "exec") and (
+        latest.rstrip().endswith(("？", "?")) or re.search(
+            "どう思う|なんで|なぜ|どうやって|できる\\?|できる？|作れる|入れられる|"
+            "って何|とは|意味|進捗|どうなって|してもいい|でもいい|と思う|かな", latest
+        )
+    ):
+        print(f"[plan] {kind}→chat に降格（質問/相談と判断）")
+        kind = "chat"
     if kind == "video":
         # 単発の動画生成は、最適モデルを自動選定して直接生成（滑らかで確実）。
         # 構成案→絵コンテの多段フローが要るときは !project を使う。
@@ -2923,8 +2936,8 @@ async def _run_self_fix(cid, request, owner_id):
     検証失敗・却下時はバックアップから自動ロールバックする。"""
     await send_as(
         orch, cid,
-        f"🛠 ボット自身の改修ですね：{request[:200]}\n"
-        "コードを修正して検証します（1〜3分ほど）…"
+        "🛠 ボット自身の改修として受け取りました。コードを修正して検証します（1〜3分ほど）…\n"
+        "※もし「相談・質問だっただけ」なら、続けて『今のは相談』と送ってください。"
     )
     try:
         shutil.copy2(SELF_FILE, SELF_BACKUP)
