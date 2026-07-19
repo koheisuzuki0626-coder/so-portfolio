@@ -1716,15 +1716,18 @@ async def _mcp_motion_control(image_url, video_url, request):
     claude CLI に MCP ツールを呼ばせる（要: Mac側で一度 claude mcp add ＋認証）。
     成功時は動画URL、MCP未設定・失敗時は例外。"""
     task = (
-        "Higgsfield の MCP ツール（motion_control。無ければ generate_video の"
-        "video reference / kling 系モデル）を使って、モーション転写動画を生成して。\n"
-        f"キャラクター画像URL: {image_url}\n"
-        f"参照動画URL（この動きを転写）: {video_url}\n"
-        f"内容の希望: {request[:300]}\n"
-        "生成ジョブは完了まで待つこと。出力の最終行は、成功なら生成された動画のURLだけ、"
-        "失敗なら『ERROR: 理由』だけにすること。"
+        "Higgsfield の MCP ツールでモーション転写動画を生成して。\n"
+        "使うツール: motion_control（見つからなければ generate_video で "
+        "model=kling3_0_motion_control。これは過去に実績のある正しいモデルID）。\n"
+        f"・参照動画（動きの元・role=video）: {video_url}\n"
+        f"・キャラクター画像（見た目・role=image）: {image_url}\n"
+        "・character_orientation: video ／ duration: 参照動画の長さに合わせる（最大15秒）\n"
+        f"・内容の希望: {request[:300]}\n"
+        "URLはそのまま media_import_url 等で取り込んでよい。生成ジョブは完了まで待つこと。"
+        "出力の最終行は、成功なら生成された動画のURLだけ、失敗なら『ERROR: 理由』だけにすること。"
     )
     out = await _run_claude_exec(task)
+    print(f"[motion_mcp] claude出力末尾: {(out or '')[-400:]}")
     if not out or out.startswith("⚠️"):
         raise RuntimeError(f"claude CLI実行失敗: {out[:200]}")
     last = out.strip().splitlines()[-1].strip()
