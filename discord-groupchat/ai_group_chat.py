@@ -1726,7 +1726,7 @@ async def _mcp_motion_control(image_url, video_url, request):
         "URLはそのまま media_import_url 等で取り込んでよい。生成ジョブは完了まで待つこと。"
         "出力の最終行は、成功なら生成された動画のURLだけ、失敗なら『ERROR: 理由』だけにすること。"
     )
-    out = await _run_claude_exec(task)
+    out = await _run_claude_exec(task, timeout=900)
     print(f"[motion_mcp] claude出力末尾: {(out or '')[-400:]}")
     if not out or out.startswith("⚠️"):
         raise RuntimeError(f"claude CLI実行失敗: {out[:200]}")
@@ -1842,7 +1842,12 @@ async def _run_motion_control(message, request, ref_att):
             await send_as(orch, cid, f"✅ できました！（Higgsfield MCP経由）\n{vurl}")
             return
     except Exception as e:  # noqa: BLE001
-        print(f"[motion] MCP経由失敗 → プラットフォームAPIへ: {str(e)[:200]}")
+        print(f"[motion] MCP経由失敗 → プラットフォームAPIへ: {str(e)[:300]}")
+        await send_as(
+            orch, cid,
+            f"ℹ️ MCP経由の生成に失敗しました（理由: {str(e)[:250]}）。"
+            "APIキー経由の代替を試します…"
+        )
 
     # ② プラットフォームAPI：通ったモデルIDは記憶し、次回からはそれを最初に試す
     saved = gen_settings.get("motion_app")
@@ -2476,7 +2481,7 @@ def _try_text_approval(cid, user_id, content):
     return None
 
 
-async def _run_claude_exec(task):
+async def _run_claude_exec(task, timeout=600):
     """承認済みタスクをフル権限で実行し、標準出力を返す。"""
     proc = await asyncio.create_subprocess_exec(
         CLAUDE_BIN, "-p", "--dangerously-skip-permissions", task,
@@ -2485,7 +2490,7 @@ async def _run_claude_exec(task):
         cwd=BASE_DIR,
     )
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=600)
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         return "⚠️ 実行がタイムアウトしました。"
