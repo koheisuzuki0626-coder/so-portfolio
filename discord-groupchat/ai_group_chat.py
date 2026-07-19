@@ -1741,6 +1741,28 @@ def _clear_motion_job():
         pass
 
 
+def _pending_eta_msg(job):
+    """まだ生成中のとき、投入からの経過時間と完成目安を返す。"""
+    if not job or not job.get("submitted_at"):
+        return "⏳ まだ生成中のようです。数分後にもう一度「できた？」と送ってください。"
+    elapsed = int((time.time() - job["submitted_at"]) / 60)  # 分
+    label = job.get("label", "生成")
+    # モーション/動画は概ね5〜12分、画像は1〜3分が目安
+    typical = 3 if job.get("media_type") == "image" else 12
+    remain = max(typical - elapsed, 0)
+    if remain <= 0:
+        return (
+            f"⏳ {label}は投入から約{elapsed}分経過。目安を過ぎていますが"
+            "Higgsfield側でまだ生成中のようです（混雑時は時間がかかります）。"
+            "もう少し待って「できた？」と送ってください。"
+        )
+    return (
+        f"⏳ {label}は投入から約{elapsed}分経過。通常{typical}分ほどなので、"
+        f"あと目安 約{remain}分です。完成したら自動で投稿します"
+        "（「できた？」でいつでも確認できます）。"
+    )
+
+
 def _extract_video_url(text):
     """claude出力からメディアURLを頑健に抽出（cloudfront / .mp4/.png/.jpg / http）。"""
     for pat in (r"https?://\S*cloudfront\S+",
@@ -2006,11 +2028,7 @@ async def _watch_motion_job(cid):
             await send_as(orch, cid, f"✅ {label}ができました！\n{vurl}")
             return
     # 30分たっても完成せず → 記録は残し、後で「できた？」で確認できるようにする
-    await send_as(
-        orch, cid,
-        "⏳ まだ生成中のようです。もう少し待ってから「できた？」"
-        "と送ってください（記録は保持しています）。"
-    )
+    await send_as(orch, cid, _pending_eta_msg(_load_motion_job() or {}))
 
 
 async def _run_motion_control(message, request, ref_att):
@@ -2230,22 +2248,23 @@ async def _handle_orchestrator(message, cid):
     history = get_history(cid)
     latest = _latest_user_msg(history)
 
-    # モーション転写ジョブの完了確認（「モーション動画できた？」「動画の進捗どう？」等）
-    if re.search("モーション|動画", latest) and re.search(
-        "できた|完成|終わった|どうなった|状況|進捗|まだ", latest
+    # 生成ジョブの完了確認（「モーション動画できた？」「あとどれくらい？」等）
+    if re.search("モーション|動画|画像|生成", latest) and re.search(
+        "できた|完成|終わった|どうなった|状況|進捗|まだ|あとどれ|どれくらい|どのくらい|何分", latest
     ):
+        job = _load_motion_job() or {}
         await message.channel.send("🔎 Higgsfield の生成状況を確認します…")
         try:
-            vurl = await _mcp_motion_status()
+            vurl = await _mcp_gen_status(job.get("media_type", "video"), job.get("model"))
         except Exception as e:  # noqa: BLE001
             await message.channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
             return
         if vurl:
             _clear_motion_job()
-            add_history(cid, "Orchestrator", f"（モーション転写動画が完成: {vurl}）")
+            add_history(cid, "Orchestrator", f"（生成物が完成: {vurl}）")
             await message.channel.send(f"✅ できています！\n{vurl}")
         else:
-            await message.channel.send("⏳ まだ処理中です。数分後にもう一度聞いてください。")
+            await message.channel.send(_pending_eta_msg(job))
         return
 
     # モーションの顔の向きモード切替（顔重視 image / 動き重視 video）
@@ -3139,13 +3158,17 @@ async def on_message(message):
     if content.startswith("!"):
         return
 
-    # 生成した動画/画像の状態確認（「できた？」「見れる？」「URL」等）。
+    # 生成した動画/画像の状態確認（「できた？」「あとどれくらい？」「確認して」等）。
     # 生成依頼フローより先に処理する（"モーション"等の語で誤起動しないため）。
-    if not message.attachments and re.search("動画|画像|モーション|生成", content) and re.search(
+    _job = _load_motion_job()
+    _status_kw = re.search(
         "できた|完成|終わった|どうなった|状況|進捗|まだ|見れる|見せて|見たい|"
-        "url|ＵＲＬ|どこ|ある\\?|ある？|ちょうだい|ください", content, re.I
-    ):
-        job = _load_motion_job() or {}
+        "url|ＵＲＬ|どこ|ある\\?|ある？|ちょうだい|ください|"
+        "あとどれ|どれくらい|どのくらい|どれぐらい|どのぐらい|何分|確認して", content, re.I
+    )
+    _status_ctx = re.search("動画|画像|モーション|生成", content) or (_job and _status_kw)
+    if not message.attachments and _status_kw and _status_ctx:
+        job = _job or {}
         await message.channel.send("🔎 Higgsfield の生成状況を確認します…")
         try:
             vurl = await _mcp_gen_status(
@@ -3159,9 +3182,7 @@ async def on_message(message):
             add_history(cid, "Orchestrator", f"（生成物が完成: {vurl}）")
             await message.channel.send(f"✅ できています！URLはこちら:\n{vurl}")
         else:
-            await message.channel.send(
-                "⏳ まだ生成中のようです。数分後にもう一度「できた？」と送ってください。"
-            )
+            await message.channel.send(_pending_eta_msg(job))
         return
 
     # Higgsfieldでの生成（モデル指定 or 自動選定）。
