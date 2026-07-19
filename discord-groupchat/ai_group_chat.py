@@ -1756,14 +1756,23 @@ async def _mcp_motion_control(image_url, video_url, request):
     """Higgsfield MCP経由でモーション転写ジョブを投入する（完了は待たない）。
     claude CLI に MCP ツールを呼ばせる（要: Mac側で一度 claude mcp add ＋認証）。
     投入できたら True、失敗なら例外。"""
+    # 顔の同一性を上げるため：高解像度＋identity保持の指示＋顔の向きモードは
+    # gen_settings["motion_orientation"]（既定 image=キャラ画像の見た目を優先）
+    orient = gen_settings.get("motion_orientation", "image")
     task = (
         "Higgsfield の MCP ツールでモーション転写動画の生成ジョブを投入して。\n"
         "使うツール: motion_control（無ければ generate_video で "
         "model=kling3_0_motion_control。過去に実績のある正しいモデルID）。\n"
         f"・参照動画（動きの元・role=video）: {video_url}\n"
-        f"・キャラクター画像（見た目・role=image）: {image_url}\n"
-        "・character_orientation: video ／ duration: 参照動画の長さに合わせる（最大15秒）\n"
+        f"・キャラクター画像（見た目・顔・role=image）: {image_url}\n"
+        f"・character_orientation: {orient} "
+        "（キャラクター画像の顔・見た目をできる限り忠実に保つこと）\n"
+        "・resolution/画質は選べる範囲で最も高いもの（1080p等）を使う"
+        "（顔のディテール保持のため。低解像度は避ける）\n"
+        "・duration: 参照動画の長さに合わせる（最大15秒）\n"
         f"・内容の希望: {request[:300]}\n"
+        "プロンプトには『preserve the exact face and identity of the reference "
+        "character, keep facial features consistent』を含める。\n"
         "URLは media_import_url 等で取り込んでよい。ジョブの投入だけ行い、完了は待たなくてよい。"
         "投入できたら最終行に『SUBMITTED』、失敗したら『ERROR: 理由』とだけ出力して。"
     )
@@ -2238,6 +2247,22 @@ async def _handle_orchestrator(message, cid):
         else:
             await message.channel.send("⏳ まだ処理中です。数分後にもう一度聞いてください。")
         return
+
+    # モーションの顔の向きモード切替（顔重視 image / 動き重視 video）
+    if re.search("モーション|顔", latest) and re.search("向き|オリエン|モード|顔", latest):
+        if re.search("動き優先|動き重視|複雑な動き|video", latest, re.I):
+            gen_settings["motion_orientation"] = "video"
+            _save_gen_settings()
+            await message.channel.send("🔧 モーションを『動き優先(video)』にしました。")
+            return
+        if re.search("顔優先|顔重視|似せ|image|見た目", latest, re.I):
+            gen_settings["motion_orientation"] = "image"
+            _save_gen_settings()
+            await message.channel.send(
+                "🔧 モーションを『顔・見た目優先(image)』にしました。"
+                "次の生成から顔をより忠実に保ちます。"
+            )
+            return
 
     # モーション転写モデルのID直接指定（「モーションのモデルを ○○ にして」）
     m = re.search(r"モーション\S*の?モデル\S*を\s*([\w\-./]{4,})\s*に", latest)
