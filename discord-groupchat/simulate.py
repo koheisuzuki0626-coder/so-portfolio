@@ -147,6 +147,8 @@ def install_stubs(mcp_url=None):
     bot._self_diagnose = _rec_str("diagnose", "🩺 診断結果（スタブ）")
     bot._run_hf_generate = _rec("hf_generate")
     bot._run_short = _rec("short")
+    bot._run_revise = _rec("revise")
+    bot._load_last_gen = lambda cid: None  # 既定は直前生成なし
     bot._run_motion_control = _rec("motion_control")
     bot._run_trend_study = _rec("trend")
     bot._run_agent_task = _rec("agent")
@@ -263,6 +265,13 @@ async def run():
     install_stubs()
     r = await drive("この動きで", [_FakeAttachment("ref.mp4")])
     check("動画添付→motion_control", "motion_control" in r["fired"], f"{r['fired']}")
+
+    # 直前生成あり＋作り直し → revise
+    install_stubs()
+    bot._load_last_gen = lambda cid: {"prompt": "a cat", "media_type": "video",
+                                      "aspect_ratio": None, "label": "x"}
+    r = await drive("もう一回作り直して、顔をアップで")
+    check("作り直し→revise", "revise" in r["fired"], f"{r['fired']}")
 
     # ===== ② 状態確認（ジョブ有無で分岐）=====
     print("■ E2E: 状態確認")

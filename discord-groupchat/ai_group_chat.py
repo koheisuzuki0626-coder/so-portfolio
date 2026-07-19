@@ -1738,15 +1738,18 @@ def _match_gen_model(content):
 
 
 def classify_route(content, *, has_attachments=False, has_video_att=False,
-                   has_image_att=False, has_job=False):
+                   has_image_att=False, has_job=False, has_last_gen=False):
     """@メンションなし発言のルーティングを判定（AI(_plan)前の決定的ルートのみ）。
-    返り値: 'status'/'short'/'hf_model'/'hf_auto'/'motion'/'motion_ask'/None(=_planへ)。
+    返り値: 'status'/'revise'/'short'/'hf_model'/'hf_auto'/'motion'/'motion_ask'/None。
     on_message と同じ順序・同じ正規表現を使うので、これをテストすれば実挙動を検証できる。"""
     # ① 生成物の状態確認（添付なし・状態ワード・文脈）
     status_kw = _STATUS_KW_RE.search(content)
     status_ctx = _STATUS_CTX_RE.search(content) or (has_job and status_kw)
     if not has_attachments and status_kw and status_ctx:
         return "status"
+    # ①.4 前の生成の作り直し（直前の生成があり、修正マーカーがあるとき）
+    if has_last_gen and not has_attachments and _REVISE_RE.search(content):
+        return "revise"
     # ①.5 ショート量産（「ショート作って」「今日のショート」等）
     if re.search("ショート|shorts?|ショート動画", content, re.I) and (
         _GEN_INTENT2_RE.search(content) or re.search("今日の|ネタ|企画|お願い", content)
@@ -2156,6 +2159,8 @@ async def _run_hf_generate(message, request, model, media_type, label,
     except Exception as e:  # noqa: BLE001
         await send_as(orch, cid, f"⚠️ 生成の投入に失敗: {str(e)[:250]}")
         return
+    # 「もう一回作り直して」で引き継げるよう、今回のプロンプトを保存
+    _save_last_gen(cid, request, media_type, aspect_ratio, label)
     disp = label if model else f"自動選定: {chosen or '？'}"
     if isinstance(result, str):  # 投入中に既にURLが返った
         _clear_motion_job()
@@ -2169,6 +2174,65 @@ async def _run_hf_generate(message, request, model, media_type, label,
         "（「できた？」でいつでも確認可）。"
     )
     asyncio.create_task(_watch_motion_job(cid))
+
+
+# ---------- 直前の生成内容を記録（「もう一回作り直して」の文脈引き継ぎ用） ----------
+_LASTGEN_FILE = HISTORY_DIR / "last_gen.json"
+
+
+def _save_last_gen(cid, prompt, media_type, aspect_ratio, label):
+    try:
+        data = {}
+        if _LASTGEN_FILE.exists():
+            data = json.loads(_LASTGEN_FILE.read_text(encoding="utf-8"))
+        data[str(cid)] = {"prompt": prompt, "media_type": media_type,
+                          "aspect_ratio": aspect_ratio, "label": label,
+                          "t": time.time()}
+        _LASTGEN_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        print(f"[lastgen] 保存失敗: {e}")
+
+
+def _load_last_gen(cid):
+    try:
+        if _LASTGEN_FILE.exists():
+            return json.loads(_LASTGEN_FILE.read_text(encoding="utf-8")).get(str(cid))
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+# 「前の生成を修正して作り直す」意図の検出（明確なマーカーのみ）
+_REVISE_RE = re.compile(
+    "もう一回|もう一度|もっかい|作り直|作りなお|やり直|やりなお|"
+    "さっきの(動画|画像|映像|やつ|の)|前の(動画|画像|映像|やつ)|"
+    "同じの|別バージョン|別ver|少し変えて|ちょっと変えて|修正して"
+)
+
+
+async def _run_revise(message, instruction):
+    """直前の生成プロンプトに修正指示を適用して作り直す（文脈引き継ぎ）。"""
+    cid = message.channel.id
+    last = _load_last_gen(cid)
+    if not last:
+        await send_as(orch, cid,
+                      "直前の生成が見つかりません。まず何か生成してください。")
+        return
+    await send_as(orch, cid, "🔁 前の内容を踏まえて作り直します…")
+    ask = (
+        "既存の英語生成プロンプトに、ユーザーの日本語の修正指示を反映した"
+        "新しい英語プロンプトを1つ作って。カンマ区切り1行、英語のみ、本体だけ出力。\n"
+        f"【元プロンプト】{last['prompt']}\n【修正指示】{instruction}"
+    )
+    try:
+        new_prompt = (await _ai_text_bg(ask, "revise_prompt")).strip().splitlines()[0]
+        new_prompt = new_prompt.strip('"' + "'`") or last["prompt"]
+    except Exception:  # noqa: BLE001
+        new_prompt = last["prompt"]
+    await _run_hf_generate(
+        message, new_prompt, None, last.get("media_type", "video"),
+        "作り直し", aspect_ratio=last.get("aspect_ratio"), refine=False,
+    )
 
 
 # ---------- ショート量産ライン（スタイリッシュ/アート系 × YouTube Shorts） ----------
@@ -3523,6 +3587,7 @@ async def _dispatch_message(message):
         has_video_att=bool(_video_att),
         has_image_att=bool(_image_att),
         has_job=bool(_job),
+        has_last_gen=bool(_load_last_gen(cid)),
     )
     # 依頼待ち中に動画が添付された（キーワード無し）ケースもモーション実行に接続
     pm = _pending_motion.get(cid)
@@ -3543,6 +3608,11 @@ async def _dispatch_message(message):
             await message.channel.send(f"✅ できています！URLはこちら:\n{vurl}")
         else:
             await message.channel.send(_pending_eta_msg(job))
+        return
+
+    if route == "revise":
+        add_history(cid, message.author.display_name, content)
+        _spawn(_run_revise(message, content), cid, "作り直し")
         return
 
     if route == "short":
