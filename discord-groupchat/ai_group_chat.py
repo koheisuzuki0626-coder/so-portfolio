@@ -480,9 +480,12 @@ async def run_claude_cli(prompt):
 
 # ボットの全応答に共通の運用ルール（ターミナル案内の禁止＝Discord内で完結）
 BOT_OPS_GUIDE = (
-    "運用ルール: ボットのコード反映・再起動が話題になったら、ターミナルコマンドは"
+    "運用ルール: ボットのコード反映が話題になったら、ターミナルコマンドは"
     "案内せず『Discordで「再起動して」と送るだけでOK（自動で最新コードを取得して"
     "再起動される）』と案内する。ユーザーの操作は常にDiscord内で完結させる。"
+    "生成中の動画の進捗を聞かれたら『「モーション動画できた？」と送れば自動確認される』"
+    "と案内する。進捗確認のために再起動を勧めるのは禁止"
+    "（再起動すると進行中の完了監視が止まってしまうため）。"
 )
 
 
@@ -2040,9 +2043,9 @@ async def _handle_orchestrator(message, cid):
     history = get_history(cid)
     latest = _latest_user_msg(history)
 
-    # モーション転写ジョブの完了確認（「モーション動画できた？」等）
-    if re.search("モーション", latest) and re.search(
-        "できた|完成|終わった|どうなった|状況|まだ", latest
+    # モーション転写ジョブの完了確認（「モーション動画できた？」「動画の進捗どう？」等）
+    if re.search("モーション|動画", latest) and re.search(
+        "できた|完成|終わった|どうなった|状況|進捗|まだ", latest
     ):
         await message.channel.send("🔎 Higgsfield の生成状況を確認します…")
         try:
