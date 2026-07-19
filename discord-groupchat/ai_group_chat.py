@@ -1602,6 +1602,59 @@ _PLAN_TRIGGER_RE = re.compile(
 )
 
 
+# ---------- ルーティング判定（純粋関数・テスト対象） ----------
+_STATUS_KW_RE = re.compile(
+    "できた|完成|終わった|どうなった|状況|進捗|まだ|見れる|見せて|見たい|"
+    "url|ＵＲＬ|どこ|ある\\?|ある？|ちょうだい|ください|"
+    "あとどれ|どれくらい|どのくらい|どれぐらい|どのぐらい|何分|確認して", re.I
+)
+_STATUS_CTX_RE = re.compile("動画|画像|モーション|生成")
+_GEN_INTENT2_RE = re.compile("作って|作りたい|生成|つくって|animate|動かして|アニメ化")
+_MOTION_KW_RE = re.compile("モーション|この動き|動きで生成|動きを真似|動きをコピー|動きを転写")
+_QUESTION_RE = re.compile(
+    "どう思う|なんで|なぜ|どうやって|できる\\?|できる？|作れる|入れられる|"
+    "って何|とは|意味|進捗|どうなって|してもいい|でもいい|と思う|かな"
+)
+
+
+def _looks_like_question(text):
+    """質問・相談っぽい発言か（作業命令ではない）。selffix/exec の誤爆を防ぐ。"""
+    return bool(text.rstrip().endswith(("？", "?")) or _QUESTION_RE.search(text))
+
+
+def _match_gen_model(content):
+    """発言中のモデル名 → (model_id, media_type, label)。無ければ None。"""
+    low = content.lower()
+    for name in sorted(HF_GEN_MODELS, key=len, reverse=True):
+        if name in low:
+            return HF_GEN_MODELS[name]
+    return None
+
+
+def classify_route(content, *, has_attachments=False, has_video_att=False,
+                   has_image_att=False, has_job=False):
+    """@メンションなし発言のルーティングを判定（AI(_plan)前の決定的ルートのみ）。
+    返り値: 'status' / 'hf_model' / 'hf_auto' / 'motion' / 'motion_ask' / None(=_planへ)。
+    on_message と同じ順序・同じ正規表現を使うので、これをテストすれば実挙動を検証できる。"""
+    # ① 生成物の状態確認（添付なし・状態ワード・文脈）
+    status_kw = _STATUS_KW_RE.search(content)
+    status_ctx = _STATUS_CTX_RE.search(content) or (has_job and status_kw)
+    if not has_attachments and status_kw and status_ctx:
+        return "status"
+    # ② Higgsfield生成（モーション以外・生成意図あり）
+    if not re.search("モーション|この動き|動きを", content) and _GEN_INTENT2_RE.search(content):
+        if _match_gen_model(content):
+            return "hf_model"
+        auto_kw = re.search("おまかせ|お任せ|自動|最適|いい感じ|良い感じ|どれでも|モデル任せ|よしなに", content)
+        media_ref = has_video_att or has_image_att
+        if auto_kw or media_ref:
+            return "hf_auto"
+    # ③ モーション転写（キーワード or 依頼待ち中の動画添付）
+    if _MOTION_KW_RE.search(content):
+        return "motion" if has_video_att else "motion_ask"
+    return None  # 決定的ルートに該当せず → AI(_plan)へ
+
+
 async def _plan(history):
     """要求の分類（exec/video/image/chat）と処理方針（mode/lead/search/recall）を
     1回のAI呼び出しでまとめて判定する。以前は Claude CLI を2回直列に起動していて
@@ -2316,13 +2369,7 @@ async def _handle_orchestrator(message, cid):
     async with message.channel.typing():
         kind, mode, lead, search, recall = await _plan(history)
     # 保険：質問や相談っぽい発言が作業系(selffix/exec)に誤分類されたらchatに戻す
-    # （「〜は？」「どう思う？」「〜作れる？」「〜してもいい」等は会話であって命令ではない）
-    if kind in ("selffix", "exec") and (
-        latest.rstrip().endswith(("？", "?")) or re.search(
-            "どう思う|なんで|なぜ|どうやって|できる\\?|できる？|作れる|入れられる|"
-            "って何|とは|意味|進捗|どうなって|してもいい|でもいい|と思う|かな", latest
-        )
-    ):
+    if kind in ("selffix", "exec") and _looks_like_question(latest):
         print(f"[plan] {kind}→chat に降格（質問/相談と判断）")
         kind = "chat"
     if kind == "video":
@@ -3171,22 +3218,35 @@ async def on_message(message):
     if content.startswith("!"):
         return
 
-    # 生成した動画/画像の状態確認（「できた？」「あとどれくらい？」「確認して」等）。
-    # 生成依頼フローより先に処理する（"モーション"等の語で誤起動しないため）。
+    # ---- 決定的ルーティング（classify_route で判定。テストと同じ関数を使う）----
     _job = _load_motion_job()
-    _status_kw = re.search(
-        "できた|完成|終わった|どうなった|状況|進捗|まだ|見れる|見せて|見たい|"
-        "url|ＵＲＬ|どこ|ある\\?|ある？|ちょうだい|ください|"
-        "あとどれ|どれくらい|どのくらい|どれぐらい|どのぐらい|何分|確認して", content, re.I
+    _video_att = next(
+        (a for a in message.attachments
+         if Path(a.filename).suffix.lower() in SUPPORTED_VIDEO_TYPES),
+        None,
+    ) if message.attachments else None
+    _image_att = next(
+        (a for a in message.attachments
+         if Path(a.filename).suffix.lower() in SUPPORTED_IMAGE_TYPES),
+        None,
+    ) if message.attachments else None
+    route = classify_route(
+        content,
+        has_attachments=bool(message.attachments),
+        has_video_att=bool(_video_att),
+        has_image_att=bool(_image_att),
+        has_job=bool(_job),
     )
-    _status_ctx = re.search("動画|画像|モーション|生成", content) or (_job and _status_kw)
-    if not message.attachments and _status_kw and _status_ctx:
+    # 依頼待ち中に動画が添付された（キーワード無し）ケースもモーション実行に接続
+    pm = _pending_motion.get(cid)
+    if route is None and pm and _video_att and time.time() - pm["ts"] < 900:
+        route = "motion"
+
+    if route == "status":
         job = _job or {}
         await message.channel.send("🔎 Higgsfield の生成状況を確認します…")
         try:
-            vurl = await _mcp_gen_status(
-                job.get("media_type", "video"), job.get("model")
-            )
+            vurl = await _mcp_gen_status(job.get("media_type", "video"), job.get("model"))
         except Exception as e:  # noqa: BLE001
             await message.channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
             return
@@ -3198,56 +3258,31 @@ async def on_message(message):
             await message.channel.send(_pending_eta_msg(job))
         return
 
-    # Higgsfieldでの生成（モデル指定 or 自動選定）。
-    # モーション（動き転写）はこの後ろの専用フローに任せるため除外。
-    if not re.search("モーション|この動き|動きを", content) and re.search(
-        "作って|作りたい|生成|つくって|animate|動かして|アニメ化", content
-    ):
-        low = content.lower()
-        matched = None
-        for name in sorted(HF_GEN_MODELS, key=len, reverse=True):
-            if name in low:
-                matched = HF_GEN_MODELS[name]
-                break
-        media_ref = [
-            a for a in message.attachments
-            if Path(a.filename).suffix.lower() in (SUPPORTED_IMAGE_TYPES | SUPPORTED_VIDEO_TYPES)
-        ] if message.attachments else []
-        auto_kw = re.search("おまかせ|お任せ|自動|最適|いい感じ|良い感じ|どれでも|モデル任せ|よしなに", content)
-        if matched:
-            model, mtype, label = matched
-            add_history(cid, message.author.display_name, content)
-            asyncio.create_task(_run_hf_generate(message, content, model, mtype, label))
-            return
-        if auto_kw or media_ref:
-            # 画像/イラスト/ロゴ/絵/写真なら画像、それ以外は動画として最適モデルを自動選定
-            mtype = "image" if re.search("画像|イラスト|ロゴ|絵|写真|アイコン", content) else "video"
-            add_history(cid, message.author.display_name, content)
-            asyncio.create_task(_run_hf_generate(message, content, None, mtype, "自動選定"))
-            return
+    if route == "hf_model":
+        model, mtype, label = _match_gen_model(content)
+        add_history(cid, message.author.display_name, content)
+        asyncio.create_task(_run_hf_generate(message, content, model, mtype, label))
+        return
 
-    # モーションコントロール：「この動きで」「モーションコントロールで」と依頼されたら
-    # 参照動画の動きを転写して1発で動画生成（構成案フローを通さない）。
-    # 動画がまだ添付されていなければ依頼を覚えておき、後から添付されたら実行する。
-    _motion_kw = re.search(
-        "モーション|この動き|動きで生成|動きを真似|動きをコピー|動きを転写", content
-    )
-    _video_att = next(
-        (a for a in message.attachments
-         if Path(a.filename).suffix.lower() in SUPPORTED_VIDEO_TYPES),
-        None,
-    ) if message.attachments else None
-    pm = _pending_motion.get(cid)
-    if _motion_kw or (pm and _video_att and time.time() - pm["ts"] < 900):
-        if _video_att:
-            req = content if _motion_kw else (pm["req"] + " " + content).strip()
-            _pending_motion.pop(cid, None)
-            add_history(
-                cid, message.author.display_name,
-                content + "（参照動画を添付してモーションコントロール生成を依頼）",
-            )
-            asyncio.create_task(_run_motion_control(message, req, _video_att))
-            return
+    if route == "hf_auto":
+        mtype = "image" if re.search("画像|イラスト|ロゴ|絵|写真|アイコン", content) else "video"
+        add_history(cid, message.author.display_name, content)
+        asyncio.create_task(_run_hf_generate(message, content, None, mtype, "自動選定"))
+        return
+
+    if route == "motion":
+        req = content if _MOTION_KW_RE.search(content) else (
+            (pm["req"] + " " + content).strip() if pm else content
+        )
+        _pending_motion.pop(cid, None)
+        add_history(
+            cid, message.author.display_name,
+            content + "（参照動画を添付してモーションコントロール生成を依頼）",
+        )
+        asyncio.create_task(_run_motion_control(message, req, _video_att))
+        return
+
+    if route == "motion_ask":
         _pending_motion[cid] = {"req": content, "ts": time.time()}
         add_history(cid, message.author.display_name, content)
         await message.channel.send(
