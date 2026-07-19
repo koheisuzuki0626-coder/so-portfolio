@@ -2988,6 +2988,28 @@ async def on_message(message):
     if content.startswith("!"):
         return
 
+    # 生成した動画の状態確認（「できた？」「見れる？」「URL」等）。
+    # モーション生成の依頼フローより先に処理する（"モーション"の語で誤起動しないため）。
+    if not message.attachments and re.search("動画|モーション", content) and re.search(
+        "できた|完成|終わった|どうなった|状況|進捗|まだ|見れる|見せて|見たい|"
+        "url|ＵＲＬ|どこ|ある\\?|ある？|ちょうだい|ください", content, re.I
+    ):
+        await message.channel.send("🔎 Higgsfield の生成状況を確認します…")
+        try:
+            vurl = await _mcp_motion_status()
+        except Exception as e:  # noqa: BLE001
+            await message.channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
+            return
+        if vurl:
+            _clear_motion_job()
+            add_history(cid, "Orchestrator", f"（モーション転写動画が完成: {vurl}）")
+            await message.channel.send(f"✅ できています！動画URLはこちら:\n{vurl}")
+        else:
+            await message.channel.send(
+                "⏳ まだ生成中のようです。数分後にもう一度「動画できた？」と送ってください。"
+            )
+        return
+
     # モーションコントロール：「この動きで」「モーションコントロールで」と依頼されたら
     # 参照動画の動きを転写して1発で動画生成（構成案フローを通さない）。
     # 動画がまだ添付されていなければ依頼を覚えておき、後から添付されたら実行する。
