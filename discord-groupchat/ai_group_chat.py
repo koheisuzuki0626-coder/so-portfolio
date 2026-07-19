@@ -709,8 +709,15 @@ async def ask_gemini(history):
 
 
 async def _ai_text(prompt, tag="ai_text"):
-    """テキスト生成（応答速度が要る場面用）：Gemini優先、失敗（無料枠切れ等）したら
-    例外を握りつぶさず Claude CLI へ自動フォールバック。両方失敗時のみ例外が伝播。"""
+    """テキスト生成：その時動いているエンジンを優先。Geminiが全滅中なら
+    Claudeへ直行（無駄な試行と誤判定を避ける）。両方失敗時のみ例外が伝播。"""
+    if _gemini_all_cooling():
+        # Gemini枠切れ中 → Claude中心（意図判定が不安定になるのを防ぐ）
+        try:
+            return await run_claude_cli(prompt)
+        except Exception as e:  # noqa: BLE001
+            print(f"[{tag}] Claude失敗 → Gemini再試行: {str(e)[:150]}")
+            return await _gemini_call(prompt)
     try:
         return await _gemini_call(prompt)
     except Exception as e:  # noqa: BLE001
@@ -2471,6 +2478,8 @@ async def _run_motion_control(message, request, ref_att):
             return
         # 投入成功 → ジョブを記録して、完了監視を開始（再起動しても復帰する）
         _save_motion_job(cid, request)
+        # 制作モードのため直前生成も記録（モーション動画の後も会話で作り直せる）
+        _save_last_gen(cid, request, "video", None, "モーション動画")
         await send_as(
             orch, cid,
             "⏳ 生成ジョブを投入しました。完成したらこのチャンネルに動画URLを自動投稿します"
