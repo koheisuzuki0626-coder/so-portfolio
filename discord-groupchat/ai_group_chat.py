@@ -1740,13 +1740,18 @@ def _match_gen_model(content):
 def classify_route(content, *, has_attachments=False, has_video_att=False,
                    has_image_att=False, has_job=False):
     """@メンションなし発言のルーティングを判定（AI(_plan)前の決定的ルートのみ）。
-    返り値: 'status' / 'hf_model' / 'hf_auto' / 'motion' / 'motion_ask' / None(=_planへ)。
+    返り値: 'status'/'short'/'hf_model'/'hf_auto'/'motion'/'motion_ask'/None(=_planへ)。
     on_message と同じ順序・同じ正規表現を使うので、これをテストすれば実挙動を検証できる。"""
     # ① 生成物の状態確認（添付なし・状態ワード・文脈）
     status_kw = _STATUS_KW_RE.search(content)
     status_ctx = _STATUS_CTX_RE.search(content) or (has_job and status_kw)
     if not has_attachments and status_kw and status_ctx:
         return "status"
+    # ①.5 ショート量産（「ショート作って」「今日のショート」等）
+    if re.search("ショート|shorts?|ショート動画", content, re.I) and (
+        _GEN_INTENT2_RE.search(content) or re.search("今日の|ネタ|企画|お願い", content)
+    ):
+        return "short"
     # ② Higgsfield生成（モーション以外・生成意図あり）
     if not re.search("モーション|この動き|動きを", content) and _GEN_INTENT2_RE.search(content):
         if _match_gen_model(content):
@@ -2022,9 +2027,10 @@ HF_GEN_MODELS = {
 }
 
 
-async def _mcp_generate_submit(request, model, media_type, refs):
+async def _mcp_generate_submit(request, model, media_type, refs, aspect_ratio=None):
     """Higgsfield MCP経由で生成ジョブを投入（完了は待たない）。
     model=None なら models_explore(recommend) で最適モデルを自動選定させる。
+    aspect_ratio: '9:16'等を指定すると縦型ショート向けに比率を渡す。
     refs: 参照メディアURLのリスト。戻り値 (result, chosen_model)。失敗は例外。"""
     ref_lines = "".join(f"\n・参照メディア{i + 1}: {u}" for i, u in enumerate(refs))
     kind = "動画" if media_type == "video" else "画像"
@@ -2040,9 +2046,13 @@ async def _mcp_generate_submit(request, model, media_type, refs):
             f"query='{request[:120]}', type='{media_type}', input='{'image' if refs else 'text'}') "
             "を呼び、返ってきた候補から目的に最適な1つを選ぶこと。\n"
         )
+    ar_line = (
+        f"・アスペクト比: {aspect_ratio}（縦型。パラメータで指定できるなら必ず設定）\n"
+        if aspect_ratio else ""
+    )
     task = (
         f"Higgsfield の MCP で{kind}の生成ジョブを投入して。入力: {ref_ctx}。\n"
-        + model_line +
+        + model_line + ar_line +
         f"・内容（プロンプト）: {request[:400]}"
         + (ref_lines + "\n参照メディアは media_import_url 等で取り込み、"
            "start_image / image_references / video_references 等の適切なroleで渡す。"
@@ -2084,9 +2094,9 @@ async def _mcp_gen_and_wait(prompt, media_type="image", model=None, refs=None, m
     return None
 
 
-async def _run_hf_generate(message, request, model, media_type, label):
+async def _run_hf_generate(message, request, model, media_type, label, aspect_ratio=None):
     """Higgsfieldで生成→投入→完了監視→URL自動投稿（モーションと同じ堅牢さ）。
-    model=None なら最適モデルを自動選定する。"""
+    model=None なら最適モデルを自動選定する。aspect_ratio='9:16'で縦型ショート。"""
     cid = message.channel.id
     if not HF_AVAILABLE and not os.getenv("HIGGSFIELD_API_KEY"):
         await send_as(orch, cid, "⚠️ Higgsfield が使えません（APIキー/認証を確認してください）。")
@@ -2103,7 +2113,9 @@ async def _run_hf_generate(message, request, model, media_type, label):
         else f"🎬 内容に合う最適なモデルを選んで{kind}を生成します…"
     )
     try:
-        result, chosen = await _mcp_generate_submit(request, model, media_type, refs)
+        result, chosen = await _mcp_generate_submit(
+            request, model, media_type, refs, aspect_ratio=aspect_ratio
+        )
     except Exception as e:  # noqa: BLE001
         await send_as(orch, cid, f"⚠️ 生成の投入に失敗: {str(e)[:250]}")
         return
@@ -2120,6 +2132,88 @@ async def _run_hf_generate(message, request, model, media_type, label):
         "（「できた？」でいつでも確認可）。"
     )
     asyncio.create_task(_watch_motion_job(cid))
+
+
+# ---------- ショート量産ライン（スタイリッシュ/アート系 × YouTube Shorts） ----------
+SHORTS_LOG = HISTORY_DIR / "shorts.jsonl"        # 制作したショートの記録（ポートフォリオ）
+SHORTS_STYLE = os.getenv(
+    "SHORTS_STYLE",
+    "cinematic, abstract, stylish art film, dramatic lighting, elegant motion, "
+    "premium aesthetic, vertical 9:16, no on-screen text, no watermark",
+)
+
+
+def _log_short(entry):
+    try:
+        with open(SHORTS_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:  # noqa: BLE001
+        print(f"[shorts] 記録失敗: {e}")
+
+
+async def _make_short_concept(theme):
+    """スタイリッシュ系ショートの企画を作る。JSONで
+    {title, hook, prompt(英語), description, tags} を返す。"""
+    base = (
+        "あなたはバズるYouTube Shortsのアートディレクター。"
+        "スタイリッシュ/アート系の縦型ショート動画の企画をJSONだけで返す。\n"
+        '形式: {"title":"日本語の惹かれるタイトル(30字以内)",'
+        '"hook":"最初の2秒で掴む見せ方の説明",'
+        '"prompt":"英語の動画生成プロンプト。映像美・カメラワーク・色・質感を具体的に。'
+        '9:16縦型。人物の顔は大きく写さない",'
+        '"description":"YouTube用の説明文(2〜3行)",'
+        '"tags":["#Shorts","関連ハッシュタグ","5〜8個"]}\n'
+        "映像はAI生成で作るので、抽象的・視覚的に強い題材にすること。\n"
+    )
+    theme_line = f"テーマ/お題: {theme}\n" if theme else "テーマは自由（今映える洗練された題材を選ぶ）。\n"
+    raw = await _ai_text_bg(base + theme_line + "\nJSON:", "short_concept")
+    m = re.search(r"\{.*\}", raw or "", re.S)
+    d = json.loads(m.group(0)) if m else {}
+    # 保険：最低限のフィールドを埋める
+    d.setdefault("title", theme or "無題のショート")
+    d.setdefault("hook", "")
+    d.setdefault("prompt", f"{theme or 'abstract art'}, {SHORTS_STYLE}")
+    d.setdefault("description", "")
+    d.setdefault("tags", ["#Shorts"])
+    return d
+
+
+async def _run_short(message, theme=None):
+    """1本のショートを企画→縦型動画生成→投稿パック提示まで自動で行う。"""
+    cid = message.channel.id
+    await send_as(orch, cid, "🎬 今日のショートを企画します（スタイリッシュ/アート系）…")
+    try:
+        c = await _make_short_concept(theme)
+    except Exception as e:  # noqa: BLE001
+        await send_as(orch, cid, f"⚠️ 企画作成に失敗: {str(e)[:200]}")
+        return
+
+    tags = " ".join(c.get("tags", []))
+    pack = (
+        f"📝 **企画：{c['title']}**\n"
+        f"🎣 フック: {c.get('hook', '')}\n\n"
+        f"— 投稿パック（YouTube Shorts用・コピペでOK）—\n"
+        f"**タイトル**: {c['title']}\n"
+        f"**説明**: {c.get('description', '')}\n"
+        f"**タグ**: {tags}"
+    )
+    await send_as(orch, cid, pack[:1900])
+
+    # 記録（ポートフォリオ）
+    _log_short({
+        "t": time.time(),
+        "date": datetime.now(JST).strftime("%Y-%m-%d %H:%M"),
+        "theme": theme or "", "title": c["title"],
+        "prompt": c["prompt"], "description": c.get("description", ""),
+        "tags": c.get("tags", []),
+    })
+
+    # 縦型9:16でスタイリッシュに生成（プロンプトにスタイルを補強）
+    full_prompt = f"{c['prompt']}, {SHORTS_STYLE}"
+    await _run_hf_generate(
+        message, full_prompt, None, "video",
+        f"ショート「{c['title'][:20]}」", aspect_ratio="9:16",
+    )
 
 
 async def _discover_hf_models():
@@ -3356,6 +3450,10 @@ async def _dispatch_message(message):
             )
             await send_as(orch, cid, ans)
         return
+    if content.startswith("!short"):
+        theme = content[len("!short"):].strip()
+        _spawn(_run_short(message, theme or None), cid, "ショート制作")
+        return
     if content.startswith("!talk"):
         if state["running"]:
             await message.channel.send("自動トークが進行中です。!stop で止められます。")
@@ -3408,6 +3506,16 @@ async def _dispatch_message(message):
             await message.channel.send(f"✅ できています！URLはこちら:\n{vurl}")
         else:
             await message.channel.send(_pending_eta_msg(job))
+        return
+
+    if route == "short":
+        # 「ショート」以外の語をお題として抽出（無ければ自動テーマ）
+        theme = re.sub(
+            r"(ショート動画|ショート|shorts?|今日の|作って|作りたい|生成して|"
+            r"ネタ|企画|お願い(します)?|を|の|で|、|。|！|!)+", "", content, flags=re.I
+        ).strip()
+        add_history(cid, message.author.display_name, content)
+        _spawn(_run_short(message, theme or None), cid, "ショート制作")
         return
 
     if route == "hf_model":

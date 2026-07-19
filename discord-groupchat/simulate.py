@@ -146,6 +146,7 @@ def install_stubs(mcp_url=None):
     FIRED.clear()
     bot._self_diagnose = _rec_str("diagnose", "🩺 診断結果（スタブ）")
     bot._run_hf_generate = _rec("hf_generate")
+    bot._run_short = _rec("short")
     bot._run_motion_control = _rec("motion_control")
     bot._run_trend_study = _rec("trend")
     bot._run_agent_task = _rec("agent")
@@ -236,6 +237,9 @@ async def run():
         ("!talk 猫の話", "talk", None),
         ("seedanceで犬の動画作って", "hf_generate", None),
         ("おまかせで海の動画作って", "hf_generate", None),
+        ("ショート作って", "short", None),
+        ("!short 夜の都市", "short", None),
+        ("今日のショートお願い", "short", None),
         ("この動きで生成して", None, None),           # motion_ask → sent案内のみ
         ("犬について教えて", "orchestrator", None),    # 通常会話→オーケストレーター
         ("おはよう", "orchestrator", None),
