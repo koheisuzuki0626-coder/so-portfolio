@@ -1839,19 +1839,33 @@ HF_GEN_MODELS = {
 
 
 async def _mcp_generate_submit(request, model, media_type, refs):
-    """Higgsfield MCP経由で任意モデルの生成ジョブを投入（完了は待たない）。
-    refs: 参照メディアURLのリスト（画像/動画）。投入できたらTrue/URL、失敗は例外。"""
+    """Higgsfield MCP経由で生成ジョブを投入（完了は待たない）。
+    model=None なら models_explore(recommend) で最適モデルを自動選定させる。
+    refs: 参照メディアURLのリスト。戻り値 (result, chosen_model)。失敗は例外。"""
     ref_lines = "".join(f"\n・参照メディア{i + 1}: {u}" for i, u in enumerate(refs))
     kind = "動画" if media_type == "video" else "画像"
+    ref_ctx = (
+        "参照画像あり（image-to-video/参照生成向き）" if refs and media_type == "video"
+        else "参照画像あり" if refs else "テキストのみ"
+    )
+    if model:
+        model_line = f"・使うモデル: {model}\n"
+    else:
+        model_line = (
+            "・モデルは自動選定: まず models_explore(action='recommend', "
+            f"query='{request[:120]}', type='{media_type}', input='{'image' if refs else 'text'}') "
+            "を呼び、返ってきた候補から目的に最適な1つを選ぶこと。\n"
+        )
     task = (
-        f"Higgsfield の MCP ツール（generate_{media_type}）で{kind}の生成ジョブを投入して。\n"
-        f"・使うモデル: {model}\n"
+        f"Higgsfield の MCP で{kind}の生成ジョブを投入して。入力: {ref_ctx}。\n"
+        + model_line +
         f"・内容（プロンプト）: {request[:400]}"
         + (ref_lines + "\n参照メディアは media_import_url 等で取り込み、"
            "start_image / image_references / video_references 等の適切なroleで渡す。"
            if refs else "\n") +
-        "ジョブの投入だけ行い、完了は待たなくてよい。"
-        "投入できたら最終行に『SUBMITTED』、失敗したら『ERROR: 理由』とだけ出力して。"
+        "選んだモデルで generate_" + media_type + " を呼びジョブを投入（完了は待たない）。"
+        "出力は2行だけ: 1行目『MODEL: <実際に使ったモデルID>』、"
+        "2行目は投入成功なら『SUBMITTED』、失敗なら『ERROR: 理由』。"
     )
     out = await _run_claude_exec(task, timeout=600)
     print(f"[gen_mcp] 投入結果末尾: {(out or '')[-400:]}")
@@ -1860,11 +1874,14 @@ async def _mcp_generate_submit(request, model, media_type, refs):
     if re.search(r"ERROR", out.strip().splitlines()[-1], re.I) and \
             not _extract_video_url(out):
         raise RuntimeError(out.strip().splitlines()[-1][:300])
-    return _extract_video_url(out) or True
+    m = re.search(r"MODEL:\s*([\w\-./]+)", out, re.I)
+    chosen = m.group(1) if m else model
+    return (_extract_video_url(out) or True), chosen
 
 
 async def _run_hf_generate(message, request, model, media_type, label):
-    """任意のHiggsfieldモデルで生成→投入→完了監視→URL自動投稿（モーションと同じ堅牢さ）。"""
+    """Higgsfieldで生成→投入→完了監視→URL自動投稿（モーションと同じ堅牢さ）。
+    model=None なら最適モデルを自動選定する。"""
     cid = message.channel.id
     if not HF_AVAILABLE and not os.getenv("HIGGSFIELD_API_KEY"):
         await send_as(orch, cid, "⚠️ Higgsfield が使えません（APIキー/認証を確認してください）。")
@@ -1874,21 +1891,27 @@ async def _run_hf_generate(message, request, model, media_type, label):
         a.url for a in message.attachments
         if Path(a.filename).suffix.lower() in (SUPPORTED_IMAGE_TYPES | SUPPORTED_VIDEO_TYPES)
     ]
-    await send_as(orch, cid, f"🎬 {label} で{('動画' if media_type == 'video' else '画像')}を生成します…")
-    try:
-        result = await _mcp_generate_submit(request, model, media_type, refs)
-    except Exception as e:  # noqa: BLE001
-        await send_as(orch, cid, f"⚠️ {label} の投入に失敗: {str(e)[:250]}")
-        return
-    if isinstance(result, str):  # 投入中に既にURLが返った
-        _clear_motion_job()
-        add_history(cid, "Orchestrator", f"（{label}で生成した: {result}）")
-        await send_as(orch, cid, f"✅ できました！（{label}）\n{result}")
-        return
-    _save_motion_job(cid, request, model=model, media_type=media_type, label=label)
+    kind = "動画" if media_type == "video" else "画像"
     await send_as(
         orch, cid,
-        f"⏳ {label} の生成ジョブを投入しました。完成したら動画URLを自動投稿します"
+        f"🎬 {label}で{kind}を生成します…" if model
+        else f"🎬 内容に合う最適なモデルを選んで{kind}を生成します…"
+    )
+    try:
+        result, chosen = await _mcp_generate_submit(request, model, media_type, refs)
+    except Exception as e:  # noqa: BLE001
+        await send_as(orch, cid, f"⚠️ 生成の投入に失敗: {str(e)[:250]}")
+        return
+    disp = label if model else f"自動選定: {chosen or '？'}"
+    if isinstance(result, str):  # 投入中に既にURLが返った
+        _clear_motion_job()
+        add_history(cid, "Orchestrator", f"（{disp}で生成した: {result}）")
+        await send_as(orch, cid, f"✅ できました！（{disp}）\n{result}")
+        return
+    _save_motion_job(cid, request, model=chosen, media_type=media_type, label=disp)
+    await send_as(
+        orch, cid,
+        f"⏳ {disp} で生成ジョブを投入しました。完成したらURLを自動投稿します"
         "（「できた？」でいつでも確認可）。"
     )
     asyncio.create_task(_watch_motion_job(cid))
@@ -3110,10 +3133,10 @@ async def on_message(message):
             )
         return
 
-    # 任意のHiggsfieldモデル指定での生成（「seedanceで動画作って」「veoで〜」等）。
+    # Higgsfieldでの生成（モデル指定 or 自動選定）。
     # モーション（動き転写）はこの後ろの専用フローに任せるため除外。
     if not re.search("モーション|この動き|動きを", content) and re.search(
-        "作って|作りたい|生成|つくって|animate|動かして", content
+        "作って|作りたい|生成|つくって|animate|動かして|アニメ化", content
     ):
         low = content.lower()
         matched = None
@@ -3121,10 +3144,21 @@ async def on_message(message):
             if name in low:
                 matched = HF_GEN_MODELS[name]
                 break
+        media_ref = [
+            a for a in message.attachments
+            if Path(a.filename).suffix.lower() in (SUPPORTED_IMAGE_TYPES | SUPPORTED_VIDEO_TYPES)
+        ] if message.attachments else []
+        auto_kw = re.search("おまかせ|お任せ|自動|最適|いい感じ|良い感じ|どれでも|モデル任せ|よしなに", content)
         if matched:
             model, mtype, label = matched
             add_history(cid, message.author.display_name, content)
             asyncio.create_task(_run_hf_generate(message, content, model, mtype, label))
+            return
+        if auto_kw or media_ref:
+            # 画像/イラスト/ロゴ/絵/写真なら画像、それ以外は動画として最適モデルを自動選定
+            mtype = "image" if re.search("画像|イラスト|ロゴ|絵|写真|アイコン", content) else "video"
+            add_history(cid, message.author.display_name, content)
+            asyncio.create_task(_run_hf_generate(message, content, None, mtype, "自動選定"))
             return
 
     # モーションコントロール：「この動きで」「モーションコントロールで」と依頼されたら
