@@ -149,6 +149,10 @@ def install_stubs(mcp_url=None):
     bot._run_short = _rec("short")
     bot._run_revise = _rec("revise")
     bot._load_last_gen = lambda cid: None  # 既定は直前生成なし
+
+    async def _vturn(cid, latest, last):
+        return ("chat", latest)   # 既定はchat（会話へ流す）
+    bot._interpret_video_turn = _vturn
     bot._run_motion_control = _rec("motion_control")
     bot._run_trend_study = _rec("trend")
     bot._run_agent_task = _rec("agent")
@@ -269,9 +273,22 @@ async def run():
     # 直前生成あり＋作り直し → revise
     install_stubs()
     bot._load_last_gen = lambda cid: {"prompt": "a cat", "media_type": "video",
-                                      "aspect_ratio": None, "label": "x"}
+                                      "aspect_ratio": None, "label": "x", "t": bot.time.time()}
     r = await drive("もう一回作り直して、顔をアップで")
     check("作り直し→revise", "revise" in r["fired"], f"{r['fired']}")
+
+    # 動画制作モード：あいまい発言→AI解釈（intentに応じて分岐）
+    print("■ E2E: 動画制作モード（文脈解釈）")
+    for intent, want_fired in [("revise", "revise"), ("new", "hf_generate"), ("chat", "orchestrator")]:
+        install_stubs()
+        bot._load_last_gen = lambda cid: {"prompt": "a cat", "media_type": "video",
+                                          "aspect_ratio": "9:16", "label": "x",
+                                          "t": bot.time.time()}
+        async def _vt(cid, latest, last, _i=intent):
+            return (_i, latest)
+        bot._interpret_video_turn = _vt
+        r = await drive("イマイチだから変えて")
+        check(f"制作モード intent={intent}", want_fired in r["fired"], f"{r['fired']}")
 
     # ===== ② 状態確認（ジョブ有無で分岐）=====
     print("■ E2E: 状態確認")

@@ -2210,6 +2210,32 @@ _REVISE_RE = re.compile(
 )
 
 
+async def _interpret_video_turn(cid, latest, last):
+    """動画制作中の会話を文脈ごと解釈する。正規表現で拾えない言い回しの受け皿。
+    返り値: ("revise"|"new"|"chat", 抽出テキスト)。"""
+    prompt = (
+        "あなたは動画制作アシスタントの意図分類器。ユーザーは直前に動画を生成した。"
+        "最新の発言が、その動画に対する『どの操作』かをJSONだけで返す。\n"
+        '形式: {"intent":"revise"|"new"|"chat","text":"抽出した要点"}\n'
+        "- revise=今の動画を作り直す/直す/調整する（例:『もっと明るく』『縦にして』"
+        "『顔をアップに』『色を青く』『長くして』『イマイチ、変えて』）。textは修正指示。\n"
+        "- new=別の新しい動画を作りたい（例:『次は猫で』『今度は海の動画』）。textは題材。\n"
+        "- chat=動画への感想・質問・雑談で、作り直しでも新規でもない"
+        "（例:『いいね』『これ何のモデル?』『ありがとう』『どう思う?』）。\n"
+        f"【直前の動画のプロンプト】{last.get('prompt', '')[:200]}\n"
+        f"【最新の発言】{latest}\n\nJSON:"
+    )
+    try:
+        raw = await _ai_text(prompt, "video_turn")
+        m = re.search(r"\{.*\}", raw, re.S)
+        d = json.loads(m.group(0)) if m else {}
+        intent = d.get("intent") if d.get("intent") in ("revise", "new", "chat") else "chat"
+        return intent, (d.get("text") or latest)
+    except Exception as e:  # noqa: BLE001
+        print(f"[video_turn] 解釈失敗→chat: {str(e)[:120]}")
+        return "chat", latest
+
+
 async def _run_revise(message, instruction):
     """直前の生成プロンプトに修正指示を適用して作り直す（文脈引き継ぎ）。"""
     cid = message.channel.id
@@ -3658,6 +3684,25 @@ async def _dispatch_message(message):
             "キャラの見た目を指定したい場合は、画像も同じメッセージに添付してください。"
         )
         return
+
+    # ---- 動画制作モード：直前に生成があるなら、あいまいな発言も文脈で解釈 ----
+    # 正規表現で拾えない言い回し（「イマイチ、変えて」「次は猫で」等）の受け皿。
+    lg = _load_last_gen(cid)
+    if (route is None and content and not message.attachments and lg
+            and time.time() - lg.get("t", 0) < 3600):
+        intent, text = await _interpret_video_turn(cid, content, lg)
+        if intent == "revise":
+            add_history(cid, message.author.display_name, content)
+            _spawn(_run_revise(message, content), cid, "作り直し")
+            return
+        if intent == "new":
+            add_history(cid, message.author.display_name, content)
+            _spawn(_run_hf_generate(message, text or content, None,
+                                    lg.get("media_type", "video"), "自動選定",
+                                    aspect_ratio=lg.get("aspect_ratio")),
+                   cid, "動画生成")
+            return
+        # intent == "chat" → 下の通常会話へ（動画の感想・質問はそのまま会話）
 
     # 進行中プロジェクトがあれば、その返信（承認/修正）として扱う
     if projects.get(cid):
