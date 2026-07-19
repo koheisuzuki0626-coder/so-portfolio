@@ -1714,34 +1714,71 @@ def _is_model_not_found(e):
     return "model_not_found" in m or "not found" in m or "unknown model" in m
 
 
+# 進行中のモーション生成の記録（再起動に耐えるようファイルへ）。
+# {cid, submitted_at, request} を保存。完了監視が復帰後も続けられる。
+_MOTION_JOB_FILE = HISTORY_DIR / "pending_motion.json"
+
+
+def _save_motion_job(cid, request):
+    try:
+        _MOTION_JOB_FILE.write_text(
+            json.dumps({"cid": cid, "submitted_at": time.time(),
+                        "request": request[:200]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[motion] ジョブ記録の保存失敗: {e}")
+
+
+def _load_motion_job():
+    try:
+        if _MOTION_JOB_FILE.exists():
+            return json.loads(_MOTION_JOB_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _clear_motion_job():
+    try:
+        _MOTION_JOB_FILE.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _extract_video_url(text):
+    """claude出力から動画URLを頑健に抽出（cloudfront / .mp4 / http を順に探す）。"""
+    for pat in (r"https?://\S*cloudfront\S+", r"https?://\S+\.mp4\S*", r"https?://\S+"):
+        urls = re.findall(pat, text or "")
+        if urls:
+            return urls[-1].rstrip(").,。、」)")
+    return None
+
+
 async def _mcp_motion_control(image_url, video_url, request):
-    """Higgsfield MCP（mcp.higgsfield.ai）経由でモーション転写を実行。
+    """Higgsfield MCP経由でモーション転写ジョブを投入する（完了は待たない）。
     claude CLI に MCP ツールを呼ばせる（要: Mac側で一度 claude mcp add ＋認証）。
-    成功時は動画URL、MCP未設定・失敗時は例外。"""
+    投入できたら True、失敗なら例外。"""
     task = (
-        "Higgsfield の MCP ツールでモーション転写動画を生成して。\n"
-        "使うツール: motion_control（見つからなければ generate_video で "
-        "model=kling3_0_motion_control。これは過去に実績のある正しいモデルID）。\n"
+        "Higgsfield の MCP ツールでモーション転写動画の生成ジョブを投入して。\n"
+        "使うツール: motion_control（無ければ generate_video で "
+        "model=kling3_0_motion_control。過去に実績のある正しいモデルID）。\n"
         f"・参照動画（動きの元・role=video）: {video_url}\n"
         f"・キャラクター画像（見た目・role=image）: {image_url}\n"
         "・character_orientation: video ／ duration: 参照動画の長さに合わせる（最大15秒）\n"
         f"・内容の希望: {request[:300]}\n"
-        "URLはそのまま media_import_url 等で取り込んでよい。生成ジョブは完了まで待つこと。"
-        "出力の最終行は、成功なら生成された動画のURLだけ、失敗なら『ERROR: 理由』だけにすること。"
+        "URLは media_import_url 等で取り込んでよい。ジョブの投入だけ行い、完了は待たなくてよい。"
+        "投入できたら最終行に『SUBMITTED』、失敗したら『ERROR: 理由』とだけ出力して。"
     )
-    out = await _run_claude_exec(task, timeout=900)
-    print(f"[motion_mcp] claude出力末尾: {(out or '')[-400:]}")
+    out = await _run_claude_exec(task, timeout=600)
+    print(f"[motion_mcp] 投入結果末尾: {(out or '')[-400:]}")
     if not out or out.startswith("⚠️"):
-        raise RuntimeError(f"claude CLI実行失敗: {out[:200]}")
-    last = out.strip().splitlines()[-1].strip()
-    if last.upper().startswith("ERROR"):
-        raise RuntimeError(last[:300])
-    urls = re.findall(r"https?://\S+", out)
-    if urls:
-        return urls[-1].rstrip(")。、」")
-    if re.search("処理中|待機|投入|submitted|processing|queued|progress", out, re.I):
-        return None  # ジョブは投入済み・生成待ち → 呼び出し元で完了をポーリング
-    raise RuntimeError(f"動画URLが出力されませんでした: {out[-300:]}")
+        raise RuntimeError(f"claude CLI実行失敗: {(out or '')[:200]}")
+    if re.search(r"ERROR", out.strip().splitlines()[-1], re.I) and \
+            not _extract_video_url(out):
+        raise RuntimeError(out.strip().splitlines()[-1][:300])
+    # 投入中に既にURLが返ってくることもある
+    return _extract_video_url(out) or True
 
 
 _MOTION_CHECK_TASK = (
@@ -1761,10 +1798,7 @@ async def _mcp_motion_status():
     last = out.strip().splitlines()[-1].strip()
     if last.upper().startswith("ERROR"):
         raise RuntimeError(last[:300])
-    urls = re.findall(r"https?://\S+\.mp4\S*", out)
-    if urls:
-        return urls[-1].rstrip(")。、」")
-    return None
+    return _extract_video_url(out)
 
 
 async def _discover_hf_models():
@@ -1809,6 +1843,33 @@ async def _discover_hf_models():
                         )
                     return f"カタログは取得できましたがIDを抽出できず。先頭部分:\n{text[:800]}"
     return "モデルカタログのエンドポイントが見つかりませんでした（全候補で失敗）。"
+
+
+async def _watch_motion_job(cid):
+    """投入済みモーションジョブの完了を監視し、完成したら動画URLをDiscordに自動投稿。
+    再起動しても on_ready から呼び直せるので、生成完了は必ずDiscordに届く。"""
+    for _ in range(30):  # 1分おき最大30分
+        await asyncio.sleep(60)
+        job = _load_motion_job()
+        if not job or job.get("cid") != cid:
+            return  # 別ジョブに置き換わった/クリアされた
+        try:
+            vurl = await _mcp_motion_status()
+        except Exception as e:  # noqa: BLE001
+            _clear_motion_job()
+            await send_as(orch, cid, f"⚠️ 生成が失敗しました: {str(e)[:250]}")
+            return
+        if vurl:
+            _clear_motion_job()
+            add_history(cid, "Orchestrator", f"（モーション転写動画が完成: {vurl}）")
+            await send_as(orch, cid, f"✅ モーション動画ができました！\n{vurl}")
+            return
+    # 30分たっても完成せず → 記録は残し、後で「できた？」で確認できるようにする
+    await send_as(
+        orch, cid,
+        "⏳ まだ生成中のようです。もう少し待ってから「モーション動画できた？」"
+        "と送ってください（記録は保持しています）。"
+    )
 
 
 async def _run_motion_control(message, request, ref_att):
@@ -1859,42 +1920,31 @@ async def _run_motion_control(message, request, ref_att):
             await send_as(orch, cid, "⚠️ キャラクター画像を用意できませんでした。")
             return
 
-    await send_as(orch, cid, "🎬 モーション転写で動画を生成中…（数分かかります）")
+    await send_as(orch, cid, "🎬 モーション転写のジョブを投入します…")
 
     # ① まず Higgsfield MCP 経由（claude CLI が MCP ツールを呼ぶ）。
     # MCPには Kling / motion_control 等、APIキーに無いモデルがある。
     try:
-        vurl = await _mcp_motion_control(image_url, video_url, request)
-        if vurl is None:
-            # ジョブは投入済み。完了まで1分おきに自動確認（最大20分）
-            await send_as(
-                orch, cid,
-                "⏳ 生成ジョブを投入しました。完了を1分おきに自動確認します（最大20分）…"
-            )
-            for _ in range(20):
-                await asyncio.sleep(60)
-                try:
-                    vurl = await _mcp_motion_status()
-                except Exception as e:  # noqa: BLE001
-                    await send_as(orch, cid, f"⚠️ 生成が失敗しました: {str(e)[:250]}")
-                    return
-                if vurl:
-                    break
-            if not vurl:
-                await send_as(
-                    orch, cid,
-                    "⏳ まだ処理中のようです（Higgsfield側で生成は続いています）。"
-                    "しばらくして「モーション動画できた？」と聞いてください。"
-                )
-                return
-        add_history(cid, "Orchestrator", f"（モーション転写動画を生成した: {vurl}）")
-        await send_as(orch, cid, f"✅ できました！（Higgsfield MCP経由）\n{vurl}")
+        result = await _mcp_motion_control(image_url, video_url, request)
+        if isinstance(result, str):  # 投入中に既にURLが返った
+            _clear_motion_job()
+            add_history(cid, "Orchestrator", f"（モーション転写動画を生成した: {result}）")
+            await send_as(orch, cid, f"✅ できました！（Higgsfield MCP経由）\n{result}")
+            return
+        # 投入成功 → ジョブを記録して、完了監視を開始（再起動しても復帰する）
+        _save_motion_job(cid, request)
+        await send_as(
+            orch, cid,
+            "⏳ 生成ジョブを投入しました。完成したらこのチャンネルに動画URLを自動投稿します"
+            "（数分〜十数分／「モーション動画できた？」でいつでも確認可）。"
+        )
+        asyncio.create_task(_watch_motion_job(cid))
         return
     except Exception as e:  # noqa: BLE001
         print(f"[motion] MCP経由失敗 → プラットフォームAPIへ: {str(e)[:300]}")
         await send_as(
             orch, cid,
-            f"ℹ️ MCP経由の生成に失敗しました（理由: {str(e)[:250]}）。"
+            f"ℹ️ MCP経由の投入に失敗しました（理由: {str(e)[:250]}）。"
             "APIキー経由の代替を試します…"
         )
 
@@ -2054,6 +2104,7 @@ async def _handle_orchestrator(message, cid):
             await message.channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
             return
         if vurl:
+            _clear_motion_job()
             add_history(cid, "Orchestrator", f"（モーション転写動画が完成: {vurl}）")
             await message.channel.send(f"✅ できています！\n{vurl}")
         else:
@@ -2823,6 +2874,13 @@ async def on_ready():
         _trend_task_started = True
         asyncio.create_task(_daily_trend_loop())
         asyncio.create_task(_gemini_recovery_loop())
+        # 再起動前に投入したモーション生成があれば、完了監視を再開する
+        job = _load_motion_job()
+        if job and job.get("cid") and time.time() - job.get("submitted_at", 0) < 3600:
+            print("[motion] 進行中ジョブの完了監視を再開")
+            asyncio.create_task(_watch_motion_job(int(job["cid"])))
+        elif job:
+            _clear_motion_job()  # 1時間超は古すぎるので破棄
 
 
 @orch.event
