@@ -163,6 +163,20 @@ def run():
     check("nano banana→image", bot._match_gen_model("nano bananaで作って")[1], "image")
     check("該当なし", bot._match_gen_model("犬の動画作って"), None)
 
+    print("■ エラーログ _log_error / _recent_errors")
+    import tempfile
+    import pathlib
+    tmp = pathlib.Path(tempfile.mkdtemp()) / "errors.log"
+    bot.ERROR_LOG = tmp
+    check("エラーなし時", "エラーはありません" in bot._recent_errors(), True)
+    try:
+        raise ValueError("テスト例外です")
+    except ValueError as e:
+        summary = bot._log_error("test-context", e)
+    check("要約にエラー型", "ValueError" in summary, True)
+    check("ログに記録された", tmp.exists() and "テスト例外です" in tmp.read_text(), True)
+    check("直近エラー取得", "test-context" in bot._recent_errors(), True)
+
     print(f"\n結果: ✅ {ok} 件成功 / ❌ {fail} 件失敗")
     return fail == 0
 

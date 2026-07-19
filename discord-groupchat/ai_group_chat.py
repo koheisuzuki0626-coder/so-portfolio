@@ -17,14 +17,15 @@ MESSAGE CONTENT INTENT はオーケストレーター用にだけONにすれば�
 """
 
 import asyncio
-import base64
 import io
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -273,6 +274,94 @@ async def _recall_context(cid, question):
             return ""
     ans = (ans or "").strip()
     return f"【過去ログからの関連情報】\n{ans}" if ans else ""
+
+
+# ---------- 自己修復：エラーログ＋自己診断 ----------
+# 「失敗が見えない（毎回スクショ待ち）」を解消する。全例外をここに記録し、
+# Discordから「エラー教えて」で取り出せる。「システムチェック」で各機能を能動診断。
+ERROR_LOG = HISTORY_DIR / "errors.log"
+
+
+def _log_error(context, exc):
+    """例外を errors.log に追記し、短い要約文字列を返す（ユーザー通知用）。"""
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    ts = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+    entry = f"\n===== {ts} | {context} =====\n{tb}"
+    try:
+        with open(ERROR_LOG, "a", encoding="utf-8") as f:
+            f.write(entry)
+        # 肥大化防止：末尾200KBに丸める
+        if ERROR_LOG.stat().st_size > 200_000:
+            data = ERROR_LOG.read_text(encoding="utf-8")[-150_000:]
+            ERROR_LOG.write_text(data, encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        print(f"[error_log] 記録失敗: {e}")
+    print(f"[ERROR] {context}: {exc}")
+    return f"{type(exc).__name__}: {str(exc)[:200]}"
+
+
+def _recent_errors(n=3):
+    """直近n件のエラーを返す（Discord表示用）。"""
+    try:
+        if not ERROR_LOG.exists():
+            return "記録されたエラーはありません（正常）。"
+        blocks = ERROR_LOG.read_text(encoding="utf-8").split("\n===== ")
+        blocks = [b for b in blocks if b.strip()]
+        if not blocks:
+            return "記録されたエラーはありません（正常）。"
+        out = []
+        for b in blocks[-n:]:
+            lines = ("===== " + b).strip().splitlines()
+            head = lines[0]
+            # 例外の最終行（実際のエラー）を拾う
+            err = next((ln for ln in reversed(lines)
+                        if ln.strip() and not ln.startswith(" ")
+                        and "Traceback" not in ln), lines[-1])
+            out.append(f"🔴 {head}\n   {err.strip()[:300]}")
+        return "\n".join(out)
+    except Exception as e:  # noqa: BLE001
+        return f"エラーログの読込に失敗: {e}"
+
+
+async def _self_diagnose():
+    """各サブシステムを能動チェックして健全性レポートを返す（Discord内で完結）。"""
+    lines = ["🩺 **システム自己診断**"]
+
+    # ① ルーティングの回帰テスト（別プロセスで隔離実行）
+    try:
+        r = await asyncio.to_thread(
+            subprocess.run, [sys.executable, "test_routing.py"],
+            capture_output=True, text=True, timeout=120, cwd=BASE_DIR,
+        )
+        tail = (r.stdout or "").strip().splitlines()[-1] if r.stdout else ""
+        lines.append(("✅ " if r.returncode == 0 else "❌ ") + f"ルーティングテスト: {tail}")
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"⚠️ ルーティングテスト実行不可: {str(e)[:120]}")
+
+    # ② Gemini（軽い呼び出し）
+    try:
+        await asyncio.wait_for(_gemini_call("ping。'ok'とだけ返して"), timeout=40)
+        lines.append("✅ Gemini API: 応答あり")
+    except Exception as e:  # noqa: BLE001
+        lines.append(("⚠️ " if _is_quota_error(e) else "❌ ")
+                     + f"Gemini API: {str(e)[:100]}")
+
+    # ③ Claude CLI
+    try:
+        out = await run_claude_cli("'ok'とだけ返して")
+        lines.append("✅ Claude CLI: 応答あり" if out else "⚠️ Claude CLI: 空応答")
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"❌ Claude CLI: {str(e)[:120]}")
+
+    # ④ 設定・キー
+    lines.append(("✅ " if YOUTUBE_API_KEY else "⚠️ ")
+                 + f"YouTube APIキー: {'あり' if YOUTUBE_API_KEY else '未設定（!trend不可）'}")
+    lines.append(("✅ " if os.getenv("HIGGSFIELD_API_KEY") else "⚠️ ")
+                 + f"Higgsfield キー: {'あり' if os.getenv('HIGGSFIELD_API_KEY') else '未設定'}")
+
+    # ⑤ 直近エラー
+    lines.append("\n【直近のエラー】\n" + _recent_errors(2))
+    return "\n".join(lines)
 
 
 # ---------- 人間のプロファイル（パーソナライズ） ----------
@@ -2943,26 +3032,29 @@ async def _restart_self(cid, note=""):
 
 
 async def _selfcheck():
-    """修正後の自分のコードを検証（構文チェック＋インポートのスモークテスト）。"""
-    checks = (
+    """修正後の自分のコードを検証（構文＋インポート＋ルーティング回帰テスト）。
+    自己改修が会話ルーティングを壊した場合、ここで検出して自動ロールバックさせる。"""
+    checks = [
         [sys.executable, "-m", "py_compile", str(SELF_FILE)],
         [sys.executable, "-c", f"import {SELF_FILE.stem}"],
-    )
+    ]
+    if (SELF_FILE.parent / "test_routing.py").exists():
+        checks.append([sys.executable, "test_routing.py"])
     for args in checks:
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=BASE_DIR,
+            cwd=str(SELF_FILE.parent),
         )
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=120)
         except asyncio.TimeoutError:
             proc.kill()
             return False, "検証がタイムアウトしました"
         if proc.returncode != 0:
             detail = (err.decode(errors="replace") or out.decode(errors="replace")).strip()
-            return False, detail
+            return False, f"[{' '.join(args[-1:])}] {detail[:400]}"
     return True, ""
 
 
@@ -3091,13 +3183,27 @@ _trend_task_started = False
 async def on_ready():
     global _trend_task_started
     print(f"オーケストレーター起動: {orch.user}")
+    # 起動時のセルフテスト（ルーティング回帰）。失敗したら復帰チャンネルに警告。
+    routing_ok = True
+    try:
+        r = await asyncio.to_thread(
+            subprocess.run, [sys.executable, "test_routing.py"],
+            capture_output=True, text=True, timeout=120, cwd=BASE_DIR,
+        )
+        routing_ok = r.returncode == 0
+        print(f"[selftest] ルーティングテスト: {'OK' if routing_ok else 'FAIL'} "
+              f"{(r.stdout or '').strip().splitlines()[-1] if r.stdout else ''}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[selftest] 実行不可: {e}")
+
     # 自己再起動からの復帰なら、元のチャンネルに完了を知らせる
     if RESTART_MARKER.exists():
         try:
             d = json.loads(RESTART_MARKER.read_text(encoding="utf-8"))
             RESTART_MARKER.unlink()
             note = d.get("note") or ""
-            await send_as(orch, int(d["cid"]), f"✅ 再起動完了！{note}".strip())
+            warn = "" if routing_ok else "\n⚠️ 起動時セルフテストで異常検知。『システムチェック』推奨。"
+            await send_as(orch, int(d["cid"]), f"✅ 再起動完了！{note}{warn}".strip())
         except Exception as e:  # noqa: BLE001
             print(f"[restart] 復帰通知失敗: {e}")
     if not _trend_task_started:
@@ -3115,8 +3221,24 @@ async def on_ready():
 
 @orch.event
 async def on_message(message):
+    """全メッセージの入口。予期せぬ例外を必ず捕捉してログ＋通知する
+    （沈黙して失敗＝毎回スクショ待ち、を防ぐ自己修復の要）。"""
     if message.author.bot:
         return
+    try:
+        await _dispatch_message(message)
+    except Exception as e:  # noqa: BLE001
+        summary = _log_error(f"on_message: {message.content[:80]}", e)
+        try:
+            await message.channel.send(
+                f"⚠️ 処理中にエラーが出ました（記録済み）: {summary}\n"
+                "『エラー教えて』で詳細、『システムチェック』で自己診断できます。"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def _dispatch_message(message):
     content = message.content.strip()
     # テキストまたは添付ファイルがない場合は無視
     if not content and not message.attachments:
@@ -3126,6 +3248,17 @@ async def on_message(message):
     # 初回のみ：導入前の過去ログをDiscordから取り込む（バックグラウンド）
     if cid not in _import_started:
         asyncio.create_task(_backfill_channel_history(message.channel))
+
+    # 自己診断・エラー確認（最優先で拾う）
+    if re.search("システムチェック|自己診断|ヘルスチェック|健康診断|全体チェック", content):
+        await message.channel.send("🩺 自己診断を実行します（30秒〜1分）…")
+        await message.channel.send((await _self_diagnose())[:1900])
+        return
+    if re.search("エラー", content) and re.search(
+        "教えて|見せて|ログ|直近|最近|何|なに|ある\\?|ある？|出てる", content
+    ):
+        await message.channel.send("🔴 直近のエラー:\n" + _recent_errors(3)[:1800])
+        return
 
     # 承認待ちがあれば、テキストの「許可/拒否」でも受け付ける（ボタン不要）
     approval = _try_text_approval(cid, message.author.id, content)
