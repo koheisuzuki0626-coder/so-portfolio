@@ -1734,9 +1734,34 @@ async def _mcp_motion_control(image_url, video_url, request):
     if last.upper().startswith("ERROR"):
         raise RuntimeError(last[:300])
     urls = re.findall(r"https?://\S+", out)
-    if not urls:
-        raise RuntimeError(f"動画URLが出力されませんでした: {out[-300:]}")
-    return urls[-1].rstrip(")。、」")
+    if urls:
+        return urls[-1].rstrip(")。、」")
+    if re.search("処理中|待機|投入|submitted|processing|queued|progress", out, re.I):
+        return None  # ジョブは投入済み・生成待ち → 呼び出し元で完了をポーリング
+    raise RuntimeError(f"動画URLが出力されませんでした: {out[-300:]}")
+
+
+_MOTION_CHECK_TASK = (
+    "Higgsfield の MCP ツール show_generations（type=video, size=3）で最新の生成履歴を"
+    "確認して。最新の kling3_0_motion_control ジョブについて、status が completed なら"
+    "その動画URL（results.rawUrl）だけを最終行に出力。failed なら『ERROR: 理由』、"
+    "まだ処理中・履歴に無い場合は『PENDING』とだけ最終行に出力して。"
+)
+
+
+async def _mcp_motion_status():
+    """モーション転写ジョブの完了確認（1回）。完了ならURL、処理中ならNone。"""
+    out = await _run_claude_exec(_MOTION_CHECK_TASK, timeout=180)
+    print(f"[motion_mcp] 状態確認: {(out or '')[-200:]}")
+    if not out or out.startswith("⚠️"):
+        return None
+    last = out.strip().splitlines()[-1].strip()
+    if last.upper().startswith("ERROR"):
+        raise RuntimeError(last[:300])
+    urls = re.findall(r"https?://\S+\.mp4\S*", out)
+    if urls:
+        return urls[-1].rstrip(")。、」")
+    return None
 
 
 async def _discover_hf_models():
@@ -1837,10 +1862,31 @@ async def _run_motion_control(message, request, ref_att):
     # MCPには Kling / motion_control 等、APIキーに無いモデルがある。
     try:
         vurl = await _mcp_motion_control(image_url, video_url, request)
-        if vurl:
-            add_history(cid, "Orchestrator", f"（モーション転写動画を生成した: {vurl}）")
-            await send_as(orch, cid, f"✅ できました！（Higgsfield MCP経由）\n{vurl}")
-            return
+        if vurl is None:
+            # ジョブは投入済み。完了まで1分おきに自動確認（最大20分）
+            await send_as(
+                orch, cid,
+                "⏳ 生成ジョブを投入しました。完了を1分おきに自動確認します（最大20分）…"
+            )
+            for _ in range(20):
+                await asyncio.sleep(60)
+                try:
+                    vurl = await _mcp_motion_status()
+                except Exception as e:  # noqa: BLE001
+                    await send_as(orch, cid, f"⚠️ 生成が失敗しました: {str(e)[:250]}")
+                    return
+                if vurl:
+                    break
+            if not vurl:
+                await send_as(
+                    orch, cid,
+                    "⏳ まだ処理中のようです（Higgsfield側で生成は続いています）。"
+                    "しばらくして「モーション動画できた？」と聞いてください。"
+                )
+                return
+        add_history(cid, "Orchestrator", f"（モーション転写動画を生成した: {vurl}）")
+        await send_as(orch, cid, f"✅ できました！（Higgsfield MCP経由）\n{vurl}")
+        return
     except Exception as e:  # noqa: BLE001
         print(f"[motion] MCP経由失敗 → プラットフォームAPIへ: {str(e)[:300]}")
         await send_as(
@@ -1993,6 +2039,23 @@ async def _handle_orchestrator(message, cid):
     それ以外（質問・相談・雑談）は普通に会話する。"""
     history = get_history(cid)
     latest = _latest_user_msg(history)
+
+    # モーション転写ジョブの完了確認（「モーション動画できた？」等）
+    if re.search("モーション", latest) and re.search(
+        "できた|完成|終わった|どうなった|状況|まだ", latest
+    ):
+        await message.channel.send("🔎 Higgsfield の生成状況を確認します…")
+        try:
+            vurl = await _mcp_motion_status()
+        except Exception as e:  # noqa: BLE001
+            await message.channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
+            return
+        if vurl:
+            add_history(cid, "Orchestrator", f"（モーション転写動画が完成: {vurl}）")
+            await message.channel.send(f"✅ できています！\n{vurl}")
+        else:
+            await message.channel.send("⏳ まだ処理中です。数分後にもう一度聞いてください。")
+        return
 
     # モーション転写モデルのID直接指定（「モーションのモデルを ○○ にして」）
     m = re.search(r"モーション\S*の?モデル\S*を\s*([\w\-./]{4,})\s*に", latest)
