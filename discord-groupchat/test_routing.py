@@ -168,6 +168,11 @@ def run():
     check("nano banana→image", bot._match_gen_model("nano bananaで作って")[1], "image")
     check("該当なし", bot._match_gen_model("犬の動画作って"), None)
 
+    print("■ プロンプト英語判定 _looks_english_prompt")
+    check("日本語→False", bot._looks_english_prompt("犬が走る動画"), False)
+    check("英語→True", bot._looks_english_prompt("a running dog, cinematic, 9:16"), True)
+    check("会話文→False", bot._looks_english_prompt("もう一回作り直して"), False)
+
     print("■ エラーログ _log_error / _recent_errors")
     import tempfile
     import pathlib

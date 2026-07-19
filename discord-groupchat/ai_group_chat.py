@@ -2047,7 +2047,8 @@ async def _mcp_generate_submit(request, model, media_type, refs, aspect_ratio=No
             "を呼び、返ってきた候補から目的に最適な1つを選ぶこと。\n"
         )
     ar_line = (
-        f"・アスペクト比: {aspect_ratio}（縦型。パラメータで指定できるなら必ず設定）\n"
+        f"・アスペクト比は必ず {aspect_ratio} にする（generate_{media_type} の aspect_ratio "
+        f"パラメータに '{aspect_ratio}' を渡す。縦型ショート用なので横型は不可）\n"
         if aspect_ratio else ""
     )
     task = (
@@ -2094,9 +2095,40 @@ async def _mcp_gen_and_wait(prompt, media_type="image", model=None, refs=None, m
     return None
 
 
-async def _run_hf_generate(message, request, model, media_type, label, aspect_ratio=None):
+def _looks_english_prompt(text):
+    """既に英語の生成プロンプトっぽいか（日本語をほぼ含まない）。"""
+    jp = len(re.findall(r"[ぁ-んァ-ン一-龯]", text))
+    return jp <= 2
+
+
+async def _refine_prompt(request, media_type, style=""):
+    """日本語の依頼（会話文含む）を、具体的な英語の映像/画像生成プロンプトに変換。
+    既に英語プロンプトならそのまま返す。生成物が『全然違う』のを防ぐ核心工程。"""
+    if _looks_english_prompt(request):
+        return request.strip()
+    kind = "video" if media_type == "video" else "image"
+    ask = (
+        f"次の日本語の依頼を、AI {kind}生成用の英語プロンプト1つに変換して。"
+        "被写体・構図・カメラワーク・光・色・質感・雰囲気を具体的に描写。"
+        "カンマ区切りの1行、英語のみ、プロンプト本体だけ出力（説明や引用符は不要）。"
+        + (f" スタイル指定: {style}." if style else "")
+        + f"\n依頼: {request}"
+    )
+    try:
+        out = (await _ai_text_bg(ask, "refine_prompt")).strip()
+        line = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
+        line = line.strip('"' + "'`")
+        return line or request
+    except Exception as e:  # noqa: BLE001
+        print(f"[refine_prompt] 失敗、原文使用: {str(e)[:120]}")
+        return request
+
+
+async def _run_hf_generate(message, request, model, media_type, label,
+                           aspect_ratio=None, refine=True):
     """Higgsfieldで生成→投入→完了監視→URL自動投稿（モーションと同じ堅牢さ）。
-    model=None なら最適モデルを自動選定する。aspect_ratio='9:16'で縦型ショート。"""
+    model=None なら最適モデルを自動選定する。aspect_ratio='9:16'で縦型ショート。
+    refine=True で日本語依頼を英語プロンプトに変換（既に整形済みならFalse）。"""
     cid = message.channel.id
     if not HF_AVAILABLE and not os.getenv("HIGGSFIELD_API_KEY"):
         await send_as(orch, cid, "⚠️ Higgsfield が使えません（APIキー/認証を確認してください）。")
@@ -2107,6 +2139,11 @@ async def _run_hf_generate(message, request, model, media_type, label, aspect_ra
         if Path(a.filename).suffix.lower() in (SUPPORTED_IMAGE_TYPES | SUPPORTED_VIDEO_TYPES)
     ]
     kind = "動画" if media_type == "video" else "画像"
+    if refine:
+        refined = await _refine_prompt(request, media_type)
+        if refined != request:
+            await send_as(orch, cid, f"🖋 プロンプト: {refined[:300]}")
+            request = refined
     await send_as(
         orch, cid,
         f"🎬 {label}で{kind}を生成します…" if model
@@ -2208,11 +2245,11 @@ async def _run_short(message, theme=None):
         "tags": c.get("tags", []),
     })
 
-    # 縦型9:16でスタイリッシュに生成（プロンプトにスタイルを補強）
+    # 縦型9:16でスタイリッシュに生成（プロンプトは英語生成済みなので再変換しない）
     full_prompt = f"{c['prompt']}, {SHORTS_STYLE}"
     await _run_hf_generate(
         message, full_prompt, None, "video",
-        f"ショート「{c['title'][:20]}」", aspect_ratio="9:16",
+        f"ショート「{c['title'][:20]}」", aspect_ratio="9:16", refine=False,
     )
 
 
