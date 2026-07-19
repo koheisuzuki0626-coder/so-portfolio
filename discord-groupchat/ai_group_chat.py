@@ -300,6 +300,22 @@ def _log_error(context, exc):
     return f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
+def _spawn(coro, cid, context):
+    """背景タスクを、例外が沈黙しないラッパーで起動する。
+    on_message のガードは create_task した処理には効かないため、ここで捕捉して
+    errors.log 記録＋チャンネル通知する（裏側の静かな失敗を防ぐ）。"""
+    async def _wrapped():
+        try:
+            await coro
+        except Exception as e:  # noqa: BLE001
+            summary = _log_error(f"bg:{context}", e)
+            try:
+                await send_as(orch, cid, f"⚠️ {context} でエラー（記録済み）: {summary}")
+            except Exception:  # noqa: BLE001
+                pass
+    return asyncio.create_task(_wrapped())
+
+
 def _recent_errors(n=3):
     """直近n件のエラーを返す（Discord表示用）。"""
     try:
@@ -327,16 +343,17 @@ async def _self_diagnose():
     """各サブシステムを能動チェックして健全性レポートを返す（Discord内で完結）。"""
     lines = ["🩺 **システム自己診断**"]
 
-    # ① ルーティングの回帰テスト（別プロセスで隔離実行）
-    try:
-        r = await asyncio.to_thread(
-            subprocess.run, [sys.executable, "test_routing.py"],
-            capture_output=True, text=True, timeout=120, cwd=BASE_DIR,
-        )
-        tail = (r.stdout or "").strip().splitlines()[-1] if r.stdout else ""
-        lines.append(("✅ " if r.returncode == 0 else "❌ ") + f"ルーティングテスト: {tail}")
-    except Exception as e:  # noqa: BLE001
-        lines.append(f"⚠️ ルーティングテスト実行不可: {str(e)[:120]}")
+    # ① ルーティング＋E2Eの回帰テスト（別プロセスで隔離実行）
+    for tf, name in (("test_routing.py", "ルーティング"), ("simulate.py", "E2Eシミュレーション")):
+        try:
+            r = await asyncio.to_thread(
+                subprocess.run, [sys.executable, tf],
+                capture_output=True, text=True, timeout=180, cwd=BASE_DIR,
+            )
+            tail = (r.stdout or "").strip().splitlines()[-1] if r.stdout else ""
+            lines.append(("✅ " if r.returncode == 0 else "❌ ") + f"{name}テスト: {tail}")
+        except Exception as e:  # noqa: BLE001
+            lines.append(f"⚠️ {name}テスト実行不可: {str(e)[:120]}")
 
     # ② Gemini（軽い呼び出し）
     try:
@@ -2384,7 +2401,7 @@ async def _start_agent(message, cid, content):
         "🛠 コードを触る作業ですね。プランを作ります…"
         "（[✅許可]で実行 / [❌拒否]で中止）"
     )
-    asyncio.create_task(_run_agent_task(cid, content, message.author.id))
+    _spawn(_run_agent_task(cid, content, message.author.id), cid, "エージェント実行")
 
 
 async def _handle_orchestrator(message, cid):
@@ -2472,12 +2489,11 @@ async def _handle_orchestrator(message, cid):
         await _start_agent(message, cid, _latest_user_msg(history))
         return
     if kind == "image":
-        asyncio.create_task(_handle_image_request(cid, _latest_user_msg(history)))
+        _spawn(_handle_image_request(cid, _latest_user_msg(history)), cid, "画像生成")
         return
     if kind == "selffix":
-        asyncio.create_task(
-            _run_self_fix(cid, _latest_user_msg(history), message.author.id)
-        )
+        _spawn(_run_self_fix(cid, _latest_user_msg(history), message.author.id),
+               cid, "自己改修")
         return
     if kind == "restart":
         await _restart_self(cid)
@@ -2492,7 +2508,7 @@ async def _handle_orchestrator(message, cid):
             r"(の)?(トレンド|急上昇|リサーチ|調査|分析|調べて|して|ちょうだい|ください|お願い(します)?|よ|ね)+$",
             "", _latest_user_msg(history).strip(),
         ).strip("　 。、")
-        asyncio.create_task(_run_trend_study(cid, topic or None))
+        _spawn(_run_trend_study(cid, topic or None), cid, "YouTubeリサーチ")
         return
     if kind == "talk":
         if state["running"]:
@@ -3038,8 +3054,9 @@ async def _selfcheck():
         [sys.executable, "-m", "py_compile", str(SELF_FILE)],
         [sys.executable, "-c", f"import {SELF_FILE.stem}"],
     ]
-    if (SELF_FILE.parent / "test_routing.py").exists():
-        checks.append([sys.executable, "test_routing.py"])
+    for tf in ("test_routing.py", "simulate.py"):
+        if (SELF_FILE.parent / tf).exists():
+            checks.append([sys.executable, tf])
     for args in checks:
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -3183,18 +3200,20 @@ _trend_task_started = False
 async def on_ready():
     global _trend_task_started
     print(f"オーケストレーター起動: {orch.user}")
-    # 起動時のセルフテスト（ルーティング回帰）。失敗したら復帰チャンネルに警告。
+    # 起動時のセルフテスト（ルーティング＋E2E）。失敗したら復帰チャンネルに警告。
     routing_ok = True
-    try:
-        r = await asyncio.to_thread(
-            subprocess.run, [sys.executable, "test_routing.py"],
-            capture_output=True, text=True, timeout=120, cwd=BASE_DIR,
-        )
-        routing_ok = r.returncode == 0
-        print(f"[selftest] ルーティングテスト: {'OK' if routing_ok else 'FAIL'} "
-              f"{(r.stdout or '').strip().splitlines()[-1] if r.stdout else ''}")
-    except Exception as e:  # noqa: BLE001
-        print(f"[selftest] 実行不可: {e}")
+    for tf in ("test_routing.py", "simulate.py"):
+        try:
+            r = await asyncio.to_thread(
+                subprocess.run, [sys.executable, tf],
+                capture_output=True, text=True, timeout=180, cwd=BASE_DIR,
+            )
+            passed = r.returncode == 0
+            routing_ok = routing_ok and passed
+            tail = (r.stdout or "").strip().splitlines()[-1] if r.stdout else ""
+            print(f"[selftest] {tf}: {'OK' if passed else 'FAIL'} {tail}")
+        except Exception as e:  # noqa: BLE001
+            print(f"[selftest] {tf} 実行不可: {e}")
 
     # 自己再起動からの復帰なら、元のチャンネルに完了を知らせる
     if RESTART_MARKER.exists():
@@ -3282,7 +3301,7 @@ async def _dispatch_message(message):
         if projects.get(cid):
             await message.channel.send("進行中のプロジェクトがあります。!cancel で中止できます。")
             return
-        asyncio.create_task(pipeline_start(cid, topic))
+        _spawn(pipeline_start(cid, topic), cid, "映像プロジェクト")
         return
     if content == "!cancel":
         if projects.pop(cid, None):
@@ -3299,7 +3318,7 @@ async def _dispatch_message(message):
             )
             return
         await message.channel.send(f"🤖 エージェント開始: {task}")
-        asyncio.create_task(_run_agent_task(cid, task, message.author.id))
+        _spawn(_run_agent_task(cid, task, message.author.id), cid, "エージェント実行")
         return
     if content == "!profile":
         p = _load_profiles()
@@ -3319,7 +3338,7 @@ async def _dispatch_message(message):
             )
             return
         topic = content[len("!trend"):].strip()
-        asyncio.create_task(_run_trend_study(cid, topic or None))
+        _spawn(_run_trend_study(cid, topic or None), cid, "YouTubeリサーチ")
         return
     if content.startswith("!search"):
         q = content[len("!search"):].strip()
@@ -3394,13 +3413,13 @@ async def _dispatch_message(message):
     if route == "hf_model":
         model, mtype, label = _match_gen_model(content)
         add_history(cid, message.author.display_name, content)
-        asyncio.create_task(_run_hf_generate(message, content, model, mtype, label))
+        _spawn(_run_hf_generate(message, content, model, mtype, label), cid, "動画/画像生成")
         return
 
     if route == "hf_auto":
         mtype = "image" if re.search("画像|イラスト|ロゴ|絵|写真|アイコン", content) else "video"
         add_history(cid, message.author.display_name, content)
-        asyncio.create_task(_run_hf_generate(message, content, None, mtype, "自動選定"))
+        _spawn(_run_hf_generate(message, content, None, mtype, "自動選定"), cid, "動画/画像生成")
         return
 
     if route == "motion":
@@ -3412,7 +3431,7 @@ async def _dispatch_message(message):
             cid, message.author.display_name,
             content + "（参照動画を添付してモーションコントロール生成を依頼）",
         )
-        asyncio.create_task(_run_motion_control(message, req, _video_att))
+        _spawn(_run_motion_control(message, req, _video_att), cid, "モーション生成")
         return
 
     if route == "motion_ask":
