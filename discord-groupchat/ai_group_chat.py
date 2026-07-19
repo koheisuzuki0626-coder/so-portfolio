@@ -1714,20 +1714,24 @@ def _is_model_not_found(e):
     return "model_not_found" in m or "not found" in m or "unknown model" in m
 
 
-# 進行中のモーション生成の記録（再起動に耐えるようファイルへ）。
-# {cid, submitted_at, request} を保存。完了監視が復帰後も続けられる。
+# 進行中の生成ジョブの記録（再起動に耐えるようファイルへ）。
+# {cid, submitted_at, request, model, media_type, label} を保存。
+# 完了監視が復帰後も続けられる。モーション/Seedance/Veo など全モデル共通。
 _MOTION_JOB_FILE = HISTORY_DIR / "pending_motion.json"
 
 
-def _save_motion_job(cid, request):
+def _save_motion_job(cid, request, model="kling3_0_motion_control",
+                     media_type="video", label="モーション動画"):
     try:
         _MOTION_JOB_FILE.write_text(
             json.dumps({"cid": cid, "submitted_at": time.time(),
-                        "request": request[:200]}, ensure_ascii=False),
+                        "request": request[:200], "model": model,
+                        "media_type": media_type, "label": label},
+                       ensure_ascii=False),
             encoding="utf-8",
         )
     except Exception as e:  # noqa: BLE001
-        print(f"[motion] ジョブ記録の保存失敗: {e}")
+        print(f"[gen] ジョブ記録の保存失敗: {e}")
 
 
 def _load_motion_job():
@@ -1747,8 +1751,10 @@ def _clear_motion_job():
 
 
 def _extract_video_url(text):
-    """claude出力から動画URLを頑健に抽出（cloudfront / .mp4 / http を順に探す）。"""
-    for pat in (r"https?://\S*cloudfront\S+", r"https?://\S+\.mp4\S*", r"https?://\S+"):
+    """claude出力からメディアURLを頑健に抽出（cloudfront / .mp4/.png/.jpg / http）。"""
+    for pat in (r"https?://\S*cloudfront\S+",
+                r"https?://\S+\.(?:mp4|mov|png|jpe?g|webp)\S*",
+                r"https?://\S+"):
         urls = re.findall(pat, text or "")
         if urls:
             return urls[-1].rstrip(").,。、」)")
@@ -1781,24 +1787,111 @@ async def _mcp_motion_control(image_url, video_url, request):
     return _extract_video_url(out) or True
 
 
-_MOTION_CHECK_TASK = (
-    "Higgsfield の MCP ツール show_generations（type=video, size=3）で最新の生成履歴を"
-    "確認して。最新の kling3_0_motion_control ジョブについて、status が completed なら"
-    "その動画URL（results.rawUrl）だけを最終行に出力。failed なら『ERROR: 理由』、"
-    "まだ処理中・履歴に無い場合は『PENDING』とだけ最終行に出力して。"
-)
-
-
-async def _mcp_motion_status():
-    """モーション転写ジョブの完了確認（1回）。完了ならURL、処理中ならNone。"""
-    out = await _run_claude_exec(_MOTION_CHECK_TASK, timeout=180)
-    print(f"[motion_mcp] 状態確認: {(out or '')[-200:]}")
+async def _mcp_gen_status(media_type="video", model=None):
+    """生成ジョブの完了確認（1回）。完了ならURL、処理中ならNone。全モデル共通。"""
+    model_clause = (
+        f"最新の {model} ジョブ" if model else f"最新の {media_type} ジョブ"
+    )
+    task = (
+        f"Higgsfield の MCP ツール show_generations（type={media_type}, size=3）で"
+        f"最新の生成履歴を確認して。{model_clause}について、status が completed なら"
+        "そのURL（results.rawUrl）だけを最終行に出力。failed なら『ERROR: 理由』、"
+        "まだ処理中・履歴に無い場合は『PENDING』とだけ最終行に出力して。"
+    )
+    out = await _run_claude_exec(task, timeout=180)
+    print(f"[gen_mcp] 状態確認: {(out or '')[-200:]}")
     if not out or out.startswith("⚠️"):
         return None
     last = out.strip().splitlines()[-1].strip()
     if last.upper().startswith("ERROR"):
         raise RuntimeError(last[:300])
     return _extract_video_url(out)
+
+
+async def _mcp_motion_status():
+    """モーション転写ジョブの完了確認（後方互換）。"""
+    return await _mcp_gen_status("video", "kling3_0_motion_control")
+
+
+# Discordの発言で使えるモデル名 → (MCPモデルID, 種別, 表示名)
+HF_GEN_MODELS = {
+    "seedance": ("seedance_2_0", "video", "Seedance 2.0"),
+    "シーダンス": ("seedance_2_0", "video", "Seedance 2.0"),
+    "seedance1": ("seedance1_5", "video", "Seedance 1.5"),
+    "veo": ("veo3", "video", "Veo 3"),
+    "ヴェオ": ("veo3", "video", "Veo 3"),
+    "sora": ("sora2-video", "video", "Sora 2"),
+    "ソラ": ("sora2-video", "video", "Sora 2"),
+    "wan": ("wan2-6", "video", "Wan 2.6"),
+    "kling3": ("kling3_0", "video", "Kling 3.0"),
+    "クリング3": ("kling3_0", "video", "Kling 3.0"),
+    "kling turbo": ("kling3_0_turbo", "video", "Kling 3.0 Turbo"),
+    "クリングターボ": ("kling3_0_turbo", "video", "Kling 3.0 Turbo"),
+    "kling": ("kling2_6", "video", "Kling 2.6"),
+    "クリング": ("kling2_6", "video", "Kling 2.6"),
+    "gemini omni": ("gemini_omni", "video", "Gemini Omni"),
+    "nano banana": ("nano-banana-2", "image", "Nano Banana 2"),
+    "ナノバナナ": ("nano-banana-2", "image", "Nano Banana 2"),
+    "soul": ("soul-v2", "image", "Soul v2"),
+    "seedream": ("seedream_v4", "image", "Seedream v4"),
+    "シードリーム": ("seedream_v4", "image", "Seedream v4"),
+}
+
+
+async def _mcp_generate_submit(request, model, media_type, refs):
+    """Higgsfield MCP経由で任意モデルの生成ジョブを投入（完了は待たない）。
+    refs: 参照メディアURLのリスト（画像/動画）。投入できたらTrue/URL、失敗は例外。"""
+    ref_lines = "".join(f"\n・参照メディア{i + 1}: {u}" for i, u in enumerate(refs))
+    kind = "動画" if media_type == "video" else "画像"
+    task = (
+        f"Higgsfield の MCP ツール（generate_{media_type}）で{kind}の生成ジョブを投入して。\n"
+        f"・使うモデル: {model}\n"
+        f"・内容（プロンプト）: {request[:400]}"
+        + (ref_lines + "\n参照メディアは media_import_url 等で取り込み、"
+           "start_image / image_references / video_references 等の適切なroleで渡す。"
+           if refs else "\n") +
+        "ジョブの投入だけ行い、完了は待たなくてよい。"
+        "投入できたら最終行に『SUBMITTED』、失敗したら『ERROR: 理由』とだけ出力して。"
+    )
+    out = await _run_claude_exec(task, timeout=600)
+    print(f"[gen_mcp] 投入結果末尾: {(out or '')[-400:]}")
+    if not out or out.startswith("⚠️"):
+        raise RuntimeError(f"claude CLI実行失敗: {(out or '')[:200]}")
+    if re.search(r"ERROR", out.strip().splitlines()[-1], re.I) and \
+            not _extract_video_url(out):
+        raise RuntimeError(out.strip().splitlines()[-1][:300])
+    return _extract_video_url(out) or True
+
+
+async def _run_hf_generate(message, request, model, media_type, label):
+    """任意のHiggsfieldモデルで生成→投入→完了監視→URL自動投稿（モーションと同じ堅牢さ）。"""
+    cid = message.channel.id
+    if not HF_AVAILABLE and not os.getenv("HIGGSFIELD_API_KEY"):
+        await send_as(orch, cid, "⚠️ Higgsfield が使えません（APIキー/認証を確認してください）。")
+        return
+    # 添付があれば参照メディアとして渡す（画像・動画）
+    refs = [
+        a.url for a in message.attachments
+        if Path(a.filename).suffix.lower() in (SUPPORTED_IMAGE_TYPES | SUPPORTED_VIDEO_TYPES)
+    ]
+    await send_as(orch, cid, f"🎬 {label} で{('動画' if media_type == 'video' else '画像')}を生成します…")
+    try:
+        result = await _mcp_generate_submit(request, model, media_type, refs)
+    except Exception as e:  # noqa: BLE001
+        await send_as(orch, cid, f"⚠️ {label} の投入に失敗: {str(e)[:250]}")
+        return
+    if isinstance(result, str):  # 投入中に既にURLが返った
+        _clear_motion_job()
+        add_history(cid, "Orchestrator", f"（{label}で生成した: {result}）")
+        await send_as(orch, cid, f"✅ できました！（{label}）\n{result}")
+        return
+    _save_motion_job(cid, request, model=model, media_type=media_type, label=label)
+    await send_as(
+        orch, cid,
+        f"⏳ {label} の生成ジョブを投入しました。完成したら動画URLを自動投稿します"
+        "（「できた？」でいつでも確認可）。"
+    )
+    asyncio.create_task(_watch_motion_job(cid))
 
 
 async def _discover_hf_models():
@@ -1846,28 +1939,32 @@ async def _discover_hf_models():
 
 
 async def _watch_motion_job(cid):
-    """投入済みモーションジョブの完了を監視し、完成したら動画URLをDiscordに自動投稿。
-    再起動しても on_ready から呼び直せるので、生成完了は必ずDiscordに届く。"""
+    """投入済み生成ジョブの完了を監視し、完成したらURLをDiscordに自動投稿。
+    再起動しても on_ready から呼び直せるので、生成完了は必ずDiscordに届く。全モデル共通。"""
+    job0 = _load_motion_job() or {}
+    media_type = job0.get("media_type", "video")
+    model = job0.get("model", "kling3_0_motion_control")
+    label = job0.get("label", "モーション動画")
     for _ in range(30):  # 1分おき最大30分
         await asyncio.sleep(60)
         job = _load_motion_job()
         if not job or job.get("cid") != cid:
             return  # 別ジョブに置き換わった/クリアされた
         try:
-            vurl = await _mcp_motion_status()
+            vurl = await _mcp_gen_status(media_type, model)
         except Exception as e:  # noqa: BLE001
             _clear_motion_job()
             await send_as(orch, cid, f"⚠️ 生成が失敗しました: {str(e)[:250]}")
             return
         if vurl:
             _clear_motion_job()
-            add_history(cid, "Orchestrator", f"（モーション転写動画が完成: {vurl}）")
-            await send_as(orch, cid, f"✅ モーション動画ができました！\n{vurl}")
+            add_history(cid, "Orchestrator", f"（{label}が完成: {vurl}）")
+            await send_as(orch, cid, f"✅ {label}ができました！\n{vurl}")
             return
     # 30分たっても完成せず → 記録は残し、後で「できた？」で確認できるようにする
     await send_as(
         orch, cid,
-        "⏳ まだ生成中のようです。もう少し待ってから「モーション動画できた？」"
+        "⏳ まだ生成中のようです。もう少し待ってから「できた？」"
         "と送ってください（記録は保持しています）。"
     )
 
@@ -2988,27 +3085,47 @@ async def on_message(message):
     if content.startswith("!"):
         return
 
-    # 生成した動画の状態確認（「できた？」「見れる？」「URL」等）。
-    # モーション生成の依頼フローより先に処理する（"モーション"の語で誤起動しないため）。
-    if not message.attachments and re.search("動画|モーション", content) and re.search(
+    # 生成した動画/画像の状態確認（「できた？」「見れる？」「URL」等）。
+    # 生成依頼フローより先に処理する（"モーション"等の語で誤起動しないため）。
+    if not message.attachments and re.search("動画|画像|モーション|生成", content) and re.search(
         "できた|完成|終わった|どうなった|状況|進捗|まだ|見れる|見せて|見たい|"
         "url|ＵＲＬ|どこ|ある\\?|ある？|ちょうだい|ください", content, re.I
     ):
+        job = _load_motion_job() or {}
         await message.channel.send("🔎 Higgsfield の生成状況を確認します…")
         try:
-            vurl = await _mcp_motion_status()
+            vurl = await _mcp_gen_status(
+                job.get("media_type", "video"), job.get("model")
+            )
         except Exception as e:  # noqa: BLE001
             await message.channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
             return
         if vurl:
             _clear_motion_job()
-            add_history(cid, "Orchestrator", f"（モーション転写動画が完成: {vurl}）")
-            await message.channel.send(f"✅ できています！動画URLはこちら:\n{vurl}")
+            add_history(cid, "Orchestrator", f"（生成物が完成: {vurl}）")
+            await message.channel.send(f"✅ できています！URLはこちら:\n{vurl}")
         else:
             await message.channel.send(
-                "⏳ まだ生成中のようです。数分後にもう一度「動画できた？」と送ってください。"
+                "⏳ まだ生成中のようです。数分後にもう一度「できた？」と送ってください。"
             )
         return
+
+    # 任意のHiggsfieldモデル指定での生成（「seedanceで動画作って」「veoで〜」等）。
+    # モーション（動き転写）はこの後ろの専用フローに任せるため除外。
+    if not re.search("モーション|この動き|動きを", content) and re.search(
+        "作って|作りたい|生成|つくって|animate|動かして", content
+    ):
+        low = content.lower()
+        matched = None
+        for name in sorted(HF_GEN_MODELS, key=len, reverse=True):
+            if name in low:
+                matched = HF_GEN_MODELS[name]
+                break
+        if matched:
+            model, mtype, label = matched
+            add_history(cid, message.author.display_name, content)
+            asyncio.create_task(_run_hf_generate(message, content, model, mtype, label))
+            return
 
     # モーションコントロール：「この動きで」「モーションコントロールで」と依頼されたら
     # 参照動画の動きを転写して1発で動画生成（構成案フローを通さない）。
