@@ -1665,32 +1665,23 @@ async def _plan(history):
 
 
 async def _handle_image_request(cid, request):
-    """画像生成の依頼。既定は Gemini（無料枠 約500枚/日）。設定で Higgsfield も選べる。"""
-    if gen_settings["image_engine"] == "higgsfield" and HF_AVAILABLE:
-        await send_as(
-            orch, cid,
-            f"🎨 Higgsfield（{gen_settings['image_app'] or '既定'}）で画像を生成中…"
-        )
-        try:
-            url = await hf_wrapper.generate_image(request, model=gen_settings["image_app"])
-            await send_as(orch, cid, f"✅ できました！修正したい点があれば教えてください。\n{url}")
-            add_history(cid, "Orchestrator",
-                        f"（依頼「{request[:60]}」の画像をHiggsfieldで生成して投稿した）")
-            return
-        except Exception as e:  # noqa: BLE001
-            print(f"[image_request] Higgsfield失敗: {str(e)[:200]}")
-            await send_as(orch, cid, "⚠️ Higgsfieldで失敗 → Gemini（無料枠）で再試行します…")
+    """画像生成の依頼。既定は Gemini（無料枠 約500枚/日）。
+    Gemini が使えないときは Higgsfield MCP の最適モデルへ自動フォールバック。"""
     await send_as(orch, cid, "🎨 Gemini で画像を生成中…（無料枠）")
     try:
         data = await asyncio.to_thread(_gemini_generate_image_sync, request)
         await send_image_bytes(cid, "✅ できました！修正したい点があれば教えてください。", data, "image.png")
         add_history(cid, "Orchestrator", f"（依頼「{request[:60]}」の画像をGeminiで生成して投稿した）")
+        return
     except Exception as e:  # noqa: BLE001
-        print(f"[image_request] 失敗: {str(e)[:200]}")
-        if _is_quota_error(e):
-            await send_as(orch, cid, "⚠️ Gemini画像生成の本日の無料枠が上限です。時間をおいて再度お試しください。")
-        else:
-            await send_as(orch, cid, f"⚠️ 画像生成に失敗: {str(e)[:200]}")
+        print(f"[image_request] Gemini失敗: {str(e)[:200]}")
+        await send_as(orch, cid, "⚠️ Gemini画像が使えないため、Higgsfieldの最適モデルで生成します…")
+    url = await _mcp_gen_and_wait(request, media_type="image", model=None)
+    if url:
+        add_history(cid, "Orchestrator", f"（依頼「{request[:60]}」の画像をHiggsfieldで生成: {url}）")
+        await send_as(orch, cid, f"✅ できました！\n{url}")
+    else:
+        await send_as(orch, cid, "⚠️ 画像生成に失敗しました。少し時間をおいて再度お試しください。")
 
 
 # モーションコントロールの依頼待ち（cid -> {"req": 依頼文, "ts": 時刻}）。
@@ -1879,6 +1870,27 @@ async def _mcp_generate_submit(request, model, media_type, refs):
     return (_extract_video_url(out) or True), chosen
 
 
+async def _mcp_gen_and_wait(prompt, media_type="image", model=None, refs=None, max_min=10):
+    """MCP経由で生成→完了まで待ってURLを返す（同期的に使いたい画像生成用）。
+    成功でURL文字列、失敗/未完成でNone。壊れたプラットフォームAPIの代替。"""
+    try:
+        result, chosen = await _mcp_generate_submit(prompt, model, media_type, refs or [])
+    except Exception as e:  # noqa: BLE001
+        print(f"[mcp_gen_wait] 投入失敗: {str(e)[:200]}")
+        return None
+    if isinstance(result, str):
+        return result
+    for _ in range(max_min):
+        await asyncio.sleep(60)
+        try:
+            url = await _mcp_gen_status(media_type, chosen)
+        except Exception:  # noqa: BLE001
+            return None
+        if url:
+            return url
+    return None
+
+
 async def _run_hf_generate(message, request, model, media_type, label):
     """Higgsfieldで生成→投入→完了監視→URL自動投稿（モーションと同じ堅牢さ）。
     model=None なら最適モデルを自動選定する。"""
@@ -2028,14 +2040,10 @@ async def _run_motion_control(message, request, ref_att):
             )
         except Exception as e:  # noqa: BLE001
             print(f"[motion] Geminiキャラ画像失敗: {str(e)[:150]}")
-            try:
-                image_url = await hf_wrapper.generate_image(
-                    sc, model=gen_settings["image_app"]
-                )
+            await send_as(orch, cid, "Higgsfieldの最適モデルでキャラクター画像を生成します…")
+            image_url = await _mcp_gen_and_wait(sc, media_type="image", model=None)
+            if image_url:
                 await send_as(orch, cid, f"キャラクター画像: {image_url}")
-            except Exception as e2:  # noqa: BLE001
-                await send_as(orch, cid, f"⚠️ キャラクター画像の生成に失敗: {str(e2)[:200]}")
-                return
         if not image_url:
             await send_as(orch, cid, "⚠️ キャラクター画像を用意できませんでした。")
             return
@@ -2261,8 +2269,11 @@ async def _handle_orchestrator(message, cid):
     async with message.channel.typing():
         kind, mode, lead, search, recall = await _plan(history)
     if kind == "video":
-        await message.channel.send("🎬 映像制作の依頼ですね。構成案から始めます…")
-        asyncio.create_task(pipeline_start(cid, _latest_user_msg(history)))
+        # 単発の動画生成は、最適モデルを自動選定して直接生成（滑らかで確実）。
+        # 構成案→絵コンテの多段フローが要るときは !project を使う。
+        asyncio.create_task(
+            _run_hf_generate(message, _latest_user_msg(history), None, "video", "自動選定")
+        )
         return
     if kind == "exec":
         await _start_agent(message, cid, _latest_user_msg(history))
@@ -2530,16 +2541,11 @@ async def _pipeline_storyboard(cid, feedback=""):
                     await send_as(orch, cid, "⚠️ Gemini画像生成の無料枠上限。Higgsfieldに切替えます…")
                 elif HF_AVAILABLE:
                     await send_as(orch, cid, f"⚠️ シーン{i}: Gemini失敗 → Higgsfieldで再試行…")
-        # ② フォールバック：Higgsfield（クレジット消費）
-        if url is None and HF_AVAILABLE:
-            try:
-                url = await hf_wrapper.generate_image(sc, model=gen_settings["image_app"])
+        # ② フォールバック：Higgsfield MCP の最適モデル（クレジット消費）
+        if url is None:
+            url = await _mcp_gen_and_wait(sc, media_type="image", model=None)
+            if url:
                 await send_as(orch, cid, f"シーン{i}: {sc}\n{url}")
-            except Exception as e:  # noqa: BLE001
-                if _is_credit_error(e):
-                    await send_as(orch, cid, CREDIT_MSG)
-                    return
-                await send_as(orch, cid, f"⚠️ シーン{i} の画像生成に失敗: {e}")
         if url is None:
             await send_as(orch, cid, f"⚠️ シーン{i} の画像を生成できませんでした。")
             continue
