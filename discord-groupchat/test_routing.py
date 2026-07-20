@@ -85,10 +85,10 @@ ROUTE_CASES = [
     ("あとどれくらい？", "plan", {}),           # ジョブなし → 会話へ
     ("確認して", "status", {"has_job": True}),
     ("確認して", "plan", {}),
-    # 作り直し（直前の生成がある時だけrevise）
+    # 作り直し（明示マーカーがあれば記録の有無に関わらず発動＝Higgsfieldから復元）
     ("もう一回作り直して、顔をアップで", "revise", {"has_last_gen": True}),
     ("さっきの動画もう少し明るくして", "revise", {"has_last_gen": True}),
-    ("もう一回作り直して", "plan", {}),                 # last_genなし→会話
+    ("もう一回作り直して", "revise", {}),               # 記録なしでもrevise（保険で復元）
     # ショート量産
     ("ショート作って", "short", {}),
     ("今日のショートお願い", "short", {}),
@@ -171,6 +171,16 @@ def run():
     check("veo", bot._match_gen_model("veoで作って")[1], "video")
     check("nano banana→image", bot._match_gen_model("nano bananaで作って")[1], "image")
     check("該当なし", bot._match_gen_model("犬の動画作って"), None)
+
+    print("■ 直前生成の保存/復元 _save_last_gen / _load_last_gen")
+    import tempfile as _tf
+    import pathlib as _pl
+    bot._LASTGEN_FILE = _pl.Path(_tf.mkdtemp()) / "last_gen.json"
+    check("初期はNone", bot._load_last_gen(555) is None, True)
+    bot._save_last_gen(555, "a cat, cinematic", "video", "9:16", "テスト")
+    lg = bot._load_last_gen(555)
+    check("保存後に復元できる", lg is not None and lg.get("prompt") == "a cat, cinematic", True)
+    check("別cidは干渉しない", bot._load_last_gen(999) is None, True)
 
     print("■ プロンプト英語判定 _looks_english_prompt")
     check("日本語→False", bot._looks_english_prompt("犬が走る動画"), False)

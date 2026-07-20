@@ -1754,8 +1754,9 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     status_ctx = _STATUS_CTX_RE.search(content) or (has_job and status_kw)
     if not has_attachments and status_kw and status_ctx:
         return "status"
-    # ①.4 前の生成の作り直し（直前の生成があり、修正マーカーがあるとき）
-    if has_last_gen and not has_attachments and _REVISE_RE.search(content):
+    # ①.4 前の生成の作り直し（修正マーカーがあれば発動。記録が無くても
+    #     _run_revise が Higgsfield から直前プロンプトを回収するので安全）
+    if not has_attachments and _REVISE_RE.search(content):
         return "revise"
     # ①.5 ショート量産（「ショート作って」「今日のショート」等）
     if re.search("ショート|shorts?|ショート動画", content, re.I) and (
@@ -2243,28 +2244,57 @@ async def _interpret_video_turn(cid, latest, last):
         return "chat", latest
 
 
+async def _mcp_last_prompt(media_type="video"):
+    """Higgsfieldの直近生成からプロンプトを回収（ローカル記録が無い時の保険）。"""
+    task = (
+        f"Higgsfield の MCP ツール show_generations（type={media_type}, size=1）で"
+        "最新の生成を1件取得し、その params.prompt（生成に使ったプロンプト）だけを"
+        "そのまま最終行に出力して。無ければ『NONE』とだけ出力。"
+    )
+    try:
+        out = await _run_claude_exec(task, timeout=120)
+    except Exception:  # noqa: BLE001
+        return None
+    if not out:
+        return None
+    last = out.strip().splitlines()[-1].strip().strip('"' + "'`")
+    if not last or last.upper() == "NONE" or len(last) < 8:
+        return None
+    return last
+
+
 async def _run_revise(message, instruction):
-    """直前の生成プロンプトに修正指示を適用して作り直す（文脈引き継ぎ）。"""
+    """直前の生成プロンプトに修正指示を適用して作り直す（文脈引き継ぎ）。
+    ローカル記録が無ければ Higgsfield の直近生成からプロンプトを回収する。"""
     cid = message.channel.id
-    last = _load_last_gen(cid)
-    if not last:
-        await send_as(orch, cid,
-                      "直前の生成が見つかりません。まず何か生成してください。")
+    last = _load_last_gen(cid) or {}
+    base_prompt = last.get("prompt")
+    media_type = last.get("media_type", "video")
+    aspect_ratio = last.get("aspect_ratio")
+    if not base_prompt:
+        await send_as(orch, cid, "🔁 直前の生成を Higgsfield から探しています…")
+        base_prompt = await _mcp_last_prompt(media_type)
+    if not base_prompt:
+        await send_as(
+            orch, cid,
+            "直前の生成が見つかりませんでした。もう一度『〇〇の動画作って』のように"
+            "作りたい内容を書いて生成してください（それ以降は作り直せます）。"
+        )
         return
     await send_as(orch, cid, "🔁 前の内容を踏まえて作り直します…")
     ask = (
         "既存の英語生成プロンプトに、ユーザーの日本語の修正指示を反映した"
         "新しい英語プロンプトを1つ作って。カンマ区切り1行、英語のみ、本体だけ出力。\n"
-        f"【元プロンプト】{last['prompt']}\n【修正指示】{instruction}"
+        f"【元プロンプト】{base_prompt}\n【修正指示】{instruction}"
     )
     try:
         new_prompt = (await _ai_text_bg(ask, "revise_prompt")).strip().splitlines()[0]
-        new_prompt = new_prompt.strip('"' + "'`") or last["prompt"]
+        new_prompt = new_prompt.strip('"' + "'`") or base_prompt
     except Exception:  # noqa: BLE001
-        new_prompt = last["prompt"]
+        new_prompt = base_prompt
     await _run_hf_generate(
-        message, new_prompt, None, last.get("media_type", "video"),
-        "作り直し", aspect_ratio=last.get("aspect_ratio"), refine=False,
+        message, new_prompt, None, media_type,
+        "作り直し", aspect_ratio=aspect_ratio, refine=False,
     )
 
 
