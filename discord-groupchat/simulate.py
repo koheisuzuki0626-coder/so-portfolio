@@ -148,6 +148,8 @@ def install_stubs(mcp_url=None):
     bot._run_hf_generate = _rec("hf_generate")
     bot._run_short = _rec("short")
     bot._run_revise = _rec("revise")
+    bot._run_ad_make = _rec("ad")
+    bot._run_virality = _rec("virality")
     bot._load_last_gen = lambda cid: None  # 既定は直前生成なし
 
     async def _vturn(cid, latest, last):
@@ -244,6 +246,10 @@ async def run():
         ("seedanceで犬の動画作って", "hf_generate", None),
         ("おまかせで海の動画作って", "hf_generate", None),
         ("ショート作って", "short", None),
+        ("新作スニーカーの広告作って", "ad", None),
+        ("コーヒーショップのCM作って", "ad", None),
+        ("バズ度分析して", "virality", None),
+        ("この動画の広告効果を予測して", "virality", None),
         ("!short 夜の都市", "short", None),
         ("今日のショートお願い", "short", None),
         ("この動きで生成して", None, None),           # motion_ask → sent案内のみ

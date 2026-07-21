@@ -1747,7 +1747,8 @@ def _match_gen_model(content):
 def classify_route(content, *, has_attachments=False, has_video_att=False,
                    has_image_att=False, has_job=False, has_last_gen=False):
     """@メンションなし発言のルーティングを判定（AI(_plan)前の決定的ルートのみ）。
-    返り値: 'status'/'revise'/'short'/'hf_model'/'hf_auto'/'motion'/'motion_ask'/None。
+    返り値: 'status'/'revise'/'short'/'virality'/'ad'/'hf_model'/'hf_auto'/
+    'motion'/'motion_ask'/None。
     on_message と同じ順序・同じ正規表現を使うので、これをテストすれば実挙動を検証できる。"""
     # ① 生成物の状態確認（添付なし・状態ワード・文脈）
     status_kw = _STATUS_KW_RE.search(content)
@@ -1763,6 +1764,17 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         _GEN_INTENT2_RE.search(content) or re.search("今日の|ネタ|企画|お願い", content)
     ):
         return "short"
+    # ①.6 バズ度シミュレーション（広告効果の事前予測＝物理エンジン相当）
+    if re.search("バズ|バイラル|広告効果|再生数|伸び", content) and re.search(
+        "分析|予測|チェック|診断|シミュレ|測って|判定|調べて", content
+    ):
+        return "virality"
+    # ①.7 広告代理店モード（企画書＋縦型CM動画の制作）。
+    #     「10cm」等の単位と誤爆しないよう CM は直前が数字でない場合のみ。
+    if re.search("広告|(?<![0-9０-９])[cCｃＣ][mMｍＭ]|コマーシャル|プロモ", content) and (
+        _GEN_INTENT2_RE.search(content) or re.search("お願い|企画", content)
+    ):
+        return "ad"
     # ② Higgsfield生成（モーション以外・生成意図あり）
     if not re.search("モーション|この動き|動きを", content) and _GEN_INTENT2_RE.search(content):
         if _match_gen_model(content):
@@ -2172,6 +2184,7 @@ async def _run_hf_generate(message, request, model, media_type, label,
     disp = label if model else f"自動選定: {chosen or '？'}"
     if isinstance(result, str):  # 投入中に既にURLが返った
         _clear_motion_job()
+        _update_last_gen_url(cid, result)
         add_history(cid, "Orchestrator", f"（{disp}で生成した: {result}）")
         await send_as(orch, cid, f"✅ できました！（{disp}）\n{result}")
         return
@@ -2208,6 +2221,21 @@ def _load_last_gen(cid):
     except Exception:  # noqa: BLE001
         pass
     return None
+
+
+def _update_last_gen_url(cid, url):
+    """完成した動画/画像のURLを直前生成の記録に追記（バズ度分析などで使う）。"""
+    try:
+        data = {}
+        if _LASTGEN_FILE.exists():
+            data = json.loads(_LASTGEN_FILE.read_text(encoding="utf-8"))
+        entry = data.get(str(cid)) or {}
+        entry["url"] = url
+        entry.setdefault("t", time.time())
+        data[str(cid)] = entry
+        _LASTGEN_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        print(f"[lastgen] URL追記失敗: {e}")
 
 
 # 「前の生成を修正して作り直す」意図の検出（明確なマーカーのみ）
@@ -2295,6 +2323,91 @@ async def _run_revise(message, instruction):
     await _run_hf_generate(
         message, new_prompt, None, media_type,
         "作り直し", aspect_ratio=aspect_ratio, refine=False,
+    )
+
+
+# ---------- 広告代理店モード（企画→CM制作→バズ度シミュレーション） ----------
+# 「物理エンジン」相当 = Higgsfield virality_predictor。広告費をかける前に
+# 仮想的に効果（フック強度・離脱リスク等）を予測し、勝てる広告だけ世に出す。
+
+async def _run_ad_make(message, brief):
+    """ブリーフ（商品/サービス/ターゲット）から広告企画書＋縦型CM動画を制作。"""
+    cid = message.channel.id
+    await send_as(orch, cid, "📣 広告プランを作成します（広告代理店モード）…")
+    ask = (
+        "あなたは一流広告代理店のクリエイティブディレクター。"
+        "次のブリーフから縦型ショートCM(9:16, 5〜15秒)の企画をJSONだけで返す。\n"
+        '形式: {"title":"案件名","target":"ターゲット層","hook":"冒頭2秒のフック",'
+        '"message":"伝えるコアメッセージ1つ",'
+        '"video_prompt":"英語の映像生成プロンプト。商品/雰囲気を具体的に。'
+        '人物の顔のクローズアップは避ける","cta":"行動喚起（文言）",'
+        '"tips":"配信時のポイント(1〜2行)"}\n'
+        f"ブリーフ: {brief}\nJSON:"
+    )
+    try:
+        raw = await _ai_text_bg(ask, "ad_plan")
+        m = re.search(r"\{.*\}", raw or "", re.S)
+        p = json.loads(m.group(0)) if m else {}
+    except Exception as e:  # noqa: BLE001
+        await send_as(orch, cid, f"⚠️ 広告プラン作成に失敗: {str(e)[:200]}")
+        return
+    p.setdefault("title", brief[:30])
+    p.setdefault("video_prompt", brief)
+    plan_msg = (
+        f"📋 **広告企画書：{p['title']}**\n"
+        f"🎯 ターゲット: {p.get('target', '-')}\n"
+        f"🎣 フック(冒頭2秒): {p.get('hook', '-')}\n"
+        f"💬 コアメッセージ: {p.get('message', '-')}\n"
+        f"👉 CTA: {p.get('cta', '-')}\n"
+        f"📌 配信Tips: {p.get('tips', '-')}\n\n"
+        "🎬 このプランでCM動画を生成します。完成したら「**バズ度分析して**」で"
+        "広告効果を事前シミュレーションできます。"
+    )
+    await send_as(orch, cid, plan_msg[:1900])
+    full_prompt = (
+        f"{p['video_prompt']}, premium commercial aesthetic, high production value, "
+        "advertising quality, vertical 9:16"
+    )
+    await _run_hf_generate(
+        message, full_prompt, None, "video",
+        f"広告「{p['title'][:20]}」", aspect_ratio="9:16", refine=False,
+    )
+
+
+async def _run_virality(message):
+    """直近の生成動画の広告効果を事前シミュレーション（virality_predictor）。
+    広告費をかける前の仮想テスト＝物理エンジン相当。"""
+    cid = message.channel.id
+    lg = _load_last_gen(cid) or {}
+    url = lg.get("url")
+    if not url:
+        await send_as(
+            orch, cid,
+            "分析対象の動画が見つかりません。まず動画を生成してから"
+            "「バズ度分析して」と送ってください。"
+        )
+        return
+    await send_as(orch, cid, "🧪 バズ度をシミュレーションします（広告効果の事前予測・1〜3分）…")
+    task = (
+        "Higgsfield の MCP ツール virality_predictor をこの動画で実行して。\n"
+        f"動画URL: {url}\n"
+        "（URLは media_import_url 等で取り込んでよい）\n"
+        "結果を日本語で以下の形式でまとめて出力:\n"
+        "🧪 バズ度スコア: （総合評価）\n"
+        "🎣 フック強度: \n📉 離脱リスク: \n👀 注目ポイント: \n"
+        "🛠 改善提案: （具体的に2〜3個）\n"
+        "ツールが使えない場合は最終行に『ERROR: 理由』。"
+    )
+    out = await _run_claude_exec(task, timeout=600)
+    if not out or out.startswith("⚠️") or "ERROR" in (out.strip().splitlines()[-1] if out else ""):
+        await send_as(orch, cid, f"⚠️ バズ度分析に失敗: {(out or '')[-250:]}")
+        return
+    add_history(cid, "Orchestrator", f"（バズ度分析を実施）\n{out[:500]}")
+    await send_as(orch, cid, out[:1900])
+    await send_as(
+        orch, cid,
+        "改善して作り直すなら「〇〇を直して作り直して」、"
+        "このまま使うならこの動画を投稿/納品してください。"
     )
 
 
@@ -2444,6 +2557,7 @@ async def _watch_motion_job(cid):
             return
         if vurl:
             _clear_motion_job()
+            _update_last_gen_url(cid, vurl)
             add_history(cid, "Orchestrator", f"（{label}が完成: {vurl}）")
             await send_as(orch, cid, f"✅ {label}ができました！\n{vurl}")
             return
@@ -3680,6 +3794,7 @@ async def _dispatch_message(message):
             return
         if vurl:
             _clear_motion_job()
+            _update_last_gen_url(cid, vurl)
             add_history(cid, "Orchestrator", f"（生成物が完成: {vurl}）")
             await message.channel.send(f"✅ できています！URLはこちら:\n{vurl}")
         else:
@@ -3699,6 +3814,16 @@ async def _dispatch_message(message):
         ).strip()
         add_history(cid, message.author.display_name, content)
         _spawn(_run_short(message, theme or None), cid, "ショート制作")
+        return
+
+    if route == "virality":
+        add_history(cid, message.author.display_name, content)
+        _spawn(_run_virality(message), cid, "バズ度分析")
+        return
+
+    if route == "ad":
+        add_history(cid, message.author.display_name, content)
+        _spawn(_run_ad_make(message, content), cid, "広告制作")
         return
 
     if route == "hf_model":

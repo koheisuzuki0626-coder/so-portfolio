@@ -94,6 +94,17 @@ ROUTE_CASES = [
     ("今日のショートお願い", "short", {}),
     ("アートなショート動画作って", "short", {}),
     ("shorts作って", "short", {}),
+    # バズ度シミュレーション（物理エンジン＝virality_predictor）
+    ("バズ度分析して", "virality", {}),
+    ("この動画の広告効果を予測して", "virality", {}),
+    ("バズるかチェックして", "virality", {}),
+    ("伸びるか診断して", "virality", {}),
+    # 広告代理店モード（企画書＋CM制作）
+    ("新作スニーカーの広告作って", "ad", {}),
+    ("コーヒーショップのCM作って", "ad", {}),
+    ("プロモ動画お願い", "ad", {}),
+    ("アプリのコマーシャル作りたい", "ad", {}),
+    ("身長10cmくらい伸ばしたい", "plan", {}),      # 単位のcmは広告に誤爆しない
     # モデル指定生成
     ("seedanceで犬の動画作って", "hf_model", {}),
     ("veoで夕焼け作りたい", "hf_model", {}),
@@ -181,6 +192,10 @@ def run():
     lg = bot._load_last_gen(555)
     check("保存後に復元できる", lg is not None and lg.get("prompt") == "a cat, cinematic", True)
     check("別cidは干渉しない", bot._load_last_gen(999) is None, True)
+    bot._update_last_gen_url(555, "https://example.com/v.mp4")
+    lg2 = bot._load_last_gen(555)
+    check("完成URLを追記できる（バズ度分析用）",
+          lg2 is not None and lg2.get("url") == "https://example.com/v.mp4", True)
 
     print("■ プロンプト英語判定 _looks_english_prompt")
     check("日本語→False", bot._looks_english_prompt("犬が走る動画"), False)
