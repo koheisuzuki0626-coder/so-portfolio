@@ -3294,6 +3294,17 @@ async def _restart_self(cid, note=""):
     再起動前にGitHubの最新コードを自動で取り込む＝Discordだけで更新が完結する。"""
     sync = await _sync_to_origin()
     print(f"[restart] コード同期: {sync}")
+    if "スキップ" in sync:
+        # 同期できない＝修正が届かないまま再起動を繰り返す事故（実際に発生）を防ぐ。
+        # 大きく警告し、確実に直すターミナルコマンドを案内する。
+        await send_as(
+            orch, cid,
+            f"⚠️ **注意: 最新コードを取得できません（{sync}）**\n"
+            "このまま再起動しても修正は反映されません。Macのターミナルで:\n"
+            "```\npkill -f ai_group_chat.py; cd ~/so-portfolio && git fetch origin && "
+            "git reset --hard origin/claude/line-webhook-claude-integration-l3hff3 && "
+            "cd discord-groupchat && source venv/bin/activate && python ai_group_chat.py\n```"
+        )
     try:
         RESTART_MARKER.write_text(
             json.dumps({"cid": cid, "note": (note + f"（コード同期: {sync}）").strip()},
