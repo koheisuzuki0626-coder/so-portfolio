@@ -1787,6 +1787,17 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         _GEN_INTENT2_RE.search(content) or re.search("お願い|企画", content)
     ):
         return "ad"
+    # ①.8 スタイル学習（参考動画から勝ちパターンを覚えて以降の生成に反映）
+    if re.search("スタイル|作風", content) and re.search("リセット|白紙|消して|忘れて|クリア", content):
+        return "style_reset"
+    if re.search("(学習|覚え)(した|た)スタイル|スタイル(を|は)?(見せて|どんな|確認|教えて)", content):
+        return "style_show"
+    if re.search("学習して|学習させ|覚えて|覚えさせ|参考にして|真似して|勉強して", content) and \
+            not re.search("調べて|リサーチ|検索", content):
+        if has_video_att or YOUTUBE_URL_RE.search(content):
+            return "style_learn"
+        if re.search("動画|ショート|映像|スタイル|作風", content):
+            return "style_ask"
     # ② Higgsfield生成（モーション以外・生成意図あり）
     #    「動画お願い」もAI判定に落とさず生成として扱う
     if not re.search("モーション|この動き|動きを", content) and (
@@ -2160,6 +2171,8 @@ async def _refine_prompt(request, media_type, style=""):
         "被写体・構図・カメラワーク・光・色・質感・雰囲気を具体的に描写。"
         "カンマ区切りの1行、英語のみ、プロンプト本体だけ出力（説明や引用符は不要）。"
         + (f" スタイル指定: {style}." if style else "")
+        + (f"\n学習済みスタイルの傾向（合う範囲で反映）:\n{_style_snippet(800)}"
+           if _style_snippet(800) else "")
         + f"\n依頼: {request}"
     )
     try:
@@ -2351,6 +2364,135 @@ async def _run_revise(message, instruction):
     )
 
 
+# ---------- スタイル学習（参考動画から勝ちパターンを抽出して以降の生成に反映） ----------
+# モデル自体の再学習はできないが、参考動画をGeminiで解析して「勝ちパターン集」を
+# 永続保存し、ショート/広告の企画・プロンプト生成に毎回差し込む＝実質的な学習。
+
+STYLE_PROFILE_FILE = HISTORY_DIR / "style_profile.md"
+STYLE_PROFILE_MAX = 6000   # これを超えたらAIで統合要約する
+
+STYLE_LEARN_PROMPT = (
+    "この動画を、ショート/広告動画制作の参考教材として分析して。"
+    "以下を日本語の簡潔な箇条書きで:\n"
+    "・フック（冒頭2秒で視聴者を掴む要素）\n"
+    "・テンポとカット割り（尺・切り替えのリズム）\n"
+    "・構図とカメラワーク\n"
+    "・色味・ライティング・質感\n"
+    "・テロップ/テキストの使い方\n"
+    "・音・音楽の使い方\n"
+    "・この動画が人を惹きつける理由\n"
+    "・映像生成AIで再現するときの英語キーワード（5〜10個）"
+)
+
+
+def _load_style_profile():
+    try:
+        if STYLE_PROFILE_FILE.exists():
+            return STYLE_PROFILE_FILE.read_text(encoding="utf-8").strip()
+    except Exception as e:  # noqa: BLE001
+        print(f"[style] 読み込み失敗: {e}")
+    return ""
+
+
+def _style_snippet(limit=1500):
+    """企画・プロンプト生成に差し込む用の抜粋（学習していなければ空文字）。"""
+    p = _load_style_profile()
+    return p[:limit] if p else ""
+
+
+async def _run_style_learn(message):
+    """添付動画/YouTubeリンクを解析してスタイルプロファイルに蓄積する。"""
+    cid = message.channel.id
+    vids = [a for a in message.attachments
+            if Path(a.filename).suffix.lower() in SUPPORTED_VIDEO_TYPES]
+    yt_urls = YOUTUBE_URL_RE.findall(message.content or "")
+    total = len(vids[:3]) + len(yt_urls[:2])
+    if total == 0:
+        await send_as(
+            orch, cid,
+            "学習する動画が見つかりません。動画を添付するか、YouTubeリンクを"
+            "「これを学習して」と一緒に送ってください。"
+        )
+        return
+    await send_as(orch, cid, f"🎓 参考動画を解析してスタイルを学習します（{total}本・1〜3分）…")
+    notes = []
+    for att in vids[:3]:
+        if att.size > MAX_ATTACHMENT_SIZE:
+            await send_as(
+                orch, cid,
+                f"⚠️ {att.filename} は20MB超のため解析できません（短く切るか圧縮して再送を）。"
+            )
+            continue
+        data = await _download_file(att.url)
+        if not data:
+            await send_as(orch, cid, f"⚠️ {att.filename} のダウンロードに失敗しました。")
+            continue
+        try:
+            analysis = await asyncio.to_thread(
+                _gemini_analyze_media_sync, data,
+                VIDEO_MIME_BY_EXT.get(Path(att.filename).suffix.lower(), "video/mp4"),
+                STYLE_LEARN_PROMPT, "style_learn",
+            )
+        except GeminiQuotaExceeded as e:
+            await send_as(orch, cid, f"⚠️ いまGemini無料枠が切れていて解析できません: {e}")
+            return
+        except Exception as e:  # noqa: BLE001
+            await send_as(orch, cid, f"⚠️ {att.filename} の解析に失敗: {str(e)[:150]}")
+            continue
+        if analysis:
+            notes.append((att.filename, analysis))
+    for url in yt_urls[:2]:
+        try:
+            analysis = await asyncio.to_thread(
+                _gemini_watch_youtube_sync, url, STYLE_LEARN_PROMPT, "style_learn"
+            )
+        except GeminiQuotaExceeded as e:
+            await send_as(orch, cid, f"⚠️ いまGemini無料枠が切れていて解析できません: {e}")
+            return
+        except Exception as e:  # noqa: BLE001
+            await send_as(orch, cid, f"⚠️ {url} の解析に失敗: {str(e)[:150]}")
+            continue
+        if analysis:
+            notes.append((url, analysis))
+    if not notes:
+        await send_as(orch, cid, "⚠️ 学習できた動画がありませんでした。")
+        return
+    stamp = time.strftime("%Y-%m-%d %H:%M")
+    text = _load_style_profile()
+    for src, analysis in notes:
+        text = (text + f"\n\n## {stamp} 学習: {src}\n{analysis}").strip()
+    if len(text) > STYLE_PROFILE_MAX:
+        # 溜まりすぎたらAIで「勝ちパターン集」に統合（失敗時は末尾を残す）
+        try:
+            merged = await _ai_text_bg(
+                "以下は参考動画から学んだスタイルメモの蓄積。重複を統合し、"
+                "映像制作の『勝ちパターン集』として要点を日本語で"
+                f"{STYLE_PROFILE_MAX // 2}文字以内にまとめて。"
+                "英語キーワード集は必ず残すこと。\n\n" + text,
+                "style_merge",
+            )
+            if merged and len(merged.strip()) > 100:
+                text = f"# 勝ちパターン集（{stamp}更新）\n" + merged.strip()
+            else:
+                text = text[-STYLE_PROFILE_MAX:]
+        except Exception as e:  # noqa: BLE001
+            print(f"[style] 統合失敗（末尾を保持）: {str(e)[:120]}")
+            text = text[-STYLE_PROFILE_MAX:]
+    try:
+        STYLE_PROFILE_FILE.write_text(text, encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        await send_as(orch, cid, f"⚠️ スタイルの保存に失敗: {str(e)[:150]}")
+        return
+    add_history(cid, "Orchestrator", f"（参考動画{len(notes)}本からスタイルを学習・保存した）")
+    head = "\n".join(f"・{src}" for src, _ in notes)
+    await send_as(
+        orch, cid,
+        f"🎓 学習完了！（{len(notes)}本）\n{head}\n"
+        "今後のショート・広告の企画と生成プロンプトに自動で反映されます。\n"
+        "「学習したスタイル見せて」で確認、「スタイルをリセットして」で白紙に戻せます。"
+    )
+
+
 # ---------- 広告代理店モード（企画→CM制作→バズ度シミュレーション） ----------
 # 「物理エンジン」相当 = Higgsfield virality_predictor。広告費をかける前に
 # 仮想的に効果（フック強度・離脱リスク等）を予測し、勝てる広告だけ世に出す。
@@ -2367,7 +2509,9 @@ async def _run_ad_make(message, brief):
         '"video_prompt":"英語の映像生成プロンプト。商品/雰囲気を具体的に。'
         '人物の顔のクローズアップは避ける","cta":"行動喚起（文言）",'
         '"tips":"配信時のポイント(1〜2行)"}\n'
-        f"ブリーフ: {brief}\nJSON:"
+        + (f"参考スタイル（ユーザーが学習させた勝ちパターン。企画とvideo_promptに反映）:\n"
+           f"{_style_snippet()}\n" if _style_snippet() else "")
+        + f"ブリーフ: {brief}\nJSON:"
     )
     try:
         raw = await _ai_text_bg(ask, "ad_plan")
@@ -2467,6 +2611,9 @@ async def _make_short_concept(theme):
         '"tags":["#Shorts","関連ハッシュタグ","5〜8個"]}\n'
         "映像はAI生成で作るので、抽象的・視覚的に強い題材にすること。\n"
     )
+    sp = _style_snippet()
+    if sp:
+        base += f"参考スタイル（ユーザーが学習させた勝ちパターン。企画とpromptに反映）:\n{sp}\n"
     theme_line = f"テーマ/お題: {theme}\n" if theme else "テーマは自由（今映える洗練された題材を選ぶ）。\n"
     raw = await _ai_text_bg(base + theme_line + "\nJSON:", "short_concept")
     m = re.search(r"\{.*\}", raw or "", re.S)
@@ -3889,6 +4036,43 @@ async def _dispatch_message(message):
     if route == "ad":
         add_history(cid, message.author.display_name, content)
         _spawn(_run_ad_make(message, content), cid, "広告制作")
+        return
+
+    if route == "style_learn":
+        add_history(cid, message.author.display_name, content + "（参考動画のスタイル学習を依頼）")
+        _spawn(_run_style_learn(message), cid, "スタイル学習")
+        return
+
+    if route == "style_show":
+        add_history(cid, message.author.display_name, content)
+        prof = _load_style_profile()
+        if not prof:
+            await message.channel.send(
+                "まだスタイルは学習していません。参考動画を添付するかYouTubeリンクを"
+                "「これを学習して」と一緒に送ってください。"
+            )
+        else:
+            full = "🎨 **学習済みスタイル（勝ちパターン集）**\n" + prof
+            for i in range(0, len(full), 1900):
+                await message.channel.send(full[i:i + 1900])
+        return
+
+    if route == "style_reset":
+        add_history(cid, message.author.display_name, content)
+        try:
+            STYLE_PROFILE_FILE.unlink(missing_ok=True)
+            await message.channel.send("🧹 学習済みスタイルを白紙に戻しました。")
+        except Exception as e:  # noqa: BLE001
+            await message.channel.send(f"⚠️ リセットに失敗: {str(e)[:150]}")
+        return
+
+    if route == "style_ask":
+        add_history(cid, message.author.display_name, content)
+        await message.channel.send(
+            "🎓 了解です。参考にしたい動画（mp4/mov・20MBまで、最大3本）をこのチャンネルに"
+            "添付するか、YouTubeリンク（最大2本）を「**これを学習して**」と一緒に送ってください。"
+            "フック・テンポ・色味などの勝ちパターンを学習して、以降のショート/広告の生成に反映します。"
+        )
         return
 
     if route == "hf_model":

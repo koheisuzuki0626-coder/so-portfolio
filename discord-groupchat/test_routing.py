@@ -128,6 +128,14 @@ ROUTE_CASES = [
     ("モーションコントロールで作りたい", "motion_ask", {}),
     ("この動きで生成して", "motion",
      {"has_video_att": True, "has_attachments": True}),
+    # スタイル学習（参考動画から勝ちパターンを覚える）
+    ("これを学習して", "style_learn", {"has_video_att": True, "has_attachments": True}),
+    ("https://youtu.be/abc123 これを学習して", "style_learn", {}),
+    ("この動画のスタイルを学習して", "style_ask", {}),
+    ("学習したスタイル見せて", "style_show", {}),
+    ("スタイルをリセットして", "style_reset", {}),
+    ("俺のこと覚えてる？", "plan", {}),               # 学習と誤爆しない
+    ("人気の動画を参考にして調べて", "plan", {}),      # リサーチは学習にしない
     # モーションの誤爆防止（否定・単なる言及では発動しない）
     ("モーション動画じゃないよ、広告動画だよ", "plan", {}),
     ("モーションってなに？", "plan", {}),

@@ -150,6 +150,10 @@ def install_stubs(mcp_url=None):
     bot._run_revise = _rec("revise")
     bot._run_ad_make = _rec("ad")
     bot._run_virality = _rec("virality")
+    bot._run_style_learn = _rec("style_learn")
+    import tempfile as _tf
+    import pathlib as _pl
+    bot.STYLE_PROFILE_FILE = _pl.Path(_tf.mkdtemp()) / "style_profile.md"
     bot._load_last_gen = lambda cid: None  # 既定は直前生成なし
 
     async def _vturn(cid, latest, last):
@@ -277,6 +281,22 @@ async def run():
     install_stubs()
     r = await drive("この動きで", [_FakeAttachment("ref.mp4")])
     check("動画添付→motion_control", "motion_control" in r["fired"], f"{r['fired']}")
+
+    # スタイル学習（動画添付→学習 / 添付なし→案内 / 未学習→表示は案内）
+    install_stubs()
+    r = await drive("これを学習して", [_FakeAttachment("ref.mp4")])
+    check("動画添付＋学習して→style_learn", "style_learn" in r["fired"], f"{r['fired']}")
+
+    install_stubs()
+    r = await drive("この動画のスタイルを学習して")
+    check("添付なし→添付の案内", any("学習して" in s for s in r["sent"]),
+          f"sent={r['sent']}")
+
+    install_stubs()
+    r = await drive("学習したスタイル見せて")
+    check("スタイル表示(未学習)", any("まだスタイル" in s for s in r["sent"]),
+          f"sent={r['sent']}")
+    check("スタイル表示 例外なし", r["err"] is None)
 
     # 直前生成あり＋作り直し → revise
     install_stubs()
