@@ -333,6 +333,16 @@ async def run():
     check("完成済み→会話が続く案内", any("バズ度" in s for s in r["sent"]),
           f"sent={r['sent']}")
 
+    # 直近の生成が新しければ「できた？」だけでも状態確認につながる
+    install_stubs()
+    bot._load_last_gen = lambda cid: {"prompt": "a cat", "media_type": "video",
+                                      "aspect_ratio": "9:16", "label": "広告CM",
+                                      "url": "https://example.com/ad.mp4",
+                                      "t": bot.time.time()}
+    r = await drive("できた？")
+    check("できた？→直近生成を即答", any("ad.mp4" in s for s in r["sent"]),
+          f"fired={r['fired']} sent={r['sent']}")
+
     # ===== ③ ストレス：異常・境界入力で例外が漏れないこと =====
     print("■ E2E: ストレス（例外ゼロ）")
     stress = [

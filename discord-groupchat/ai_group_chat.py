@@ -590,7 +590,10 @@ BOT_OPS_GUIDE = (
     "案内せず『Discordで「再起動して」と送るだけでOK（自動で最新コードを取得して"
     "再起動される）』と案内する。ユーザーの操作は常にDiscord内で完結させる。"
     "生成中の動画の進捗を聞かれたら『「動画できた？」と送れば自動確認される』"
-    "と案内する。進捗確認のために再起動を勧めるのは禁止"
+    "と案内する。『モーション動画できた？』という古い言い回しは、過去の会話ログに"
+    "残っていても絶対に真似せず、常に『動画できた？』と案内する。"
+    "生成の完成/未完成を自分で推測して断言しない（確認は自動チェックに任せる）。"
+    "進捗確認のために再起動を勧めるのは禁止"
     "（再起動すると進行中の完了監視が止まってしまうため）。"
 )
 
@@ -1750,10 +1753,17 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     返り値: 'status'/'revise'/'short'/'virality'/'ad'/'hf_model'/'hf_auto'/
     'motion'/'motion_ask'/None。
     on_message と同じ順序・同じ正規表現を使うので、これをテストすれば実挙動を検証できる。"""
-    # ① 生成物の状態確認（添付なし・状態ワード・文脈）
+    # ① 生成物の状態確認（添付なし・状態ワード・文脈）。
+    #    直近の生成があれば「できた？」だけでも状態確認につなぐ。
+    #    ただし「作って」「作り直して」など生成・修正の依頼は状態確認にしない
+    #    （「〜作ってください」の「ください」で誤爆しないように）。
     status_kw = _STATUS_KW_RE.search(content)
-    status_ctx = _STATUS_CTX_RE.search(content) or (has_job and status_kw)
-    if not has_attachments and status_kw and status_ctx:
+    status_ctx = _STATUS_CTX_RE.search(content) or (
+        (has_job or has_last_gen) and status_kw
+    )
+    if (not has_attachments and status_kw and status_ctx
+            and not re.search("作って|作りたい|つくって|生成して|作成して|描いて|アニメ化", content)
+            and not _REVISE_RE.search(content)):
         return "status"
     # ①.4 前の生成の作り直し（修正マーカーがあれば発動。記録が無くても
     #     _run_revise が Higgsfield から直前プロンプトを回収するので安全）
@@ -3797,13 +3807,16 @@ async def _dispatch_message(message):
          if Path(a.filename).suffix.lower() in SUPPORTED_IMAGE_TYPES),
         None,
     ) if message.attachments else None
+    _lg_rec = _load_last_gen(cid)
     route = classify_route(
         content,
         has_attachments=bool(message.attachments),
         has_video_att=bool(_video_att),
         has_image_att=bool(_image_att),
         has_job=bool(_job),
-        has_last_gen=bool(_load_last_gen(cid)),
+        # 「できた？」だけで状態確認につなぐのは直近2時間の生成がある時だけ
+        # （何時間も経ってからの「できた？」はコード修正等の話が多いため）
+        has_last_gen=bool(_lg_rec and time.time() - _lg_rec.get("t", 0) < 7200),
     )
     # 依頼待ち中に動画が添付された（キーワード無し）ケースもモーション実行に接続
     pm = _pending_motion.get(cid)
