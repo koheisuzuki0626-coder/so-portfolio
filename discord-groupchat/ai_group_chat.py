@@ -2194,6 +2194,17 @@ async def _run_hf_generate(message, request, model, media_type, label,
     if not HF_AVAILABLE and not os.getenv("HIGGSFIELD_API_KEY"):
         await send_as(orch, cid, "⚠️ Higgsfield が使えません（APIキー/認証を確認してください）。")
         return
+    # YouTubeリンク2本以上は生成に使えない（clipify等はURL1本まで）。
+    # 投入前に止めて、正しい使い方を案内する（クレジットも消費しない）
+    if len(YOUTUBE_URL_RE.findall(request)) >= 2:
+        await send_as(
+            orch, cid,
+            "⚠️ YouTubeリンクを使った生成は**一度に1本まで**です。\n"
+            "・この2本を参考にしたい → リンクと一緒に「**これを学習して**」と送れば"
+            "スタイルを学習して、以降の生成に反映します（クレジット不要）\n"
+            "・1本から切り出し等をしたい → リンクを**1本だけ**にして送り直してください"
+        )
+        return
     # 添付があれば参照メディアとして渡す（画像・動画）
     refs = [
         a.url for a in message.attachments
