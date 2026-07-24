@@ -313,6 +313,25 @@ async def run():
     r = await drive("モーション動画できた？")
     check("完成→URL表示", any("done.mp4" in s for s in r["sent"]), f"sent={r['sent']}")
 
+    # ジョブも直近生成も無い →「できた？」は状態確認に入らず普通の会話へ
+    install_stubs()
+    r = await drive("モーション動画できた？")
+    check("ジョブ無し→自然な会話へ", "orchestrator" in r["fired"],
+          f"fired={r['fired']} sent={r['sent']}")
+    check("ジョブ無し 例外なし", r["err"] is None)
+
+    # ジョブ無し・直近生成が完成済み（URLあり）→ 即答で再案内
+    install_stubs()
+    bot._load_last_gen = lambda cid: {"prompt": "a cat", "media_type": "video",
+                                      "aspect_ratio": "9:16", "label": "テストCM",
+                                      "url": "https://example.com/last.mp4",
+                                      "t": bot.time.time()}
+    r = await drive("動画できた？")
+    check("完成済み→即URL再案内", any("last.mp4" in s for s in r["sent"]),
+          f"sent={r['sent']}")
+    check("完成済み→会話が続く案内", any("バズ度" in s for s in r["sent"]),
+          f"sent={r['sent']}")
+
     # ===== ③ ストレス：異常・境界入力で例外が漏れないこと =====
     print("■ E2E: ストレス（例外ゼロ）")
     stress = [

@@ -3795,21 +3795,47 @@ async def _dispatch_message(message):
         route = "motion"
 
     if route == "status":
-        job = _job or {}
-        await message.channel.send("🔎 Higgsfield の生成状況を確認します…")
-        try:
-            vurl = await _mcp_gen_status(job.get("media_type", "video"), job.get("model"))
-        except Exception as e:  # noqa: BLE001
-            await message.channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
+        _lg = _load_last_gen(cid) or {}
+        if not _job and not _lg:
+            # 進行中のジョブも直近の生成記録も無い → 状態確認モードに入らず
+            # 普通の会話として文脈で答える（「できた？」で流れを壊さない）
+            route = None
+        elif not _job and _lg.get("url"):
+            # 直近の生成は完成済み → Higgsfieldを見に行かず即答して会話を続ける
+            add_history(cid, message.author.display_name, content)
+            _label = _lg.get("label") or "生成"
+            await message.channel.send(
+                f"✅ 直近の「{_label}」はもう完成しています:\n{_lg['url']}\n"
+                "続けるなら「バズ度分析して」で効果予測、"
+                "「〇〇を直して作り直して」で改善もできます。"
+            )
+            add_history(cid, "Orchestrator", f"（完成済みの{_label}のURLを再案内した）")
             return
-        if vurl:
-            _clear_motion_job()
-            _update_last_gen_url(cid, vurl)
-            add_history(cid, "Orchestrator", f"（生成物が完成: {vurl}）")
-            await message.channel.send(f"✅ できています！URLはこちら:\n{vurl}")
         else:
-            await message.channel.send(_pending_eta_msg(job))
-        return
+            add_history(cid, message.author.display_name, content)
+            job = _job or {}
+            _label = job.get("label") or _lg.get("label") or "生成"
+            await message.channel.send(f"🔎 「{_label}」の状況を Higgsfield で確認します…")
+            try:
+                vurl = await _mcp_gen_status(
+                    job.get("media_type") or _lg.get("media_type", "video"),
+                    job.get("model"),
+                )
+            except Exception as e:  # noqa: BLE001
+                await message.channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
+                add_history(cid, "Orchestrator", "（生成の失敗を報告した）")
+                return
+            if vurl:
+                _clear_motion_job()
+                _update_last_gen_url(cid, vurl)
+                add_history(cid, "Orchestrator", f"（生成物が完成: {vurl}）")
+                await message.channel.send(
+                    f"✅ できています！URLはこちら:\n{vurl}\n"
+                    "「バズ度分析して」で広告効果の事前予測もできます。"
+                )
+            else:
+                await message.channel.send(_pending_eta_msg(job))
+            return
 
     if route == "revise":
         add_history(cid, message.author.display_name, content)
