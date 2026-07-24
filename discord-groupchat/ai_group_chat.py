@@ -2347,17 +2347,55 @@ async def _run_revise(message, instruction):
             "作りたい内容を書いて生成してください（それ以降は作り直せます）。"
         )
         return
-    await send_as(orch, cid, "🔁 前の内容を踏まえて作り直します…")
+    await send_as(orch, cid, "🔁 前の内容を踏まえて修正プランを作ります…")
     ask = (
-        "既存の英語生成プロンプトに、ユーザーの日本語の修正指示を反映した"
-        "新しい英語プロンプトを1つ作って。カンマ区切り1行、英語のみ、本体だけ出力。\n"
-        f"【元プロンプト】{base_prompt}\n【修正指示】{instruction}"
+        "既存の英語生成プロンプトに、ユーザーの日本語の修正指示を反映する。"
+        "JSONだけで返す。\n"
+        '形式: {"changes":["どこをどう変えるかの日本語の箇条書き(2〜4個・簡潔に)"],'
+        '"keep":"変えずに残す要素の要約(1行)",'
+        '"prompt":"修正を反映した新しい英語プロンプト(カンマ区切り1行)"}\n'
+        f"【元プロンプト】{base_prompt}\n【修正指示】{instruction}\nJSON:"
+    )
+    changes, keep, new_prompt = [], "", base_prompt
+    try:
+        raw = await _ai_text_bg(ask, "revise_prompt")
+        m = re.search(r"\{.*\}", raw or "", re.S)
+        d = json.loads(m.group(0)) if m else {}
+        if isinstance(d.get("changes"), list):
+            changes = [str(c) for c in d["changes"]][:5]
+        keep = str(d.get("keep") or "")
+        new_prompt = str(d.get("prompt") or "").strip() or base_prompt
+    except Exception as e:  # noqa: BLE001
+        print(f"[revise] プラン作成失敗（元プロンプト基準で続行）: {str(e)[:120]}")
+    if not changes:
+        changes = [f"修正指示「{instruction[:80]}」をそのまま反映"]
+    # どこをどう直すかを明示し、承諾をもらってから生成（クレジットの無駄撃ちを防ぐ）
+    fut = asyncio.get_running_loop().create_future()
+    owner_id = message.author.id
+    _pending_approvals[cid] = (fut, owner_id)
+    plan_lines = "\n".join(f"・{c}" for c in changes)
+    await send_as(
+        orch, cid,
+        "🛠 **修正プラン（作り直しの内容）**\n"
+        f"{plan_lines}\n"
+        + (f"🧷 残す要素: {keep}\n" if keep else "")
+        + f"🖋 新プロンプト: {new_prompt[:400]}\n\n"
+        "この内容で作り直しますか？ [✅許可] を押すか「**OK**」と返信で生成を開始します"
+        "（クレジットを消費します）。プランを変えたい場合は「**拒否**」のあと、"
+        "もう一度「〇〇を直して作り直して」と送ってください（5分で自動却下）。",
+        view=PermissionView(fut, owner_id),
     )
     try:
-        new_prompt = (await _ai_text_bg(ask, "revise_prompt")).strip().splitlines()[0]
-        new_prompt = new_prompt.strip('"' + "'`") or base_prompt
-    except Exception:  # noqa: BLE001
-        new_prompt = base_prompt
+        approved = await asyncio.wait_for(fut, timeout=310)
+    except asyncio.TimeoutError:
+        approved = False
+    finally:
+        _pending_approvals.pop(cid, None)
+    if not approved:
+        await send_as(orch, cid, "🛑 作り直しをやめました（クレジットは消費していません）。")
+        add_history(cid, "Orchestrator", "（修正プランが却下されたため作り直しを中止した）")
+        return
+    add_history(cid, "Orchestrator", f"（修正プラン承認→作り直し開始: {', '.join(changes)[:200]}）")
     await _run_hf_generate(
         message, new_prompt, None, media_type,
         "作り直し", aspect_ratio=aspect_ratio, refine=False,
