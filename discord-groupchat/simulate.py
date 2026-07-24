@@ -254,6 +254,7 @@ async def run():
         ("!short 夜の都市", "short", None),
         ("今日のショートお願い", "short", None),
         ("この動きで生成して", None, None),           # motion_ask → sent案内のみ
+        ("モーション動画じゃないよ、広告動画だよ", "orchestrator", None),  # 訂正は会話へ
         ("犬について教えて", "orchestrator", None),    # 通常会話→オーケストレーター
         ("おはよう", "orchestrator", None),
     ]

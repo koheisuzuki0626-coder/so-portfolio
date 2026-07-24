@@ -589,7 +589,7 @@ BOT_OPS_GUIDE = (
     "運用ルール: ボットのコード反映が話題になったら、ターミナルコマンドは"
     "案内せず『Discordで「再起動して」と送るだけでOK（自動で最新コードを取得して"
     "再起動される）』と案内する。ユーザーの操作は常にDiscord内で完結させる。"
-    "生成中の動画の進捗を聞かれたら『「モーション動画できた？」と送れば自動確認される』"
+    "生成中の動画の進捗を聞かれたら『「動画できた？」と送れば自動確認される』"
     "と案内する。進捗確認のために再起動を勧めるのは禁止"
     "（再起動すると進行中の完了監視が止まってしまうため）。"
 )
@@ -1792,9 +1792,14 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         media_ref = has_video_att or has_image_att
         if auto_kw or media_ref:
             return "hf_auto"
-    # ③ モーション転写（キーワード or 依頼待ち中の動画添付）
-    if _MOTION_KW_RE.search(content):
-        return "motion" if has_video_att else "motion_ask"
+    # ③ モーション転写（キーワード or 依頼待ち中の動画添付）。
+    #    「モーション動画じゃないよ」のような否定・単なる言及では発動させず、
+    #    生成の意図がある時だけ反応する
+    if _MOTION_KW_RE.search(content) and not re.search("じゃな|ではな|違う|ちがう", content):
+        if has_video_att:
+            return "motion"
+        if _GEN_INTENT2_RE.search(content) or re.search("したい|やりたい|お願い", content):
+            return "motion_ask"
     return None  # 決定的ルートに該当せず → AI(_plan)へ
 
 
@@ -2637,7 +2642,7 @@ async def _run_motion_control(message, request, ref_att):
         await send_as(
             orch, cid,
             "⏳ 生成ジョブを投入しました。完成したらこのチャンネルに動画URLを自動投稿します"
-            "（数分〜十数分／「モーション動画できた？」でいつでも確認可）。"
+            "（数分〜十数分／「動画できた？」でいつでも確認可）。"
         )
         asyncio.create_task(_watch_motion_job(cid))
         return
@@ -2794,24 +2799,35 @@ async def _handle_orchestrator(message, cid):
     history = get_history(cid)
     latest = _latest_user_msg(history)
 
-    # 生成ジョブの完了確認（「モーション動画できた？」「あとどれくらい？」等）
+    # 生成ジョブの完了確認（「動画できた？」「あとどれくらい？」等）。
+    # 進行中ジョブがある時だけ確認モードに入り、無ければ普通の会話に流す。
     if re.search("モーション|動画|画像|生成", latest) and re.search(
         "できた|完成|終わった|どうなった|状況|進捗|まだ|あとどれ|どれくらい|どのくらい|何分", latest
     ):
-        job = _load_motion_job() or {}
-        await message.channel.send("🔎 Higgsfield の生成状況を確認します…")
-        try:
-            vurl = await _mcp_gen_status(job.get("media_type", "video"), job.get("model"))
-        except Exception as e:  # noqa: BLE001
-            await message.channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
+        job = _load_motion_job()
+        lg = _load_last_gen(cid) or {}
+        if job:
+            label = job.get("label") or "生成"
+            await message.channel.send(f"🔎 「{label}」の状況を Higgsfield で確認します…")
+            try:
+                vurl = await _mcp_gen_status(job.get("media_type", "video"), job.get("model"))
+            except Exception as e:  # noqa: BLE001
+                await message.channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
+                return
+            if vurl:
+                _clear_motion_job()
+                _update_last_gen_url(cid, vurl)
+                add_history(cid, "Orchestrator", f"（生成物が完成: {vurl}）")
+                await message.channel.send(f"✅ できています！\n{vurl}")
+            else:
+                await message.channel.send(_pending_eta_msg(job))
             return
-        if vurl:
-            _clear_motion_job()
-            add_history(cid, "Orchestrator", f"（生成物が完成: {vurl}）")
-            await message.channel.send(f"✅ できています！\n{vurl}")
-        else:
-            await message.channel.send(_pending_eta_msg(job))
-        return
+        if lg.get("url"):
+            label = lg.get("label") or "生成"
+            await message.channel.send(f"✅ 直近の「{label}」は完成済みです:\n{lg['url']}")
+            add_history(cid, "Orchestrator", f"（完成済みの{label}のURLを再案内した）")
+            return
+        # 進行中の生成が無い → 状態確認モードに入らず、そのまま会話として続行
 
     # モーションの顔の向きモード切替（顔重視 image / 動き重視 video）
     if re.search("モーション|顔", latest) and re.search("向き|オリエン|モード|顔", latest):
