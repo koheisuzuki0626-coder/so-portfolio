@@ -1764,10 +1764,12 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         _GEN_INTENT2_RE.search(content) or re.search("今日の|ネタ|企画|お願い", content)
     ):
         return "short"
-    # ①.6 バズ度シミュレーション（広告効果の事前予測＝物理エンジン相当）
-    if re.search("バズ|バイラル|広告効果|再生数|伸び", content) and re.search(
-        "分析|予測|チェック|診断|シミュレ|測って|判定|調べて", content
-    ):
+    # ①.6 バズ度シミュレーション（広告効果の事前予測＝物理エンジン相当）。
+    #     「バズる動画作って」のような生成依頼は②へ、
+    #     「バズった動画調べて」のようなリサーチはAI(trend)へ譲る。
+    if (not _GEN_INTENT2_RE.search(content)
+            and re.search("バズ|バイラル|広告効果|再生数|伸び", content)
+            and re.search("分析|予測|チェック|診断|シミュレ|測って|判定", content)):
         return "virality"
     # ①.7 広告代理店モード（企画書＋縦型CM動画の制作）。
     #     「10cm」等の単位と誤爆しないよう CM は直前が数字でない場合のみ。
@@ -1776,10 +1778,17 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     ):
         return "ad"
     # ② Higgsfield生成（モーション以外・生成意図あり）
-    if not re.search("モーション|この動き|動きを", content) and _GEN_INTENT2_RE.search(content):
+    #    「動画お願い」もAI判定に落とさず生成として扱う
+    if not re.search("モーション|この動き|動きを", content) and (
+        _GEN_INTENT2_RE.search(content)
+        or re.search("(動画|映像|画像)を?お願い", content)
+    ):
         if _match_gen_model(content):
             return "hf_model"
-        auto_kw = re.search("おまかせ|お任せ|自動|最適|いい感じ|良い感じ|どれでも|モデル任せ|よしなに", content)
+        auto_kw = re.search(
+            "おまかせ|お任せ|自動|最適|いい感じ|良い感じ|どれでも|モデル任せ|よしなに|"
+            "バズる|バズり|バズそう", content
+        )
         media_ref = has_video_att or has_image_att
         if auto_kw or media_ref:
             return "hf_auto"
@@ -1820,7 +1829,8 @@ async def _plan(history):
         "exec=ボット以外のファイルやコードを作成・編集・削除、コマンド実行する"
         "明確な作業指示（例:『server.pyのバグを直して』）。"
         "video=あなたに新しく動画・映像・CM・PVを【制作】してほしい依頼"
-        "（例:『犬の30秒CM作って』）。既存動画を調べる話は video ではなく trend。"
+        "（例:『犬の30秒CM作って』『バズる動画作って』『かっこいい映像お願い』）。"
+        "『バズる〜作って』は新規制作なのでvideo。既存動画を調べる話だけが trend。"
         "image=画像・イラスト・ロゴの生成依頼。"
         "chat=それ以外すべて（質問・相談・意見・雑談）。迷ったら必ずchat。"
         "『（ファイル共有）』で始まる発言＝添付ファイルを共有しただけなので、"

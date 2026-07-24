@@ -245,6 +245,7 @@ async def run():
         ("!talk 猫の話", "talk", None),
         ("seedanceで犬の動画作って", "hf_generate", None),
         ("おまかせで海の動画作って", "hf_generate", None),
+        ("バズる動画作って", "hf_generate", None),
         ("ショート作って", "short", None),
         ("新作スニーカーの広告作って", "ad", None),
         ("コーヒーショップのCM作って", "ad", None),
