@@ -2935,6 +2935,15 @@ def _latest_user_msg(history):
     return history[-1][1] if history else ""
 
 
+def _strip_media_context(text):
+    """添付/YouTube解析で発言に追記された【…】ブロックや（ファイル共有）マーカーを
+    取り除き、ユーザーが実際に打った部分だけを返す。
+    解析まとめの中の「動画」「完成」等の単語で状態確認などの機能が
+    誤発動するのを防ぐ（機能トリガーの判定には必ずこちらを使う）。"""
+    t = re.split(r"\s*【", text or "")[0]
+    return t.replace("（ファイル共有）", "").strip()
+
+
 async def ask_orchestrator(history):
     _, mode, lead, search, recall = await _plan(history)
     return await _orchestrate(mode, lead, search, history, recall)
@@ -3014,11 +3023,14 @@ async def _handle_orchestrator(message, cid):
     それ以外（質問・相談・雑談）は普通に会話する。"""
     history = get_history(cid)
     latest = _latest_user_msg(history)
+    # 機能トリガーの判定は、添付/YouTube解析の追記部分を除いた
+    # 「ユーザーが実際に打った文」だけで行う（解析文の単語で誤発動しない）
+    said = _strip_media_context(latest)
 
     # 生成ジョブの完了確認（「動画できた？」「あとどれくらい？」等）。
     # 進行中ジョブがある時だけ確認モードに入り、無ければ普通の会話に流す。
-    if re.search("モーション|動画|画像|生成", latest) and re.search(
-        "できた|完成|終わった|どうなった|状況|進捗|まだ|あとどれ|どれくらい|どのくらい|何分", latest
+    if re.search("モーション|動画|画像|生成", said) and re.search(
+        "できた|完成|終わった|どうなった|状況|進捗|まだ|あとどれ|どれくらい|どのくらい|何分", said
     ):
         job = _load_motion_job()
         lg = _load_last_gen(cid) or {}
@@ -3046,13 +3058,13 @@ async def _handle_orchestrator(message, cid):
         # 進行中の生成が無い → 状態確認モードに入らず、そのまま会話として続行
 
     # モーションの顔の向きモード切替（顔重視 image / 動き重視 video）
-    if re.search("モーション|顔", latest) and re.search("向き|オリエン|モード|顔", latest):
-        if re.search("動き優先|動き重視|複雑な動き|video", latest, re.I):
+    if re.search("モーション|顔", said) and re.search("向き|オリエン|モード|顔", said):
+        if re.search("動き優先|動き重視|複雑な動き|video", said, re.I):
             gen_settings["motion_orientation"] = "video"
             _save_gen_settings()
             await message.channel.send("🔧 モーションを『動き優先(video)』にしました。")
             return
-        if re.search("顔優先|顔重視|似せ|image|見た目", latest, re.I):
+        if re.search("顔優先|顔重視|似せ|image|見た目", said, re.I):
             gen_settings["motion_orientation"] = "image"
             _save_gen_settings()
             await message.channel.send(
@@ -3062,7 +3074,7 @@ async def _handle_orchestrator(message, cid):
             return
 
     # モーション転写モデルのID直接指定（「モーションのモデルを ○○ にして」）
-    m = re.search(r"モーション\S*の?モデル\S*を\s*([\w\-./]{4,})\s*に", latest)
+    m = re.search(r"モーション\S*の?モデル\S*を\s*([\w\-./]{4,})\s*に", said)
     if m:
         gen_settings["motion_app"] = m.group(1)
         _save_gen_settings()
@@ -3073,17 +3085,17 @@ async def _handle_orchestrator(message, cid):
         return
 
     # モデル設定の確認（「今のモデル設定教えて」等）
-    if re.search("モデル", latest) and re.search("設定|確認|見せて|教えて|どれ|なに|何", latest):
+    if re.search("モデル", said) and re.search("設定|確認|見せて|教えて|どれ|なに|何", said):
         await message.channel.send("🔧 現在の生成モデル設定:\n" + _gen_settings_summary())
         return
 
     # 発言中のモデル名（クリング/ナノバナナ等）を検出して生成設定に反映
-    changes = _apply_model_mentions(latest)
+    changes = _apply_model_mentions(said)
     if changes:
         await message.channel.send("🔧 生成モデルを切り替えました:\n" + "\n".join(changes))
         # モデル指定だけの発言（作る対象が無い）ならここで完了
-        if len(latest) <= 30 and not re.search(
-            "作って|作りたい|生成して|生成したい|やって|始めて|プロジェクト", latest
+        if len(said) <= 30 and not re.search(
+            "作って|作りたい|生成して|生成したい|やって|始めて|プロジェクト", said
         ):
             return
 

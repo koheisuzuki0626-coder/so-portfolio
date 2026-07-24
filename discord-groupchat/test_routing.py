@@ -228,6 +228,15 @@ def run():
     check("英語→True", bot._looks_english_prompt("a running dog, cinematic, 9:16"), True)
     check("会話文→False", bot._looks_english_prompt("もう一回作り直して"), False)
 
+    print("■ 添付/リンク解析の追記除去 _strip_media_context")
+    check("YouTube解析の追記を除去",
+          bot._strip_media_context(
+              "これも名PV\n\n【YouTube動画の内容（https://youtu.be/x）】\n動画は完成した傑作"),
+          "これも名PV")
+    check("ファイル共有マーカーを除去",
+          bot._strip_media_context("（ファイル共有）【動画の内容: a.mp4】ダンスの解析…"), "")
+    check("普通の発言はそのまま", bot._strip_media_context("動画できた？"), "動画できた？")
+
     print("■ エラーログ _log_error / _recent_errors")
     import tempfile
     import pathlib
