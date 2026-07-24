@@ -1766,8 +1766,10 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
             and not _REVISE_RE.search(content)):
         return "status"
     # ①.4 前の生成の作り直し（修正マーカーがあれば発動。記録が無くても
-    #     _run_revise が Higgsfield から直前プロンプトを回収するので安全）
-    if not has_attachments and _REVISE_RE.search(content):
+    #     _run_revise が Higgsfield から直前プロンプトを回収するので安全）。
+    #     「前の動画のこと覚えてる？」のような質問では発動しない
+    if (not has_attachments and _REVISE_RE.search(content)
+            and not _looks_like_question(content)):
         return "revise"
     # ①.5 ショート量産（「ショート作って」「今日のショート」等）
     if re.search("ショート|shorts?|ショート動画", content, re.I) and (
@@ -1792,11 +1794,15 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         return "style_reset"
     if re.search("(学習|覚え)(した|た)スタイル|スタイル(を|は)?(見せて|どんな|確認|教えて)", content):
         return "style_show"
-    if re.search("学習して|学習させ|覚えて|覚えさせ|参考にして|真似して|勉強して", content) and \
-            not re.search("調べて|リサーチ|検索", content):
-        if has_video_att or YOUTUBE_URL_RE.search(content):
+    #     「覚えてる？」のような質問・既存機能の話と誤爆しないよう、
+    #     添付/リンクなしの案内(style_ask)は明確な依頼形＋非質問のときだけ
+    _learn_strict = re.search("学習して|学習させ|覚えさせ|参考にして|真似して|勉強して", content)
+    _learn_loose = _learn_strict or re.search("覚えて(?![るたない])", content)
+    if not re.search("調べて|リサーチ|検索", content):
+        if _learn_loose and (has_video_att or YOUTUBE_URL_RE.search(content)):
             return "style_learn"
-        if re.search("動画|ショート|映像|スタイル|作風", content):
+        if (_learn_strict and not _looks_like_question(content)
+                and re.search("動画|ショート|映像|スタイル|作風", content)):
             return "style_ask"
     # ② Higgsfield生成（モーション以外・生成意図あり）
     #    「動画お願い」もAI判定に落とさず生成として扱う
