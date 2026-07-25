@@ -363,6 +363,15 @@ async def run():
     check("できた？→直近生成を即答", any("ad.mp4" in s for s in r["sent"]),
           f"fired={r['fired']} sent={r['sent']}")
 
+    # 生成が何も無い時の「動画できた？」は会話へ流れ、履歴が二重登録されないこと
+    install_stubs()
+    bot._load_last_gen = lambda cid: None
+    before = len(bot.get_history(1234))
+    r = await drive("動画できた？")
+    added = len(bot.get_history(1234)) - before
+    check("生成なし→会話へ", "orchestrator" in r["fired"], f"fired={r['fired']}")
+    check("履歴の二重登録なし（発言1件＋応答1件）", added <= 2, f"追加={added}件")
+
     # ===== ③ ストレス：異常・境界入力で例外が漏れないこと =====
     print("■ E2E: ストレス（例外ゼロ）")
     stress = [

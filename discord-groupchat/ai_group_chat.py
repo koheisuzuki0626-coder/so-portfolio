@@ -64,7 +64,24 @@ HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "40"))  # プロンプトに入�
 CLAUDE_TIMEOUT = int(os.getenv("CLAUDE_TIMEOUT", "300"))
 # claude CLI の同時実行を制限（プロファイル学習・要約などのバックグラウンド処理と
 # 会話応答が同時に走ってタイムアウトするのを防ぐ。超過分は順番待ち）
-_claude_sem = asyncio.Semaphore(int(os.getenv("CLAUDE_CONCURRENCY", "2")))
+CLAUDE_CONCURRENCY = int(os.getenv("CLAUDE_CONCURRENCY", "2"))
+_claude_sem = None
+_claude_sem_loop = None
+
+
+def _get_claude_sem():
+    """Claude CLI 用セマフォを【実行中のイベントループ上で】作って返す。
+    モジュール読み込み時に asyncio.Semaphore() を作ると、Python 3.9 では
+    その時点の（Discordが後で使うのとは別の）ループに紐づいてしまい、
+    同時実行が2件を超えて順番待ちが発生した瞬間だけ
+    『got Future attached to a different loop』で応答が落ちる。
+    実際にMac(python3.9)で発生したため、必ずこの関数経由で取得すること。"""
+    global _claude_sem, _claude_sem_loop
+    loop = asyncio.get_running_loop()
+    if _claude_sem is None or _claude_sem_loop is not loop:
+        _claude_sem = asyncio.Semaphore(CLAUDE_CONCURRENCY)
+        _claude_sem_loop = loop
+    return _claude_sem
 
 gemini_client = genai.Client()  # 環境変数 GEMINI_API_KEY を自動参照
 
@@ -300,6 +317,18 @@ def _log_error(context, exc):
     return f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
+_bg_tasks = set()   # 実行中の背景タスクの強参照（GCでの消滅を防ぐ）
+
+
+def _track(task):
+    """背景タスクへの参照を保持する。
+    asyncio は task への参照が無くなると実行途中でも回収し得るため、
+    保持しないと生成の完了監視などが【何も言わずに】消えることがある。"""
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
+
+
 def _spawn(coro, cid, context):
     """背景タスクを、例外が沈黙しないラッパーで起動する。
     on_message のガードは create_task した処理には効かないため、ここで捕捉して
@@ -307,13 +336,15 @@ def _spawn(coro, cid, context):
     async def _wrapped():
         try:
             await coro
+        except asyncio.CancelledError:
+            raise
         except Exception as e:  # noqa: BLE001
             summary = _log_error(f"bg:{context}", e)
             try:
                 await send_as(orch, cid, f"⚠️ {context} でエラー（記録済み）: {summary}")
             except Exception:  # noqa: BLE001
                 pass
-    return asyncio.create_task(_wrapped())
+    return _track(asyncio.create_task(_wrapped()))
 
 
 def _recent_errors(n=3):
@@ -538,13 +569,21 @@ async def _backfill_channel_history(channel):
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # .claude/settings.json のある場所
 
 
+async def _reap(proc, timeout=5):
+    """kill した子プロセスの終了を待って回収する（ゾンビの蓄積を防ぐ）。"""
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=timeout)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def run_claude_cli(prompt):
     """Claude Code CLI をヘッドレスで呼ぶ（サブスク利用・API課金なし）。
     プロンプトは stdin で渡す（長文でOSの引数上限を超えないように）。
     同時実行はセマフォで制限し、渋滞によるタイムアウトを防ぐ。"""
     # cwd を固定 → discord-groupchat/.claude/settings.json（WebSearch許可）が読まれる。
     # ※ワークスペースを一度「信頼(trust)」しておかないと settings.json は無視される。
-    async with _claude_sem:
+    async with _get_claude_sem():
         proc = await asyncio.create_subprocess_exec(
             CLAUDE_BIN, "-p",
             stdin=asyncio.subprocess.PIPE,
@@ -558,6 +597,7 @@ async def run_claude_cli(prompt):
             )
         except asyncio.TimeoutError:
             proc.kill()
+            await _reap(proc)   # 待たないとゾンビが残り続ける（常駐プロセスのため）
             raise RuntimeError(f"claude CLI がタイムアウトしました（{CLAUDE_TIMEOUT}秒）")
     out_s = out.decode(errors="replace").strip()
     err_s = err.decode(errors="replace").strip()
@@ -2176,13 +2216,13 @@ async def _refine_prompt(request, media_type, style=""):
     if _looks_english_prompt(request):
         return request.strip()
     kind = "video" if media_type == "video" else "image"
+    sp = _style_snippet(800)
     ask = (
         f"次の日本語の依頼を、AI {kind}生成用の英語プロンプト1つに変換して。"
         "被写体・構図・カメラワーク・光・色・質感・雰囲気を具体的に描写。"
         "カンマ区切りの1行、英語のみ、プロンプト本体だけ出力（説明や引用符は不要）。"
         + (f" スタイル指定: {style}." if style else "")
-        + (f"\n学習済みスタイルの傾向（合う範囲で反映）:\n{_style_snippet(800)}"
-           if _style_snippet(800) else "")
+        + (f"\n学習済みスタイルの傾向（合う範囲で反映）:\n{sp}" if sp else "")
         + f"\n依頼: {request}"
     )
     try:
@@ -2253,7 +2293,7 @@ async def _run_hf_generate(message, request, model, media_type, label,
         f"⏳ {disp} で生成ジョブを投入しました。完成したらURLを自動投稿します"
         "（「できた？」でいつでも確認可）。"
     )
-    asyncio.create_task(_watch_motion_job(cid))
+    _spawn(_watch_motion_job(cid), cid, "生成の完了監視")
 
 
 # ---------- 直前の生成内容を記録（「もう一回作り直して」の文脈引き継ぎ用） ----------
@@ -2444,13 +2484,26 @@ STYLE_LEARN_PROMPT = (
 )
 
 
+_style_cache = {"mtime": None, "text": ""}
+
+
 def _load_style_profile():
+    """学習済みスタイルを読む（更新時刻が同じならキャッシュを返す）。
+    企画・プロンプト生成のたびに何度も呼ばれるため、毎回のファイル読みを避ける。"""
     try:
-        if STYLE_PROFILE_FILE.exists():
-            return STYLE_PROFILE_FILE.read_text(encoding="utf-8").strip()
+        if not STYLE_PROFILE_FILE.exists():
+            _style_cache.update(mtime=None, text="")
+            return ""
+        mtime = STYLE_PROFILE_FILE.stat().st_mtime
+        if _style_cache["mtime"] != mtime:
+            _style_cache.update(
+                mtime=mtime,
+                text=STYLE_PROFILE_FILE.read_text(encoding="utf-8").strip(),
+            )
+        return _style_cache["text"]
     except Exception as e:  # noqa: BLE001
         print(f"[style] 読み込み失敗: {e}")
-    return ""
+        return ""
 
 
 def _style_snippet(limit=1500):
@@ -2560,6 +2613,7 @@ async def _run_ad_make(message, brief):
     """ブリーフ（商品/サービス/ターゲット）から広告企画書＋縦型CM動画を制作。"""
     cid = message.channel.id
     await send_as(orch, cid, "📣 広告プランを作成します（広告代理店モード）…")
+    sp = _style_snippet()
     ask = (
         "あなたは一流広告代理店のクリエイティブディレクター。"
         "次のブリーフから縦型ショートCM(9:16, 5〜15秒)の企画をJSONだけで返す。\n"
@@ -2569,7 +2623,7 @@ async def _run_ad_make(message, brief):
         '人物の顔のクローズアップは避ける","cta":"行動喚起（文言）",'
         '"tips":"配信時のポイント(1〜2行)"}\n'
         + (f"参考スタイル（ユーザーが学習させた勝ちパターン。企画とvideo_promptに反映）:\n"
-           f"{_style_snippet()}\n" if _style_snippet() else "")
+           f"{sp}\n" if sp else "")
         + f"ブリーフ: {brief}\nJSON:"
     )
     try:
@@ -2775,11 +2829,17 @@ async def _watch_motion_job(cid):
     media_type = job0.get("media_type", "video")
     model = job0.get("model", "kling3_0_motion_control")
     label = job0.get("label", "モーション動画")
+    token = job0.get("submitted_at")   # このジョブの識別子
     for _ in range(30):  # 1分おき最大30分
         await asyncio.sleep(60)
         job = _load_motion_job()
         if not job or job.get("cid") != cid:
             return  # 別ジョブに置き換わった/クリアされた
+        if token is not None and job.get("submitted_at") != token:
+            # 同じチャンネルで次の生成が始まった → 古い監視は退く。
+            # 残しておくと監視が二重に走り、状態確認(claude CLI)が
+            # 毎分2本ずつ立ち上がって渋滞・重複通知の原因になる。
+            return
         try:
             vurl = await _mcp_gen_status(media_type, model)
         except Exception as e:  # noqa: BLE001
@@ -2860,7 +2920,7 @@ async def _run_motion_control(message, request, ref_att):
             "⏳ 生成ジョブを投入しました。完成したらこのチャンネルに動画URLを自動投稿します"
             "（数分〜十数分／「動画できた？」でいつでも確認可）。"
         )
-        asyncio.create_task(_watch_motion_job(cid))
+        _spawn(_watch_motion_job(cid), cid, "生成の完了監視")
         return
     except Exception as e:  # noqa: BLE001
         print(f"[motion] MCP経由失敗 → プラットフォームAPIへ: {str(e)[:300]}")
@@ -2965,7 +3025,11 @@ async def _orchestrate(mode, lead, search, history, recall=False):
     if mode == "single":
         if lead == "gemini":
             try:
-                return await _gemini_call(_answer_prompt("Gemini", history, ctx))
+                ans = await _gemini_call(_answer_prompt("Gemini", history, ctx))
+                if (ans or "").strip():
+                    return ans
+                # 安全フィルタ等で本文が空 → 無言にせずClaudeで答え直す
+                print("[orchestrate] Geminiが空応答 → Claudeへ")
             except Exception:  # noqa: BLE001
                 pass  # Gemini不可ならClaudeへ
         try:
@@ -3010,6 +3074,50 @@ async def _orchestrate(mode, lead, search, history, recall=False):
     return await _synthesize(claude_rev, gemini_rev, history, ctx)
 
 
+async def _report_gen_status(channel, cid, author_name=None, said=None):
+    """生成の進捗/完成を確認して報告する（「できた？」系の唯一の実装）。
+    進行中ジョブがあればHiggsfieldに問い合わせ、無ければ直近の完成物を案内し、
+    どちらも無ければ False を返して会話として続行させる。
+    ※以前は決定的ルートと会話ハンドラに同じ処理が二重にあり、
+      片方だけ直して挙動が食い違う不具合が実際に起きたため1本化した。"""
+    job = _load_motion_job()
+    lg = _load_last_gen(cid) or {}
+    if not job and not lg.get("url"):
+        return False   # 会話へ流す。ここで履歴に触れない（後段で二重登録になるため）
+    if said and author_name:
+        add_history(cid, author_name, said)
+    if job:
+        label = job.get("label") or "生成"
+        await channel.send(f"🔎 「{label}」の状況を Higgsfield で確認します…")
+        try:
+            vurl = await _mcp_gen_status(job.get("media_type", "video"), job.get("model"))
+        except Exception as e:  # noqa: BLE001
+            await channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
+            add_history(cid, "Orchestrator", "（生成の失敗を報告した）")
+            return True
+        if vurl:
+            _clear_motion_job()
+            _update_last_gen_url(cid, vurl)
+            add_history(cid, "Orchestrator", f"（生成物が完成: {vurl}）")
+            await channel.send(
+                f"✅ できています！URLはこちら:\n{vurl}\n"
+                "「バズ度分析して」で広告効果の事前予測もできます。"
+            )
+        else:
+            await channel.send(_pending_eta_msg(job))
+        return True
+    if lg.get("url"):
+        label = lg.get("label") or "生成"
+        await channel.send(
+            f"✅ 直近の「{label}」はもう完成しています:\n{lg['url']}\n"
+            "続けるなら「バズ度分析して」で効果予測、"
+            "「〇〇を直して作り直して」で改善もできます。"
+        )
+        add_history(cid, "Orchestrator", f"（完成済みの{label}のURLを再案内した）")
+        return True
+    return False   # 進行中も完成物も無い → 普通の会話へ
+
+
 async def _start_agent(message, cid, content):
     await message.channel.send(
         "🛠 コードを触る作業ですね。プランを作ります…"
@@ -3032,28 +3140,7 @@ async def _handle_orchestrator(message, cid):
     if re.search("モーション|動画|画像|生成", said) and re.search(
         "できた|完成|終わった|どうなった|状況|進捗|まだ|あとどれ|どれくらい|どのくらい|何分", said
     ):
-        job = _load_motion_job()
-        lg = _load_last_gen(cid) or {}
-        if job:
-            label = job.get("label") or "生成"
-            await message.channel.send(f"🔎 「{label}」の状況を Higgsfield で確認します…")
-            try:
-                vurl = await _mcp_gen_status(job.get("media_type", "video"), job.get("model"))
-            except Exception as e:  # noqa: BLE001
-                await message.channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
-                return
-            if vurl:
-                _clear_motion_job()
-                _update_last_gen_url(cid, vurl)
-                add_history(cid, "Orchestrator", f"（生成物が完成: {vurl}）")
-                await message.channel.send(f"✅ できています！\n{vurl}")
-            else:
-                await message.channel.send(_pending_eta_msg(job))
-            return
-        if lg.get("url"):
-            label = lg.get("label") or "生成"
-            await message.channel.send(f"✅ 直近の「{label}」は完成済みです:\n{lg['url']}")
-            add_history(cid, "Orchestrator", f"（完成済みの{label}のURLを再案内した）")
+        if await _report_gen_status(message.channel, cid):
             return
         # 進行中の生成が無い → 状態確認モードに入らず、そのまま会話として続行
 
@@ -3109,8 +3196,9 @@ async def _handle_orchestrator(message, cid):
     if kind == "video":
         # 単発の動画生成は、最適モデルを自動選定して直接生成（滑らかで確実）。
         # 構成案→絵コンテの多段フローが要るときは !project を使う。
-        asyncio.create_task(
-            _run_hf_generate(message, _latest_user_msg(history), None, "video", "自動選定")
+        _spawn(
+            _run_hf_generate(message, _latest_user_msg(history), None, "video", "自動選定"),
+            cid, "動画生成",
         )
         return
     if kind == "exec":
@@ -3145,7 +3233,7 @@ async def _handle_orchestrator(message, cid):
         await message.channel.send(
             f"🎙️ ClaudeとGeminiで話します（最大 {MAX_TURNS} 発言。「止めて」で停止）"
         )
-        asyncio.create_task(run_auto(cid, _latest_user_msg(history)))
+        _spawn(run_auto(cid, _latest_user_msg(history)), cid, "自動トーク")
         return
     if kind == "profile":
         p = _load_profiles()
@@ -3573,6 +3661,7 @@ async def _run_claude_exec(task, timeout=600):
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
+        await _reap(proc)
         return "⚠️ 実行がタイムアウトしました。"
     if proc.returncode != 0:
         return f"⚠️ 実行に失敗: {(err.decode() or '').strip()[:400]}"
@@ -3707,6 +3796,7 @@ async def _selfcheck():
             out, err = await asyncio.wait_for(proc.communicate(), timeout=120)
         except asyncio.TimeoutError:
             proc.kill()
+            await _reap(proc)
             return False, "検証がタイムアウトしました"
         if proc.returncode != 0:
             detail = (err.decode(errors="replace") or out.decode(errors="replace")).strip()
@@ -3714,15 +3804,21 @@ async def _selfcheck():
     return True, ""
 
 
-async def _git_self(args):
-    """自己改修のgit操作（ベストエフォート）。(returncode, 出力) を返す。"""
+async def _git_self(args, timeout=90):
+    """自己改修のgit操作（ベストエフォート）。(returncode, 出力) を返す。
+    通信不良の push/fetch で永久に固まらないよう必ずタイムアウトする。"""
     proc = await asyncio.create_subprocess_exec(
         "git", *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=BASE_DIR,
     )
-    out, err = await proc.communicate()
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await _reap(proc)
+        return 1, f"git {' '.join(args[:2])} がタイムアウトしました（{timeout}秒）"
     return proc.returncode, (out.decode(errors="replace") + err.decode(errors="replace")).strip()
 
 
@@ -3866,13 +3962,13 @@ async def on_ready():
             print(f"[restart] 復帰通知失敗: {e}")
     if not _trend_task_started:
         _trend_task_started = True
-        asyncio.create_task(_daily_trend_loop())
-        asyncio.create_task(_gemini_recovery_loop())
+        _track(asyncio.create_task(_daily_trend_loop()))
+        _track(asyncio.create_task(_gemini_recovery_loop()))
         # 再起動前に投入したモーション生成があれば、完了監視を再開する
         job = _load_motion_job()
         if job and job.get("cid") and time.time() - job.get("submitted_at", 0) < 3600:
             print("[motion] 進行中ジョブの完了監視を再開")
-            asyncio.create_task(_watch_motion_job(int(job["cid"])))
+            _spawn(_watch_motion_job(int(job["cid"])), int(job["cid"]), "生成の完了監視")
         elif job:
             _clear_motion_job()  # 1時間超は古すぎるので破棄
 
@@ -3905,7 +4001,7 @@ async def _dispatch_message(message):
 
     # 初回のみ：導入前の過去ログをDiscordから取り込む（バックグラウンド）
     if cid not in _import_started:
-        asyncio.create_task(_backfill_channel_history(message.channel))
+        _track(asyncio.create_task(_backfill_channel_history(message.channel)))
 
     # 自己診断・エラー確認（最優先で拾う）
     if re.search("システムチェック|自己診断|ヘルスチェック|健康診断|全体チェック", content):
@@ -4008,7 +4104,7 @@ async def _dispatch_message(message):
         await message.channel.send(
             f"🎙️ お題「{topic}」で ClaudeとGemini が最大 {MAX_TURNS} 発言 話します"
         )
-        asyncio.create_task(run_auto(cid, topic))
+        _spawn(run_auto(cid, topic), cid, "自動トーク")
         return
     if content.startswith("!"):
         return
@@ -4042,47 +4138,12 @@ async def _dispatch_message(message):
         route = "motion"
 
     if route == "status":
-        _lg = _load_last_gen(cid) or {}
-        if not _job and not _lg:
-            # 進行中のジョブも直近の生成記録も無い → 状態確認モードに入らず
-            # 普通の会話として文脈で答える（「できた？」で流れを壊さない）
-            route = None
-        elif not _job and _lg.get("url"):
-            # 直近の生成は完成済み → Higgsfieldを見に行かず即答して会話を続ける
-            add_history(cid, message.author.display_name, content)
-            _label = _lg.get("label") or "生成"
-            await message.channel.send(
-                f"✅ 直近の「{_label}」はもう完成しています:\n{_lg['url']}\n"
-                "続けるなら「バズ度分析して」で効果予測、"
-                "「〇〇を直して作り直して」で改善もできます。"
-            )
-            add_history(cid, "Orchestrator", f"（完成済みの{_label}のURLを再案内した）")
+        # 進行中も完成物も無ければ状態確認に入らず、普通の会話として続行する
+        if await _report_gen_status(
+            message.channel, cid, message.author.display_name, content
+        ):
             return
-        else:
-            add_history(cid, message.author.display_name, content)
-            job = _job or {}
-            _label = job.get("label") or _lg.get("label") or "生成"
-            await message.channel.send(f"🔎 「{_label}」の状況を Higgsfield で確認します…")
-            try:
-                vurl = await _mcp_gen_status(
-                    job.get("media_type") or _lg.get("media_type", "video"),
-                    job.get("model"),
-                )
-            except Exception as e:  # noqa: BLE001
-                await message.channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
-                add_history(cid, "Orchestrator", "（生成の失敗を報告した）")
-                return
-            if vurl:
-                _clear_motion_job()
-                _update_last_gen_url(cid, vurl)
-                add_history(cid, "Orchestrator", f"（生成物が完成: {vurl}）")
-                await message.channel.send(
-                    f"✅ できています！URLはこちら:\n{vurl}\n"
-                    "「バズ度分析して」で広告効果の事前予測もできます。"
-                )
-            else:
-                await message.channel.send(_pending_eta_msg(job))
-            return
+        route = None
 
     if route == "revise":
         add_history(cid, message.author.display_name, content)
@@ -4228,7 +4289,7 @@ async def _dispatch_message(message):
     ):
         if _profile_counts[sp] >= PROFILE_UPDATE_EVERY:
             _profile_counts[sp] = 0
-        asyncio.create_task(_update_profile(cid, sp))
+        _track(asyncio.create_task(_update_profile(cid, sp)))
 
     # リンクだけの投稿 → 内容まとめは投稿済みなので、AIの雑談応答はしない
     # （内容は記憶に残るので、続けて「この動画どう思う？」と聞けば答えられる）
