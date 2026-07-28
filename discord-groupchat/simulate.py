@@ -57,7 +57,7 @@ class _FakeClient:
         return None
 
     async def fetch_channel(self, cid):
-        return _FakeChannel(cid)
+        return _channel(cid)
 
 
 class _FakeUser:
@@ -86,6 +86,10 @@ _stub("aiohttp", ClientSession=object, ClientTimeout=lambda **k: None)
 
 import ai_group_chat as bot  # noqa: E402
 
+# 実物の会話ハンドラ（install_stubs で記録用に差し替わる前に退避）。
+# 「判定＋返事の1回化」など、会話ハンドラ本体の挙動を検証するテストで使う。
+_HANDLE_ORCH = bot._handle_orchestrator
+
 
 # ---- ダミーのDiscordオブジェクト ----
 class _FakeTyping:
@@ -94,6 +98,18 @@ class _FakeTyping:
 
     async def __aexit__(self, *a):
         return False
+
+
+_CHANNELS = {}   # cid -> _FakeChannel（send_as経由の送信も同じ箱に集める）
+
+
+def _channel(cid):
+    """cidごとに同じチャンネルを返す。実物の send_as は
+    orch.fetch_channel(cid) から送るため、毎回別オブジェクトを返すと
+    テストで送信内容を取りこぼす。"""
+    if cid not in _CHANNELS:
+        _CHANNELS[cid] = _FakeChannel(cid)
+    return _CHANNELS[cid]
 
 
 class _FakeChannel:
@@ -121,7 +137,7 @@ class _FakeMessage:
         self.content = content
         self.attachments = attachments or []
         self.author = _FakeUser(uid, name)
-        self.channel = _FakeChannel(1234)
+        self.channel = _channel(1234)
         self.mentions = []
 
 
@@ -144,6 +160,8 @@ def _rec_str(label, ret):
 
 def install_stubs(mcp_url=None):
     FIRED.clear()
+    for ch in _CHANNELS.values():
+        ch.sent.clear()   # 前のテストの送信内容が混ざらないように
     bot._self_diagnose = _rec_str("diagnose", "🩺 診断結果（スタブ）")
     bot._run_hf_generate = _rec("hf_generate")
     bot._run_short = _rec("short")
@@ -371,6 +389,37 @@ async def run():
     added = len(bot.get_history(1234)) - before
     check("生成なし→会話へ", "orchestrator" in r["fired"], f"fired={r['fired']}")
     check("履歴の二重登録なし（発言1件＋応答1件）", added <= 2, f"追加={added}件")
+
+    # ===== ②-b 高速化：判定と返事を1回のAI呼び出しで済ませる =====
+    print("■ E2E: 判定＋返事の1回化（速度）")
+    calls = []
+
+    async def _ai_merged(prompt, tag="x"):
+        calls.append(tag)
+        return ('{"kind":"chat","mode":"single","lead":"claude",'
+                '"search":false,"recall":false}\n'
+                "---REPLY---\nおはよう！今日は何する？")
+    install_stubs()
+    bot._handle_orchestrator = _HANDLE_ORCH      # 実物の会話ハンドラを使う
+    bot._ai_text = _ai_merged
+    r = await drive("この動画の作り方どう思う？")
+    check("返事が届く", any("今日は何する" in s for s in r["sent"]), f"sent={r['sent']}")
+    check("AI呼び出しは1回だけ", len(calls) == 1, f"実際={len(calls)}回")
+    check("例外なし", r["err"] is None, f"{r['err']}")
+
+    # 区切りが無い（従来形式）なら回答フェーズにフォールバックすること
+    calls.clear()
+
+    async def _ai_plan_only(prompt, tag="x"):
+        calls.append(tag)
+        return '{"kind":"chat","mode":"single","lead":"claude"}'
+    install_stubs()
+    bot._handle_orchestrator = _HANDLE_ORCH
+    bot._ai_text = _ai_plan_only
+    r = await drive("この動画の作り方どう思う？")
+    check("返事なし→従来の回答フェーズで応答",
+          any("claude回答" in s for s in r["sent"]), f"sent={r['sent']}")
+    check("フォールバックでも例外なし", r["err"] is None, f"{r['err']}")
 
     # ===== ③ ストレス：異常・境界入力で例外が漏れないこと =====
     print("■ E2E: ストレス（例外ゼロ）")

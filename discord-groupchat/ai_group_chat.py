@@ -892,13 +892,6 @@ async def _download_file(url):
         return None
 
 
-def _has_attachments(message):
-    """メッセージに画像・動画が添付されているか判定。"""
-    if not message.attachments:
-        return False, False
-    has_image = any(Path(a.filename).suffix.lower() in SUPPORTED_IMAGE_TYPES for a in message.attachments)
-    has_video = any(Path(a.filename).suffix.lower() in SUPPORTED_VIDEO_TYPES for a in message.attachments)
-    return has_image, has_video
 
 
 def _detect_mime_type(data):
@@ -1874,15 +1867,23 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     return None  # 決定的ルートに該当せず → AI(_plan)へ
 
 
+_PLAN_REPLY_SEP = "---REPLY---"
+
+
 async def _plan(history):
-    """要求の分類（exec/video/image/chat）と処理方針（mode/lead/search/recall）を
-    1回のAI呼び出しでまとめて判定する。以前は Claude CLI を2回直列に起動していて
-    毎回10〜30秒かかっていたが、Gemini優先（高速・無料枠）の1回に統合。
-    さらに、トリガー語を含まない短い発言はAIを呼ばずに即・雑談扱い（枠の節約）。
-    失敗時は Claude にフォールバックし、それも駄目なら安全な既定値で続行する。"""
+    """要求の分類（exec/video/image/chat）＋処理方針＋【雑談ならその返事まで】を
+    1回のAI呼び出しで得る。返り値: (kind, mode, lead, search, recall, reply)。
+
+    速度の要：以前は「分類」と「回答」でAIを2回直列に呼んでおり、
+    Gemini枠切れ時は claude CLI の起動が2回重なって20〜60秒かかっていた。
+    普通の会話（chat・検索不要・過去記憶不要）は、この1回の中で返事も書かせて
+    そのまま送る＝待ち時間が半分になる。
+    返事が取れなかった場合は reply="" となり、従来どおり回答フェーズへ回るので
+    壊れない（JSONに混ぜず区切り行で分けるのは、改行や引用符でJSONが壊れないため）。
+    トリガー語を含まない短い発言は、そもそもAIを呼ばず即・雑談扱い（枠の節約）。"""
     latest = _latest_user_msg(history)
     if len(latest) <= 60 and not _PLAN_TRIGGER_RE.search(latest):
-        return "chat", "single", CASUAL_LEAD, False, False
+        return "chat", "single", CASUAL_LEAD, False, False, ""
     prompt = (
         "あなたはDiscordボット（オーケストレーター）のルーター。"
         "次の会話の最後の要求を分類し、処理方針をJSONだけで返す。\n"
@@ -1916,13 +1917,22 @@ async def _plan(history):
         "geminiが得意=要約・多言語翻訳・最新情報・画像や視覚の話題・箇条書き整理・アイデア出し。\n"
         "- search: 最新情報・時事・製品/価格・実在の事実確認が要るときだけtrue。\n"
         "- recall: 『前に話した』『昨日の』『以前決めた』など、直近の会話に無い"
-        "過去の記憶が必要なときだけtrue。\n\n"
-        f"会話:\n{build_transcript(history)}\n\nJSON:"
+        "過去の記憶が必要なときだけtrue。\n"
+        # ここが速度の肝：chatならこの1回で返事まで書かせる（往復を半分にする）
+        f"\n【返事も同時に書く】kindがchat、かつ mode=single、search=false、recall=false"
+        f"のときは、JSONの次の行に「{_PLAN_REPLY_SEP}」とだけ書き、"
+        f"その次の行からユーザーへの返事本体を書くこと。"
+        f"返事は日本語で{REPLY_CHARS}字以内、前置きや名乗りは無しで本体のみ。"
+        f"それ以外のkind（video/exec/trend等）では返事を書かずJSONだけ返す。\n"
+        + BOT_OPS_GUIDE + "\n\n"
+        + _profiles_context()
+        + f"会話:\n{build_transcript(history)}\n\nJSON:"
     )
-    kind, mode, lead, search, recall = "chat", "single", "claude", False, False
+    kind, mode, lead, search, recall, reply = "chat", "single", "claude", False, False, ""
     try:
         raw = await _ai_text(prompt, "plan")
-        m = re.search(r"\{.*\}", raw, re.S)
+        head, sep, tail = (raw or "").partition(_PLAN_REPLY_SEP)
+        m = re.search(r"\{.*\}", head, re.S)
         d = json.loads(m.group(0)) if m else {}
         if d.get("kind") in (
             "chat", "exec", "video", "image", "selffix", "restart",
@@ -1935,9 +1945,12 @@ async def _plan(history):
             lead = d["lead"]
         search = bool(d.get("search"))
         recall = bool(d.get("recall"))
+        # 同時に書かれた返事は、条件を満たすときだけ採用（それ以外は回答フェーズへ）
+        if sep and kind == "chat" and mode == "single" and not search and not recall:
+            reply = tail.strip()
     except Exception as e:  # noqa: BLE001
         print(f"[plan] 判定失敗（既定値で続行）: {str(e)[:150]}")
-    return kind, mode, lead, search, recall
+    return kind, mode, lead, search, recall, reply
 
 
 async def _handle_image_request(cid, request):
@@ -2106,9 +2119,6 @@ async def _mcp_gen_status(media_type="video", model=None):
     return _extract_video_url(out)
 
 
-async def _mcp_motion_status():
-    """モーション転写ジョブの完了確認（後方互換）。"""
-    return await _mcp_gen_status("video", "kling3_0_motion_control")
 
 
 # Discordの発言で使えるモデル名 → (MCPモデルID, 種別, 表示名)
@@ -3005,8 +3015,8 @@ def _strip_media_context(text):
 
 
 async def ask_orchestrator(history):
-    _, mode, lead, search, recall = await _plan(history)
-    return await _orchestrate(mode, lead, search, history, recall)
+    _, mode, lead, search, recall, reply = await _plan(history)
+    return reply or await _orchestrate(mode, lead, search, history, recall)
 
 
 async def _orchestrate(mode, lead, search, history, recall=False):
@@ -3186,13 +3196,18 @@ async def _handle_orchestrator(message, cid):
         ):
             return
 
-    # 分類＋処理方針を1回のAI呼び出しで判定（旧: Claude CLI 2回直列で遅かった）
+    # 分類＋処理方針＋（雑談ならその返事まで）を1回のAI呼び出しで得る
     async with message.channel.typing():
-        kind, mode, lead, search, recall = await _plan(history)
+        kind, mode, lead, search, recall, reply = await _plan(history)
     # 保険：質問や相談っぽい発言が作業系(selffix/exec)に誤分類されたらchatに戻す
     if kind in ("selffix", "exec") and _looks_like_question(latest):
         print(f"[plan] {kind}→chat に降格（質問/相談と判断）")
-        kind = "chat"
+        kind, reply = "chat", ""   # 降格時の返事は無いので通常の回答フェーズへ
+    # 判定と同時に返事も書けていれば、追加のAI呼び出しをせずそのまま返す（最速）
+    if kind == "chat" and reply:
+        add_history(cid, "Orchestrator", reply)
+        await send_as(orch, cid, reply)
+        return
     if kind == "video":
         # 単発の動画生成は、最適モデルを自動選定して直接生成（滑らかで確実）。
         # 構成案→絵コンテの多段フローが要るときは !project を使う。
