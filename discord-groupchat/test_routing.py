@@ -151,6 +151,11 @@ ROUTE_CASES = [
     ("モーションコントロールで作りたい", "motion_ask", {}),
     ("この動きで生成して", "motion",
      {"has_video_att": True, "has_attachments": True}),
+    # デバッグログの共有（スクショ不要にする）
+    ("ログ送って", "sharelog", {}),
+    ("会話ログ共有して", "sharelog", {}),
+    ("デバッグログ出して", "sharelog", {}),
+    ("ログ消して", "plan", {}),                      # 削除依頼は共有にしない
     # スタイル学習（参考動画から勝ちパターンを覚える）
     ("これを学習して", "style_learn", {"has_video_att": True, "has_attachments": True}),
     ("https://youtu.be/abc123 これを学習して", "style_learn", {}),

@@ -397,6 +397,76 @@ def _recent_errors(n=3):
         return f"エラーログの読込に失敗: {e}"
 
 
+# ---------- デバッグログの共有（Claude Codeのチャットから読めるようにする） ----------
+# history/ はgit管理外なので、共有用に debug/ へ書き出してプッシュする。
+# 目的：不具合のたびにユーザーがスクショを撮る手間をなくす。
+DEBUG_DIR = Path(_BASE) / "debug"
+DEBUG_LOG = DEBUG_DIR / "discord_log.md"
+
+
+def _recent_messages(cid, limit=80):
+    """会話ログの直近n件を [(時刻, 話者, 本文)] で返す。"""
+    rows = []
+    try:
+        path = _hist_path(cid)
+        if not path.exists():
+            return rows
+        for line in path.read_text(encoding="utf-8").splitlines()[-limit:]:
+            try:
+                d = json.loads(line)
+            except Exception:  # noqa: BLE001
+                continue
+            ts = datetime.fromtimestamp(d.get("t", 0), JST).strftime("%m/%d %H:%M")
+            rows.append((ts, d.get("speaker", "?"), d.get("text", "")))
+    except Exception as e:  # noqa: BLE001
+        print(f"[debuglog] 読込失敗: {e}")
+    return rows
+
+
+async def _share_debug_log(cid, limit=80):
+    """直近の会話・エラー・生成状態をリポジトリに書き出してプッシュする。
+    プッシュ後は Claude Code のチャット側から中身を直接読める。"""
+    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+    _, head = await _git_self(["rev-parse", "--short", "HEAD"])
+    lines = [
+        "# Discord デバッグログ（自動共有）",
+        f"- 書き出し: {now}",
+        f"- 実行中のコード: {head.strip()[:12]}",
+        f"- チャンネル: {cid}",
+        "",
+        "## 生成の状態",
+        f"- 直前の生成: {json.dumps(_load_last_gen(cid) or {}, ensure_ascii=False)[:500]}",
+        f"- 進行中ジョブ: {json.dumps(_load_motion_job() or {}, ensure_ascii=False)[:300]}",
+        f"- 実際に投入されたプロンプト: {(_last_submitted.get('prompt') or '(記録なし)')[:400]}",
+        f"- モデル設定: {json.dumps(gen_settings, ensure_ascii=False)[:300]}",
+        f"- Geminiクールダウン中: {[m for m, t in _gemini_cooldown.items() if t > time.time()]}",
+        "",
+        "## 直近のエラー",
+        "```",
+        _recent_errors(3)[:4000],
+        "```",
+        "",
+        f"## 直近の会話（{limit}件まで）",
+    ]
+    for ts, who, text in _recent_messages(cid, limit):
+        lines.append(f"- **{ts} {who}**: {text[:600]}")
+    DEBUG_LOG.write_text("\n".join(lines), encoding="utf-8")
+
+    rel = str(DEBUG_LOG.relative_to(Path(_BASE).parent))
+    await _git_self(["add", rel])
+    code, out = await _git_self(["commit", "-m", f"Discordログを共有（{now}）"])
+    if code != 0 and "nothing to commit" not in out:
+        return f"⚠️ ログのコミットに失敗: {out[:200]}"
+    code, out = await _git_self(["push", "origin", "HEAD"])
+    if code != 0:
+        return (f"⚠️ ログのプッシュに失敗: {out[:200]}\n"
+                "（書き出しは完了しています。ネットワークを確認して再度お試しください）")
+    return (f"✅ 直近の会話・エラー・生成状態を共有しました（{rel}）。\n"
+            "Claude Codeのチャットで「**ログ見て**」と言えば、そのまま読めます。\n"
+            "※会話の内容がGitHubのプライベートリポジトリに保存されます。")
+
+
 async def _self_diagnose():
     """各サブシステムを能動チェックして健全性レポートを返す（Discord内で完結）。"""
     lines = ["🩺 **システム自己診断**"]
@@ -1866,6 +1936,11 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         _GEN_INTENT2_RE.search(content) or re.search("お願い|企画", content)
     ):
         return "ad"
+    # ①.75 デバッグログの共有（スクショを撮らずに開発側へ状況を渡す）
+    if re.search("ログ|log", content, re.I) and re.search(
+        "送って|共有|出して|上げて|あげて|渡して|見せて|ちょうだい|ください", content
+    ) and not re.search("消して|削除", content):
+        return "sharelog"
     # ①.8 スタイル学習（参考動画から勝ちパターンを覚えて以降の生成に反映）
     if re.search("スタイル|作風", content) and re.search("リセット|白紙|消して|忘れて|クリア", content):
         return "style_reset"
@@ -4356,6 +4431,15 @@ async def _dispatch_message(message):
               "そのまま縦型9:16のCM動画を生成します",
               lambda: _run_ad_make(message, content), "広告制作",
               "Higgsfieldのクレジットを消費します")
+        return
+
+    if route == "sharelog":
+        add_history(cid, message.author.display_name, content)
+        await message.channel.send("📤 直近の会話とエラーを共有用に書き出しています…")
+
+        async def _do_share():
+            await send_as(orch, cid, await _share_debug_log(cid))
+        _spawn(_do_share(), cid, "ログ共有")
         return
 
     if route == "style_learn":

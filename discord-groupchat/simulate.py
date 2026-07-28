@@ -191,6 +191,7 @@ def install_stubs(mcp_url=None):
     bot._run_virality = _rec("virality")
     bot._run_style_learn = _rec("style_learn")
     bot._handle_image_request = _rec("image_gen")
+    bot._share_debug_log = _rec_str("sharelog", "✅ 共有しました")
     import tempfile as _tf
     import pathlib as _pl
     bot.STYLE_PROFILE_FILE = _pl.Path(_tf.mkdtemp()) / "style_profile.md"
@@ -305,6 +306,7 @@ async def run():
         ("新作スニーカーの広告作って", "ad", None),
         ("コーヒーショップのCM作って", "ad", None),
         ("バズ度分析して", "virality", None),
+        ("ログ送って", "sharelog", None),
         ("この動画の広告効果を予測して", "virality", None),
         ("!short 夜の都市", "short", None),
         ("今日のショートお願い", "short", None),
