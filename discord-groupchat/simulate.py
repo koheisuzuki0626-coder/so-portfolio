@@ -192,6 +192,7 @@ def install_stubs(mcp_url=None):
     bot._run_style_learn = _rec("style_learn")
     bot._handle_image_request = _rec("image_gen")
     bot._share_debug_log = _rec_str("sharelog", "✅ 共有しました")
+    bot._run_video_edit = _rec("edit")
     import tempfile as _tf
     import pathlib as _pl
     bot.STYLE_PROFILE_FILE = _pl.Path(_tf.mkdtemp()) / "style_profile.md"
@@ -550,6 +551,17 @@ async def run():
           any("作り直して" in x for x in _channel(1234).sent), _channel(1234).sent[-1:])
     lg = _LOAD_LAST_GEN(1234)
     check("画像も作り直しの対象として記録", bool(lg and lg.get("prompt")), lg)
+
+    # 完パケ編集（素材がある時だけ動く）
+    install_stubs()
+    bot._load_last_gen = lambda cid: {"prompt": "a cat", "media_type": "video",
+                                      "label": "自動選定", "url": "https://ex.com/a.mp4",
+                                      "t": bot.time.time()}
+    r = await drive("字幕つけて")
+    check("字幕→編集が動く", "edit" in r["fired"], f"{r['fired']}")
+    install_stubs()
+    r = await drive("字幕つけて")
+    check("素材が無ければ編集しない", "edit" not in r["fired"], f"{r['fired']}")
 
     # ===== ③-b 添付ファイルの読み取り（種類ごとの仕様テーブル）=====
     print("■ E2E: 添付ファイルの内容理解")

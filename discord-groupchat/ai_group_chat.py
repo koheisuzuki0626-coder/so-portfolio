@@ -1936,6 +1936,13 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         _GEN_INTENT2_RE.search(content) or re.search("お願い|企画", content)
     ):
         return "ad"
+    # ①.7 完パケ編集（既にある動画への後工程。新規生成とは別物）
+    if (has_video_att or has_last_gen) and re.search(
+        "字幕|テロップ|サブタイトル|編集して|加工して|つなげ|繋げ|結合|くっつけ|"
+        "尺を|秒に(して|縮め)|短くして|長くして|カットして|トリム|切り抜いて|"
+        "9:16|縦型に|横型に|音量|BGM|無音に", content
+    ) and not _looks_like_question(content):
+        return "edit"
     # ①.75 デバッグログの共有（スクショを撮らずに開発側へ状況を渡す）
     if re.search("ログ|log", content, re.I) and re.search(
         "送って|共有|出して|上げて|あげて|渡して|見せて|ちょうだい|ください", content
@@ -2632,6 +2639,59 @@ async def _run_revise(message, instruction):
     await _run_hf_generate(
         message, new_prompt, None, media_type,
         "作り直し", aspect_ratio=aspect_ratio, refine=False,
+    )
+
+
+# ---------- 完パケ編集（Higgsfieldのクラウドサンドボックスでffmpeg処理） ----------
+# 生成した素材は「撮って出し」なので、字幕・尺調整・連結・BGMといった後工程が要る。
+# Higgsfield MCP の sandbox_exec（ffmpeg / ImageMagick / faster-whisper 入りの
+# Linux環境。CPU2コア・3GB・GPU無し）で処理し、結果をアップロードして返す。
+# 生成モデルを回さないので、動画生成のクレジットは消費しない。
+
+async def _run_video_edit(message, instruction):
+    """完成済みの動画を、指示どおりにサンドボックスで編集して返す。"""
+    cid = message.channel.id
+    att = _find_attachment(message, SUPPORTED_VIDEO_TYPES)
+    urls = _MEDIA_URL_RE.findall(instruction or "")
+    src = att.url if att else (urls[0] if urls else (_load_last_gen(cid) or {}).get("url"))
+    if not src:
+        await send_as(
+            orch, cid,
+            "編集する動画が見つかりません。動画を添付するか、まず生成してから"
+            "「字幕つけて」「15秒に縮めて」のように指示してください。"
+        )
+        return
+    await send_as(orch, cid, "🎬 クラウド編集室で加工します（1〜5分）…")
+    task = (
+        "Higgsfield の MCP ツール sandbox_exec を使って動画を編集して。\n"
+        f"元動画URL: {src}\n"
+        f"編集の指示（日本語）: {instruction}\n"
+        "手順:\n"
+        "1) curl -L で /home/user/in.mp4 に取得\n"
+        "2) ffmpeg で指示どおりに編集し /home/user/out.mp4 を作る。\n"
+        "   ・字幕/テロップの指示があれば faster-whisper で書き起こし、"
+        "subtitles か drawtext で焼き込む（フォントは Metropolis か Montserrat、"
+        "縦型は下から1/4あたり・白文字＋黒縁で読みやすく）\n"
+        "   ・縦型/ショート指定があれば 1080x1920 に crop+scale する\n"
+        "   ・音楽やBGMの指示があっても、権利のある音源が無い場合は音量調整までに留める\n"
+        "   ・映像の内容そのものを作り変えることはしない（編集のみ）\n"
+        "3) media_upload で署名付きURLを取得し "
+        "curl -X PUT --upload-file /home/user/out.mp4 '<upload_url>' でアップロード\n"
+        "4) media_confirm で確定して公開URLを得る\n"
+        "※サンドボックスは呼び出し間で消えるので 1〜2 は && でつないで1回のコマンドにまとめること。\n"
+        "最終行に『URL: <公開URL>』だけを出力。失敗なら『ERROR: 理由』。"
+    )
+    out = await _run_claude_exec(task, timeout=900)
+    url = _extract_video_url(out or "")
+    if not url or (out or "").strip().splitlines()[-1].upper().startswith("ERROR"):
+        await send_as(orch, cid, f"⚠️ 編集に失敗しました: {(out or '')[-300:]}")
+        return
+    _update_last_gen_url(cid, url)
+    add_history(cid, "Orchestrator", f"（動画を編集して出力: {url}）")
+    await send_as(
+        orch, cid,
+        f"✅ 編集できました！\n{url}\n"
+        "さらに直したいときは「もう少し字幕を大きく」のように続けて言ってください。"
     )
 
 
@@ -4431,6 +4491,14 @@ async def _dispatch_message(message):
               "そのまま縦型9:16のCM動画を生成します",
               lambda: _run_ad_make(message, content), "広告制作",
               "Higgsfieldのクレジットを消費します")
+        return
+
+    if route == "edit":
+        add_history(cid, message.author.display_name, content)
+        _gate(message, cid, f"完成動画の編集（{content[:50]}）",
+              "Higgsfieldのクラウド編集室（ffmpeg）で加工し、結果のURLを返します",
+              lambda: _run_video_edit(message, content), "動画編集",
+              "動画生成のクレジットは消費しません（サンドボックス実行）")
         return
 
     if route == "sharelog":

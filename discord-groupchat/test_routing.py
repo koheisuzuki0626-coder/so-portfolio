@@ -151,6 +151,15 @@ ROUTE_CASES = [
     ("モーションコントロールで作りたい", "motion_ask", {}),
     ("この動きで生成して", "motion",
      {"has_video_att": True, "has_attachments": True}),
+    # 完パケ編集（Higgsfieldのクラウド編集室・ffmpeg）
+    ("字幕つけて", "edit", {"has_last_gen": True}),
+    ("テロップ入れて", "edit", {"has_last_gen": True}),
+    ("15秒に縮めて", "edit", {"has_last_gen": True}),
+    ("9:16にして", "edit", {"has_last_gen": True}),
+    ("この動画に字幕つけて", "edit",
+     {"has_video_att": True, "has_attachments": True}),
+    ("字幕つけて", "plan", {}),                      # 素材が無ければ会話へ
+    ("字幕ってつけられる？", "plan", {"has_last_gen": True}),  # 質問は編集にしない
     # デバッグログの共有（スクショ不要にする）
     ("ログ送って", "sharelog", {}),
     ("会話ログ共有して", "sharelog", {}),
