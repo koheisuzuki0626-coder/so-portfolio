@@ -265,6 +265,15 @@ def run():
     check("主題あり", bot._gen_subject("猫のイラスト作って"), "猫")
     check("主題あり(2)", bot._gen_subject("夕暮れの海辺の写真作って"), "夕暮れの海辺")
 
+    print("■ プロンプトすり替えの検知 _prompt_drifted")
+    req = "a 30 year old japanese man cheering with a beer mug, victory celebration"
+    check("同じなら検知しない", bot._prompt_drifted(req, req), False)
+    check("少し変わった程度は許容",
+          bot._prompt_drifted(req, req + ", warm lighting, bokeh"), False)
+    check("別物なら検知",
+          bot._prompt_drifted(req, "aichi prefecture day and night map illustration"), True)
+    check("記録が無ければ検知しない", bot._prompt_drifted(req, ""), False)
+
     print("■ エラーログ _log_error / _recent_errors")
     import tempfile
     import pathlib

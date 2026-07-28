@@ -2201,6 +2201,23 @@ HF_GEN_MODELS = {
 }
 
 
+# 直近の投入で実際にモデルへ渡されたプロンプト（依頼とのズレを検知するため）
+_last_submitted = {"prompt": ""}
+
+
+def _prompt_drifted(requested, submitted):
+    """依頼したプロンプトと、実際に渡されたプロンプトが別物になっていないか。
+    語がほとんど共通しないなら差し替えが起きたと判断する。"""
+    if not submitted or not requested:
+        return False
+    def words(t):
+        return {w for w in re.findall(r"[A-Za-z]{4,}", t.lower())}
+    a, b = words(requested), words(submitted)
+    if len(a) < 3:
+        return False
+    return len(a & b) / len(a) < 0.3
+
+
 async def _mcp_generate_submit(request, model, media_type, refs, aspect_ratio=None):
     """Higgsfield MCP経由で生成ジョブを投入（完了は待たない）。
     model=None なら models_explore(recommend) で最適モデルを自動選定させる。
@@ -2219,6 +2236,8 @@ async def _mcp_generate_submit(request, model, media_type, refs, aspect_ratio=No
             "・モデルは自動選定: まず models_explore(action='recommend', "
             f"query='{request[:120]}', type='{media_type}', input='{'image' if refs else 'text'}') "
             "を呼び、返ってきた候補から目的に最適な1つを選ぶこと。\n"
+            "・実写・写真的な内容なら、ベクター/イラスト/ポスター特化のモデル"
+            "（recraft 等）は選ばない。人物や現実の情景はフォトリアル系を選ぶこと。\n"
         )
     ar_line = (
         f"・アスペクト比は必ず {aspect_ratio} にする（generate_{media_type} の aspect_ratio "
@@ -2228,13 +2247,18 @@ async def _mcp_generate_submit(request, model, media_type, refs, aspect_ratio=No
     task = (
         f"Higgsfield の MCP で{kind}の生成ジョブを投入して。入力: {ref_ctx}。\n"
         + model_line + ar_line +
-        f"・内容（プロンプト）: {request[:400]}"
+        # プロンプトの改変を禁止する。以前、要約・言い換え・モデルのサンプル文への
+        # すり替えが起きて『全然違う生成物』が出たため、逐語で渡すことを明示する。
+        "・【最重要】次のプロンプトを**一字一句そのまま** prompt パラメータに渡すこと。"
+        "要約・言い換え・翻訳・追記・モデルのサンプル文への差し替えは全て禁止。\n"
+        f"・プロンプト（逐語で使う）:\n<<<PROMPT\n{request[:1200]}\nPROMPT>>>"
         + (ref_lines + "\n参照メディアは media_import_url 等で取り込み、"
            "start_image / image_references / video_references 等の適切なroleで渡す。"
            if refs else "\n") +
         "選んだモデルで generate_" + media_type + " を呼びジョブを投入（完了は待たない）。"
-        "出力は2行だけ: 1行目『MODEL: <実際に使ったモデルID>』、"
-        "2行目は投入成功なら『SUBMITTED』、失敗なら『ERROR: 理由』。"
+        "出力は3行だけ: 1行目『MODEL: <実際に使ったモデルID>』、"
+        "2行目『PROMPT: <実際にpromptパラメータへ渡した文字列>』、"
+        "3行目は投入成功なら『SUBMITTED』、失敗なら『ERROR: 理由』。"
     )
     out = await _run_claude_exec(task, timeout=600)
     print(f"[gen_mcp] 投入結果末尾: {(out or '')[-400:]}")
@@ -2245,6 +2269,12 @@ async def _mcp_generate_submit(request, model, media_type, refs, aspect_ratio=No
         raise RuntimeError(out.strip().splitlines()[-1][:300])
     m = re.search(r"MODEL:\s*([\w\-./]+)", out, re.I)
     chosen = m.group(1) if m else model
+    # 実際にモデルへ渡されたプロンプトを記録。依頼と食い違っていれば
+    # 「モデルが悪い」のか「プロンプトが差し替えられた」のかが即分かる。
+    pm = re.search(r"^PROMPT:\s*(.+)$", out, re.I | re.M)
+    _last_submitted["prompt"] = (pm.group(1).strip() if pm else "")
+    if pm:
+        print(f"[gen_mcp] 実際のプロンプト: {pm.group(1)[:200]}")
     return (_extract_video_url(out) or True), chosen
 
 
@@ -2348,6 +2378,14 @@ async def _run_hf_generate(message, request, model, media_type, label,
         return
     # 「もう一回作り直して」で引き継げるよう、今回のプロンプトを保存
     _save_last_gen(cid, request, media_type, aspect_ratio, label)
+    # 依頼と実際に渡されたプロンプトが別物なら、黙って進めず知らせる
+    if _prompt_drifted(request, _last_submitted.get("prompt")):
+        await send_as(
+            orch, cid,
+            "⚠️ 依頼と違うプロンプトで投入された可能性があります。\n"
+            f"依頼: {request[:150]}\n実際: {_last_submitted['prompt'][:150]}\n"
+            "出来上がりが違っていたら「作り直して」と送ってください。"
+        )
     disp = label if model else f"自動選定: {chosen or '？'}"
     if isinstance(result, str):  # 投入中に既にURLが返った
         _clear_motion_job()
@@ -2510,6 +2548,12 @@ async def _run_revise(message, instruction):
         add_history(cid, "Orchestrator", "（修正プランが却下されたため作り直しを中止した）")
         return
     add_history(cid, "Orchestrator", f"（修正プラン承認→作り直し開始: {', '.join(changes)[:200]}）")
+    if media_type == "image":
+        # 画像は元と同じ経路（Gemini無料枠）で作り直す。
+        # Higgsfieldに回すとクレジットを使う上、別系統のモデルが選ばれて
+        # 作風がまるごと変わってしまうため。
+        await _handle_image_request(cid, new_prompt, refine=False)
+        return
     await _run_hf_generate(
         message, new_prompt, None, media_type,
         "作り直し", aspect_ratio=aspect_ratio, refine=False,
