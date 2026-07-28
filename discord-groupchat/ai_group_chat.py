@@ -1466,6 +1466,27 @@ async def _describe_media_url(url, channel=None):
     return text or ""
 
 
+async def _reply_context(message):
+    """返信（リプライ）先のメッセージ本文・添付・URLを文脈として取り出す。
+    Discordの「返信」は、どの発言について話しているかの最も明確な指定なので、
+    本文だけでなく画像/動画のURLも拾って、その中身を読めるようにする。"""
+    ref = getattr(message, "reference", None)
+    if not ref:
+        return ""
+    src = getattr(ref, "resolved", None)
+    if getattr(src, "content", None) is None:      # 未解決 or 削除済み
+        try:
+            src = await message.channel.fetch_message(ref.message_id)
+        except Exception as e:  # noqa: BLE001
+            print(f"[reply] 返信先を取得できません: {str(e)[:120]}")
+            return ""
+    who = getattr(getattr(src, "author", None), "display_name", "誰か")
+    parts = [(src.content or "").strip()]
+    parts += [a.url for a in getattr(src, "attachments", []) or []]
+    body = "\n".join(p for p in parts if p)
+    return f"\n\n【返信先の発言（{who}）】\n{body}" if body else ""
+
+
 async def _apply_media_url_context(message, content, cid):
     """発言中の画像/動画URLをGeminiに見せて内容を文脈に足す。
     URLが無くても『これどこ？』のように直前の生成物を指していれば、
@@ -1475,11 +1496,15 @@ async def _apply_media_url_context(message, content, cid):
     urls = _MEDIA_URL_RE.findall(content or "")
     if not urls:
         lg = _load_last_gen(cid) or {}
-        url = lg.get("url")
-        recent = url and time.time() - lg.get("t", 0) < 7200
-        if (recent and not message.attachments
+        url = lg.get("url") or ""
+        # 「この画像/この動画」と明示していれば1日前まで遡る。
+        # 「ここ/どこ」だけの曖昧な指定は直近2時間に限る（誤読み込みの防止）
+        explicit = re.search("この画像|この写真|この動画|さっきの|作った", content or "")
+        limit = 86400 if explicit else 7200
+        if (url and time.time() - lg.get("t", 0) < limit
+                and not message.attachments
                 and _VISUAL_REF_RE.search(content or "")
-                and _MEDIA_URL_RE.match(url or "")):
+                and _MEDIA_URL_RE.match(url)):
             urls = [url]
     if not urls:
         return content
@@ -4271,10 +4296,13 @@ async def _dispatch_message(message):
             # 添付だけの投稿＝共有。制作パイプライン等の誤発動を防ぐ目印を付ける
             content = "（ファイル共有）" + content
 
+    # 返信（リプライ）先の発言も文脈に合併（どれについての話かの最も明確な指定）
+    content += await _reply_context(message)
+
     # YouTubeリンクが貼られていたら、Geminiが動画を視聴して内容を文脈に合併
     content, yt_bare_link = await _apply_youtube_context(message, content)
 
-    # 画像/動画のURL（自分が生成したものを含む）も中身を見て文脈に合併
+    # 画像/動画のURL（返信先や自分が生成したものを含む）も中身を見て文脈に合併
     content = await _apply_media_url_context(message, content, cid)
 
     add_history(cid, message.author.display_name, content)

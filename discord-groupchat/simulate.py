@@ -91,6 +91,7 @@ import ai_group_chat as bot  # noqa: E402
 _HANDLE_ORCH = bot._handle_orchestrator
 _EXTRACT_ATT = bot.extract_attachment_context
 _MEDIA_CTX = bot._apply_media_url_context
+_REPLY_CTX = bot._reply_context
 
 
 # ---- ダミーのDiscordオブジェクト ----
@@ -135,12 +136,22 @@ class _FakeAttachment:
 
 
 class _FakeMessage:
-    def __init__(self, content, attachments=None, uid=1, name="kohei"):
+    def __init__(self, content, attachments=None, uid=1, name="kohei",
+                 reference=None):
         self.content = content
         self.attachments = attachments or []
         self.author = _FakeUser(uid, name)
         self.channel = _channel(1234)
         self.mentions = []
+        if reference is not None:
+            self.reference = reference
+
+
+def _reply_to(text, attachments=None, name="Orchestrator"):
+    """「この発言に返信した」状態を作る（reference.resolved 相当）。"""
+    src = types.SimpleNamespace(
+        content=text, attachments=attachments or [], author=_FakeUser(999, name))
+    return types.SimpleNamespace(resolved=src, message_id=42)
 
 
 # ---- 記録用にハンドラを差し替え ----
@@ -547,6 +558,47 @@ async def run():
     bot._load_last_gen = lambda cid: None
     out = await _MEDIA_CTX(_FakeMessage("どこですかここは"), "どこですかここは", 1234)
     check("生成物が無ければそのまま", out == "どこですかここは", out[:80])
+
+    # ===== ③-d 返信（リプライ）を文脈として読む =====
+    print("■ E2E: リプライの文脈")
+    install_stubs()
+    ref = _reply_to("✅ できました！\n" + IMG)
+    ctx = await _REPLY_CTX(_FakeMessage("どこですか？", reference=ref))
+    check("返信先の本文を取り込む", "できました" in ctx and IMG in ctx, ctx[:120])
+    check("返信先の発言者がわかる", "Orchestrator" in ctx, ctx[:120])
+
+    ctx = await _REPLY_CTX(_FakeMessage("ふつうの発言"))
+    check("返信でなければ空", ctx == "", repr(ctx))
+
+    # 返信先に添付がある場合はURLも拾う
+    ref2 = _reply_to("これどう？", [_FakeAttachment("photo.png")])
+    ctx = await _REPLY_CTX(_FakeMessage("どこ？", reference=ref2))
+    check("返信先の添付URLも拾う", "photo.png" in ctx, ctx[:120])
+
+    # 返信先の画像URL → 中身まで読める（今回の不具合の本命経路）
+    install_stubs()
+    bot._apply_media_url_context = _MEDIA_CTX
+    bot._download_file = _dl_ok
+    bot._gemini_analyze_media_sync = _fake_analyze2
+    bot._media_ctx_cache.clear()
+    bot._load_last_gen = lambda cid: None      # 直前生成の記録が無くても効くこと
+    body = "どこですか？" + await _REPLY_CTX(_FakeMessage("どこですか？", reference=ref))
+    out = await _MEDIA_CTX(_FakeMessage("どこですか？", reference=ref), body, 1234)
+    check("返信先の画像を読む", "石造りの大きな門" in out, out[:150])
+
+    # 「この画像」と明示すれば古い生成物でも読む（曖昧な指定は直近のみ）
+    install_stubs()
+    bot._apply_media_url_context = _MEDIA_CTX
+    bot._download_file = _dl_ok
+    bot._gemini_analyze_media_sync = _fake_analyze2
+    bot._media_ctx_cache.clear()
+    old = {"prompt": "gate", "media_type": "image", "label": "自動選定",
+           "url": IMG, "t": bot.time.time() - 10800}   # 3時間前
+    bot._load_last_gen = lambda cid: old
+    out = await _MEDIA_CTX(_FakeMessage("この画像どこ？"), "この画像どこ？", 1234)
+    check("明示なら3時間前でも読む", "石造りの大きな門" in out, out[:150])
+    out = await _MEDIA_CTX(_FakeMessage("ここどこ？"), "ここどこ？", 1234)
+    check("曖昧な指定＋古い生成物は読まない", "石造り" not in out, out[:150])
 
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
