@@ -100,6 +100,30 @@ state = {"running": False, "stop": False}
 _BASE = os.path.dirname(os.path.abspath(__file__))
 HISTORY_DIR = Path(os.getenv("HISTORY_DIR", os.path.join(_BASE, "history")))
 HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _read_json(path, default=None):
+    """JSONファイルを読む（無い/壊れていれば default）。記録系の共通入口。"""
+    try:
+        if Path(path).exists():
+            return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        print(f"[json] 読込失敗 {Path(path).name}: {str(e)[:120]}")
+    return {} if default is None else default
+
+
+def _write_json(path, data, tag="json"):
+    """JSONファイルを書く（失敗しても落とさない）。記録系の共通出口。"""
+    try:
+        Path(path).write_text(
+            json.dumps(data, ensure_ascii=False), encoding="utf-8"
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[{tag}] 保存失敗: {str(e)[:120]}")
+        return False
+
+
 SUMMARY_SPEAKER = "📝これまでの経緯"  # 履歴リスト先頭に置く長期記憶エントリの名前
 SUMMARIZE_BATCH = int(os.getenv("SUMMARIZE_BATCH", "12"))  # この件数たまったら要約
 SUMMARY_MAX_CHARS = 4000
@@ -715,40 +739,9 @@ async def _gemini_recovery_loop():
                 print(f"[gemini_watch] 復活通知の送信失敗: {e}")
 
 
-def _gen_sync(model, prompt):
-    return gemini_client.models.generate_content(model=model, contents=prompt).text
-
-
-async def _gemini_call(prompt):
-    """モデルをローテーション（毎回開始位置をずらす）しつつ、枠切れはクールダウンで
-    一時スキップ。時間が経てば自動的に再挑戦＝枠が復活したらまた使う。"""
-    now = time.time()
-    n = len(GEMINI_MODELS)
-    if n == 0:
-        raise RuntimeError("GEMINI_MODELS が空です")
-    start = _gemini_rr["i"]
-    _gemini_rr["i"] = (start + 1) % n  # 次回は次のモデルから開始（負荷分散）
-    order = [GEMINI_MODELS[(start + k) % n] for k in range(n)]
-
-    last_err = None
-    for model in order:
-        if _gemini_cooldown.get(model, 0) > now:
-            continue  # クールダウン中はスキップ（期限が来たら自動で対象に戻る）
-        for attempt in range(2):
-            try:
-                return await asyncio.to_thread(_gen_sync, model, prompt)
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-                per_day = "PerDay" in str(e) or "PerProjectPerModel" in str(e)
-                # 分あたり制限（日次でない）なら、同モデルで一度だけ待って再試行
-                if _is_quota_error(e) and not per_day and attempt == 0:
-                    await asyncio.sleep(_retry_delay(e))
-                    continue
-                # 日次枠切れ or その他エラー → 一定時間このモデルを避ける（後で自動復帰）
-                if per_day or not _is_quota_error(e):
-                    _gemini_cooldown[model] = time.time() + GEMINI_COOLDOWN_SEC
-                break
-    raise last_err or RuntimeError("Geminiの利用可能なモデルがありません（一時的にClaude中心）")
+async def _gemini_call(prompt, tag="gemini"):
+    """テキスト生成（非同期）。実装は _gemini_contents_sync に集約。"""
+    return await asyncio.to_thread(_gemini_contents_sync, [prompt], tag)
 
 
 async def ask_gemini(history):
@@ -871,6 +864,16 @@ SUPPORTED_DOC_TYPES = {".pdf"}
 SUPPORTED_TEXT_TYPES = {".txt", ".md", ".csv", ".log", ".json", ".py", ".js", ".html"}
 TEXT_ATTACHMENT_MAX_CHARS = int(os.getenv("TEXT_ATTACHMENT_MAX_CHARS", "12000"))
 
+
+def _find_attachment(message, exts):
+    """添付から指定した種類（拡張子の集合）の最初の1件を返す。無ければ None。"""
+    return next(
+        (a for a in message.attachments
+         if Path(a.filename).suffix.lower() in exts),
+        None,
+    )
+
+
 # 一時画像ファイル保存先
 TEMP_IMAGE_DIR = Path(os.getenv("TEMP_IMAGE_DIR", "/tmp/discord_images"))
 TEMP_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -919,11 +922,7 @@ GEN_SETTINGS_FILE = HISTORY_DIR / "gen_settings.json"
 
 def _load_gen_settings():
     d = {"image_engine": IMAGE_GEN_ENGINE, "image_app": None, "video_app": None}
-    try:
-        if GEN_SETTINGS_FILE.exists():
-            d.update(json.loads(GEN_SETTINGS_FILE.read_text(encoding="utf-8")))
-    except Exception as e:  # noqa: BLE001
-        print(f"[gen_settings] 読込失敗: {e}")
+    d.update(_read_json(GEN_SETTINGS_FILE))
     return d
 
 
@@ -931,12 +930,7 @@ gen_settings = _load_gen_settings()
 
 
 def _save_gen_settings():
-    try:
-        GEN_SETTINGS_FILE.write_text(
-            json.dumps(gen_settings, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
-    except Exception as e:  # noqa: BLE001
-        print(f"[gen_settings] 保存失敗: {e}")
+    _write_json(GEN_SETTINGS_FILE, gen_settings, "gen_settings")
 
 
 # モデル名の呼び名 → 設定。target: video(Higgsfield動画) / image_hf(Higgsfield画像) /
@@ -1046,32 +1040,46 @@ def _make_media_part(data, mime_type):
 
 
 def _gemini_contents_sync(contents, tag):
-    """Gemini API に contents（Part/テキストの混在リスト）を渡して応答を得る。
-    テキスト版 _gemini_call と同じく、無料枠切れモデルはクールダウンして
-    次のモデルへ自動ローテーションする。
-    全モデル失敗時は例外を握りつぶさず送出する（無料枠切れは GeminiQuotaExceeded）。
-    呼び出し側はこれを捕まえてフォールバック（メタ情報分析 / Claude切替）する。"""
+    """Gemini 呼び出しの唯一の実装（テキストもメディアもここを通る）。
+    contents は Part/テキストの混在リスト。無料枠の扱いは全てここに集約:
+      ・枠切れモデルはクールダウンして次のモデルへローテーション（時間で自動復帰）
+      ・毎回ちがうモデルから始めて負荷を分散
+      ・分あたり制限なら少し待って同じモデルで1度だけ再挑戦
+    全モデル失敗時は握りつぶさず送出（無料枠切れは GeminiQuotaExceeded）。
+    ※以前はテキスト用とメディア用に同じ処理が2つあり、方針が食い違っていた。"""
+    n = len(GEMINI_MODELS)
+    if n == 0:
+        raise RuntimeError("GEMINI_MODELS が空です")
+    start = _gemini_rr["i"]
+    _gemini_rr["i"] = (start + 1) % n
+    order = [GEMINI_MODELS[(start + k) % n] for k in range(n)]
+
     now = time.time()
     last_err = None
     tried = False
-    for model in GEMINI_MODELS:
+    for model in order:
         if _gemini_cooldown.get(model, 0) > now:
             continue  # 枠切れクールダウン中は次のモデルへ
         tried = True
-        try:
-            resp = gemini_client.models.generate_content(model=model, contents=contents)
-            text = (resp.text or "").strip()
-            if text:
-                print(f"[{tag}] 成功: {model}")
-                return text
-        except Exception as e:
-            last_err = e
-            print(f"[{tag}] {model} 失敗: {str(e)[:200]}")
-            per_day = "PerDay" in str(e) or "PerProjectPerModel" in str(e)
-            if _is_quota_error(e) and per_day:
-                # 日次枠切れ → このモデルをしばらく避ける（自動復帰あり）
-                _gemini_cooldown[model] = time.time() + GEMINI_COOLDOWN_SEC
-            # 枠切れ・その他エラーとも次のモデルで再挑戦
+        for attempt in range(2):
+            try:
+                resp = gemini_client.models.generate_content(model=model, contents=contents)
+                text = (resp.text or "").strip()
+                if text:
+                    print(f"[{tag}] 成功: {model}")
+                    return text
+                break  # 本文が空 → 次のモデルへ
+            except Exception as e:
+                last_err = e
+                print(f"[{tag}] {model} 失敗: {str(e)[:200]}")
+                per_day = "PerDay" in str(e) or "PerProjectPerModel" in str(e)
+                if _is_quota_error(e) and not per_day and attempt == 0:
+                    time.sleep(_retry_delay(e))   # 分あたり制限 → 少し待って再挑戦
+                    continue
+                if per_day or not _is_quota_error(e):
+                    # 日次枠切れ/その他エラー → このモデルをしばらく避ける（自動復帰）
+                    _gemini_cooldown[model] = time.time() + GEMINI_COOLDOWN_SEC
+                break
 
     if last_err and _is_quota_error(last_err):
         raise GeminiQuotaExceeded(
@@ -1094,13 +1102,6 @@ def _gemini_analyze_media_sync(data, mime_type, prompt, tag):
         print(f"[{tag}] Part生成失敗: {str(e)[:200]}")
         return ""
     return _gemini_contents_sync([media_part, prompt], tag)
-
-
-def _gemini_analyze_image_sync(image_data):
-    """Gemini API で画像を分析（OCR・構図・テキスト抽出）。"""
-    return _gemini_analyze_media_sync(
-        image_data, _detect_mime_type(image_data), IMAGE_ANALYSIS_PROMPT, "gemini_analyze_image"
-    )
 
 
 AUDIO_MIME_BY_EXT = {
@@ -1146,170 +1147,90 @@ VIDEO_ANALYSIS_PROMPT = (
 )
 
 
-def _gemini_transcribe_audio_sync(audio_data, ext):
-    """Gemini API で音声を書き起こす。"""
-    mime_type = AUDIO_MIME_BY_EXT.get(ext, "audio/mp3")
-    return _gemini_analyze_media_sync(
-        audio_data, mime_type, AUDIO_TRANSCRIBE_PROMPT, "gemini_transcribe_audio"
-    )
+def _media_spec(ext):
+    """添付の種類ごとの処理仕様を返す。
+    (種別名, MIMEタイプ, 解析プロンプト, ログtag, 見出し, サイズ超過時の助言) """
+    if ext in SUPPORTED_IMAGE_TYPES:
+        return ("画像", None, IMAGE_ANALYSIS_PROMPT, "gemini_analyze_image",
+                "画像", "")   # 画像はMIME自動判定・サイズ上限なし
+    if ext in SUPPORTED_AUDIO_TYPES:
+        return ("音声", AUDIO_MIME_BY_EXT.get(ext, "audio/mp3"),
+                AUDIO_TRANSCRIBE_PROMPT, "audio_transcribe",
+                "音声の書き起こし", "分割して送ってください。")
+    if ext in SUPPORTED_VIDEO_TYPES:
+        return ("動画", VIDEO_MIME_BY_EXT.get(ext, "video/mp4"),
+                VIDEO_ANALYSIS_PROMPT, "gemini_analyze_video",
+                "動画の内容", "短く切り出すか圧縮して送ってください。")
+    if ext in SUPPORTED_DOC_TYPES:
+        return ("PDF", "application/pdf", PDF_ANALYSIS_PROMPT, "gemini_analyze_pdf",
+                "PDFの内容", "分割して送ってください。")
+    return None
 
 
 async def extract_attachment_context(message):
     """メッセージの添付ファイル（画像・音声・動画・PDF・テキスト）を処理してコンテキストを返す。
     画像=OCR＋構図分析 / 音声=書き起こし / 動画=映像＋音声の内容分析 /
-    PDF=全文読み取り（いずれもGemini）/ テキスト系=そのまま読み込み。"""
+    PDF=全文読み取り（いずれもGemini）/ テキスト系=そのまま読み込み。
+    ※種類ごとに同じ処理（サイズ確認→DL→Gemini解析→整形）を4回書いていたのを
+      仕様テーブル + 共通ループに集約した。"""
     if not message.attachments:
         return ""
 
     contexts = []
-
     for att in message.attachments:
         filename = att.filename
         ext = Path(filename).suffix.lower()
-        size_mb = att.size / (1024 * 1024)
+        spec = _media_spec(ext)
 
-        # 画像処理（Gemini で OCR・分析）
-        if ext in SUPPORTED_IMAGE_TYPES:
-            file_data = await _download_file(att.url)
-            if file_data:
-                try:
-                    # Gemini で画像を分析
-                    analysis = await asyncio.to_thread(_gemini_analyze_image_sync, file_data)
-                    if analysis:
-                        contexts.append(f"【画像: {filename}】\n{analysis}")
-                    else:
-                        contexts.append(f"【画像: {filename}】\n（分析に失敗しました。テキストで内容を説明してください。）")
-                except asyncio.TimeoutError:
-                    print(f"[image_analysis] タイムアウト: {filename}")
-                    contexts.append(f"【画像 {filename}】\n（分析がタイムアウトしました。テキストで内容を説明してください。）")
-                except GeminiQuotaExceeded as e:
-                    print(f"[image_analysis] 枠切れ: {filename}")
-                    contexts.append(f"【画像 {filename}】\n（{e}）")
-                except Exception as e:
-                    print(f"[image_analysis] 失敗: {filename}: {str(e)[:100]}")
-                    contexts.append(f"【画像 {filename}】\n（分析エラー。テキストで内容を説明してください。）")
-            else:
-                contexts.append(f"【画像 {filename}】\n（ダウンロード失敗。テキストで内容を説明してください。）")
-
-        # 音声処理（Gemini で書き起こし）
-        elif ext in SUPPORTED_AUDIO_TYPES:
-            if att.size > MAX_ATTACHMENT_SIZE:
+        if spec:
+            kind, mime, prompt, tag, head, advice = spec
+            if kind != "画像" and att.size > MAX_ATTACHMENT_SIZE:
                 contexts.append(
-                    f"【音声 {filename} (約{size_mb:.1f}MB)】\n"
-                    "（20MBを超えるため書き起こしできません。分割して送ってください。）"
+                    f"【{kind} {filename} (約{att.size / 1048576:.1f}MB)】\n"
+                    f"（20MBを超えるため読み取れません。{advice}）"
                 )
                 continue
-            file_data = await _download_file(att.url)
-            if file_data:
-                try:
-                    async with message.channel.typing():
-                        transcript = await asyncio.to_thread(
-                            _gemini_transcribe_audio_sync, file_data, ext
-                        )
-                    if transcript:
-                        contexts.append(f"【音声の書き起こし: {filename}】\n{transcript}")
-                        # 書き起こし本文をチャンネルにも投稿（長文はチャンク分割）
-                        full = f"📝 **{filename} の書き起こし**\n{transcript}"
-                        for i in range(0, len(full), 1900):
-                            await message.channel.send(full[i:i + 1900])
-                    else:
-                        contexts.append(f"【音声 {filename}】\n（書き起こしに失敗しました。）")
-                except GeminiQuotaExceeded as e:
-                    print(f"[audio_transcribe] 枠切れ: {filename}")
-                    contexts.append(f"【音声 {filename}】\n（{e}）")
+            data = await _download_file(att.url)
+            if not data:
+                contexts.append(f"【{kind} {filename}】\n（ダウンロード失敗。）")
+                continue
+            try:
+                async with message.channel.typing():
+                    analysis = await asyncio.to_thread(
+                        _gemini_analyze_media_sync, data,
+                        mime or _detect_mime_type(data), prompt, tag,
+                    )
+                if not analysis:
+                    contexts.append(f"【{kind} {filename}】\n（内容の読み取りに失敗しました。）")
+                    continue
+                contexts.append(f"【{head}: {filename}】\n{analysis}")
+                if kind == "音声":   # 書き起こしは本文もチャンネルに出す
+                    await send_long(message.channel, analysis,
+                                    f"📝 **{filename} の書き起こし**\n")
+            except GeminiQuotaExceeded as e:
+                print(f"[{tag}] 枠切れ: {filename}")
+                contexts.append(f"【{kind} {filename}】\n（{e}）")
+                if kind == "音声":
                     await message.channel.send(f"⚠️ 書き起こしできませんでした: {e}")
-                except Exception as e:
-                    print(f"[audio_transcribe] 失敗: {filename}: {str(e)[:100]}")
-                    contexts.append(f"【音声 {filename}】\n（書き起こしエラー。）")
-            else:
-                contexts.append(f"【音声 {filename}】\n（ダウンロード失敗。）")
+            except Exception as e:  # noqa: BLE001
+                print(f"[{tag}] 失敗: {filename}: {str(e)[:100]}")
+                contexts.append(f"【{kind} {filename}】\n（分析エラー。テキストで内容を説明してください。）")
 
-        # 動画処理（Gemini で映像＋音声を分析）
-        elif ext in SUPPORTED_VIDEO_TYPES:
-            if att.size > MAX_ATTACHMENT_SIZE:
-                contexts.append(
-                    f"【動画 {filename} (約{size_mb:.1f}MB)】\n"
-                    "（20MBを超えるため内容を読み取れません。短く切り出すか圧縮して送ってください。）"
-                )
-                continue
-            file_data = await _download_file(att.url)
-            if file_data:
-                try:
-                    async with message.channel.typing():
-                        analysis = await asyncio.to_thread(
-                            _gemini_analyze_media_sync,
-                            file_data,
-                            VIDEO_MIME_BY_EXT.get(ext, "video/mp4"),
-                            VIDEO_ANALYSIS_PROMPT,
-                            "gemini_analyze_video",
-                        )
-                    if analysis:
-                        contexts.append(f"【動画の内容: {filename}】\n{analysis}")
-                    else:
-                        contexts.append(f"【動画 {filename}】\n（内容の読み取りに失敗しました。）")
-                except GeminiQuotaExceeded as e:
-                    print(f"[video_analysis] 枠切れ: {filename}")
-                    contexts.append(f"【動画 {filename}】\n（{e}）")
-                except Exception as e:
-                    print(f"[video_analysis] 失敗: {filename}: {str(e)[:100]}")
-                    contexts.append(f"【動画 {filename}】\n（分析エラー。）")
-            else:
-                contexts.append(f"【動画 {filename}】\n（ダウンロード失敗。）")
-
-        # PDF処理（Gemini で全文読み取り）
-        elif ext in SUPPORTED_DOC_TYPES:
-            if att.size > MAX_ATTACHMENT_SIZE:
-                contexts.append(
-                    f"【PDF {filename} (約{size_mb:.1f}MB)】\n"
-                    "（20MBを超えるため読み取れません。分割して送ってください。）"
-                )
-                continue
-            file_data = await _download_file(att.url)
-            if file_data:
-                try:
-                    async with message.channel.typing():
-                        analysis = await asyncio.to_thread(
-                            _gemini_analyze_media_sync,
-                            file_data,
-                            "application/pdf",
-                            PDF_ANALYSIS_PROMPT,
-                            "gemini_analyze_pdf",
-                        )
-                    if analysis:
-                        contexts.append(f"【PDFの内容: {filename}】\n{analysis}")
-                    else:
-                        contexts.append(f"【PDF {filename}】\n（読み取りに失敗しました。）")
-                except GeminiQuotaExceeded as e:
-                    print(f"[pdf_analysis] 枠切れ: {filename}")
-                    contexts.append(f"【PDF {filename}】\n（{e}）")
-                except Exception as e:
-                    print(f"[pdf_analysis] 失敗: {filename}: {str(e)[:100]}")
-                    contexts.append(f"【PDF {filename}】\n（分析エラー。）")
-            else:
-                contexts.append(f"【PDF {filename}】\n（ダウンロード失敗。）")
-
-        # テキスト系ファイル（そのまま読み込み）
         elif ext in SUPPORTED_TEXT_TYPES:
-            file_data = await _download_file(att.url)
-            if file_data:
-                try:
-                    text = file_data.decode("utf-8", errors="replace")
-                    if len(text) > TEXT_ATTACHMENT_MAX_CHARS:
-                        text = text[:TEXT_ATTACHMENT_MAX_CHARS] + "\n…（以下省略）"
-                    contexts.append(f"【ファイルの内容: {filename}】\n{text}")
-                except Exception as e:
-                    print(f"[text_attachment] 失敗: {filename}: {str(e)[:100]}")
-                    contexts.append(f"【ファイル {filename}】\n（読み込みエラー。）")
-            else:
+            data = await _download_file(att.url)
+            if not data:
                 contexts.append(f"【ファイル {filename}】\n（ダウンロード失敗。）")
+                continue
+            text = data.decode("utf-8", errors="replace")
+            if len(text) > TEXT_ATTACHMENT_MAX_CHARS:
+                text = text[:TEXT_ATTACHMENT_MAX_CHARS] + "\n…（以下省略）"
+            contexts.append(f"【ファイルの内容: {filename}】\n{text}")
 
-        # その他（スキップ）
         else:
             contexts.append(f"【ファイル: {filename}】")
 
     if not contexts:
         return ""
-
     return "\n\n【メッセージに添付されたファイル】\n" + "\n".join(contexts)
 
 
@@ -1541,9 +1462,7 @@ async def _apply_youtube_context(message, content):
     bare_link = bool(summaries) and not text_wo_urls and not message.attachments
     if bare_link:
         for url, summary in summaries:
-            full = f"📺 **動画の内容まとめ**\n{summary}"
-            for i in range(0, len(full), 1900):
-                await message.channel.send(full[i:i + 1900])
+            await send_long(message.channel, summary, "📺 **動画の内容まとめ**\n")
     return content, bare_link
 
 
@@ -1687,8 +1606,7 @@ async def _run_trend_study(cid, query=None):
         )
     elif quota_hit:
         text += "\n\n（本日はGemini無料枠切れのためメタ情報ベースの分析です）"
-    for i in range(0, len(text), 1900):
-        await channel.send(text[i:i + 1900])
+    await send_long(channel, text)
     add_history(cid, "🎬映像リサーチ", f"（YouTube{label}リサーチ {today}）\n{digest}")
 
 
@@ -2002,25 +1920,14 @@ _MOTION_JOB_FILE = HISTORY_DIR / "pending_motion.json"
 
 def _save_motion_job(cid, request, model="kling3_0_motion_control",
                      media_type="video", label="モーション動画"):
-    try:
-        _MOTION_JOB_FILE.write_text(
-            json.dumps({"cid": cid, "submitted_at": time.time(),
-                        "request": request[:200], "model": model,
-                        "media_type": media_type, "label": label},
-                       ensure_ascii=False),
-            encoding="utf-8",
-        )
-    except Exception as e:  # noqa: BLE001
-        print(f"[gen] ジョブ記録の保存失敗: {e}")
+    _write_json(_MOTION_JOB_FILE,
+                {"cid": cid, "submitted_at": time.time(),
+                 "request": request[:200], "model": model,
+                 "media_type": media_type, "label": label}, "gen")
 
 
 def _load_motion_job():
-    try:
-        if _MOTION_JOB_FILE.exists():
-            return json.loads(_MOTION_JOB_FILE.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        pass
-    return None
+    return _read_json(_MOTION_JOB_FILE) or None
 
 
 def _clear_motion_job():
@@ -2311,40 +2218,25 @@ _LASTGEN_FILE = HISTORY_DIR / "last_gen.json"
 
 
 def _save_last_gen(cid, prompt, media_type, aspect_ratio, label):
-    try:
-        data = {}
-        if _LASTGEN_FILE.exists():
-            data = json.loads(_LASTGEN_FILE.read_text(encoding="utf-8"))
-        data[str(cid)] = {"prompt": prompt, "media_type": media_type,
-                          "aspect_ratio": aspect_ratio, "label": label,
-                          "t": time.time()}
-        _LASTGEN_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    except Exception as e:  # noqa: BLE001
-        print(f"[lastgen] 保存失敗: {e}")
+    data = _read_json(_LASTGEN_FILE)
+    data[str(cid)] = {"prompt": prompt, "media_type": media_type,
+                      "aspect_ratio": aspect_ratio, "label": label,
+                      "t": time.time()}
+    _write_json(_LASTGEN_FILE, data, "lastgen")
 
 
 def _load_last_gen(cid):
-    try:
-        if _LASTGEN_FILE.exists():
-            return json.loads(_LASTGEN_FILE.read_text(encoding="utf-8")).get(str(cid))
-    except Exception:  # noqa: BLE001
-        pass
-    return None
+    return _read_json(_LASTGEN_FILE).get(str(cid))
 
 
 def _update_last_gen_url(cid, url):
     """完成した動画/画像のURLを直前生成の記録に追記（バズ度分析などで使う）。"""
-    try:
-        data = {}
-        if _LASTGEN_FILE.exists():
-            data = json.loads(_LASTGEN_FILE.read_text(encoding="utf-8"))
-        entry = data.get(str(cid)) or {}
-        entry["url"] = url
-        entry.setdefault("t", time.time())
-        data[str(cid)] = entry
-        _LASTGEN_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    except Exception as e:  # noqa: BLE001
-        print(f"[lastgen] URL追記失敗: {e}")
+    data = _read_json(_LASTGEN_FILE)
+    entry = data.get(str(cid)) or {}
+    entry["url"] = url
+    entry.setdefault("t", time.time())
+    data[str(cid)] = entry
+    _write_json(_LASTGEN_FILE, data, "lastgen")
 
 
 # 「前の生成を修正して作り直す」意図の検出（明確なマーカーのみ）
@@ -2876,11 +2768,7 @@ async def _run_motion_control(message, request, ref_att):
     video_url = ref_att.url
 
     # キャラクター画像を決める
-    img_att = next(
-        (a for a in message.attachments
-         if Path(a.filename).suffix.lower() in SUPPORTED_IMAGE_TYPES),
-        None,
-    )
+    img_att = _find_attachment(message, SUPPORTED_IMAGE_TYPES)
     if img_att:
         image_url = img_att.url
         await send_as(orch, cid, "🎭 添付画像のキャラクターに、参照動画の動きを転写します…")
@@ -3253,8 +3141,7 @@ async def _handle_orchestrator(message, cid):
     if kind == "profile":
         p = _load_profiles()
         if p:
-            for i in range(0, len(p), 1900):
-                await message.channel.send(("🧠 " if i == 0 else "") + p[i:i + 1900])
+            await send_long(message.channel, p, "🧠 ")
         else:
             await message.channel.send(
                 "まだプロファイルはありません（会話がたまると自動で作られます）。"
@@ -3282,6 +3169,13 @@ async def _handle_orchestrator(message, cid):
 
 
 # ---------- 送信・進行 ----------
+async def send_long(channel, text, prefix=""):
+    """長文をDiscordの上限に合わせて分割送信する（先頭だけ prefix を付ける）。"""
+    text = text or ""
+    for i in range(0, max(len(text), 1), 1900):
+        await channel.send((prefix if i == 0 else "") + text[i:i + 1900])
+
+
 async def send_as(bot, channel_id, text, view=None):
     channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
     kwargs = {"view": view} if view is not None else {}
@@ -4007,6 +3901,99 @@ async def on_message(message):
             pass
 
 
+# ---------- !コマンド（表引き。各実装は (message, cid, 引数) を受ける）----------
+async def _cmd_project(message, cid, arg):
+    if not arg:
+        await message.channel.send("使い方: !project お題（例: !project 犬が主役の30秒CM）")
+        return
+    if projects.get(cid):
+        await message.channel.send("進行中のプロジェクトがあります。!cancel で中止できます。")
+        return
+    _spawn(pipeline_start(cid, arg), cid, "映像プロジェクト")
+
+
+async def _cmd_cancel(message, cid, arg):
+    await message.channel.send(
+        "🛑 プロジェクトを中止しました。" if projects.pop(cid, None)
+        else "進行中のプロジェクトはありません。"
+    )
+
+
+async def _cmd_agent(message, cid, arg):
+    if not arg:
+        await message.channel.send(
+            "使い方: !agent やってほしいこと（例: !agent このフォルダのファイル一覧を出して）\n"
+            "※ Claudeがコマンド実行やファイル編集をする前に、[✅許可][❌拒否] ボタンで確認します。"
+        )
+        return
+    await message.channel.send(f"🤖 エージェント開始: {arg}")
+    _spawn(_run_agent_task(cid, arg, message.author.id), cid, "エージェント実行")
+
+
+async def _cmd_profile(message, cid, arg):
+    p = _load_profiles()
+    if p:
+        await send_long(message.channel, p, "🧠 ")
+    else:
+        await message.channel.send(
+            "まだプロファイルはありません（会話がたまると自動で作られます）。"
+        )
+
+
+async def _cmd_trend(message, cid, arg):
+    if not YOUTUBE_API_KEY:
+        await message.channel.send(
+            "YOUTUBE_API_KEY が未設定です。Google Cloud Console で YouTube Data API v3 の"
+            "APIキーを発行し、.env に追加してください（README参照）。"
+        )
+        return
+    _spawn(_run_trend_study(cid, arg or None), cid, "YouTubeリサーチ")
+
+
+async def _cmd_search(message, cid, arg):
+    if not arg:
+        await message.channel.send("使い方: !search 調べたいこと")
+        return
+    async with message.channel.typing():
+        ctx = await web_search_context(arg)
+        if not ctx:
+            await send_as(orch, cid, "🔍 検索結果が取得できませんでした。")
+            return
+        ans = await run_claude_cli(
+            "次のWeb検索結果を根拠に、質問へ日本語で簡潔に答え、参考URLも示す。\n\n"
+            f"質問: {arg}\n\n{ctx}\n\n回答:"
+        )
+        await send_as(orch, cid, ans)
+
+
+async def _cmd_short(message, cid, arg):
+    _spawn(_run_short(message, arg or None), cid, "ショート制作")
+
+
+async def _cmd_talk(message, cid, arg):
+    if state["running"]:
+        await message.channel.send("自動トークが進行中です。!stop で止められます。")
+        return
+    topic = arg or "自由なテーマで雑談"
+    add_history(cid, message.author.display_name, f"（お題）{topic} について話して")
+    await message.channel.send(
+        f"🎙️ お題「{topic}」で ClaudeとGemini が最大 {MAX_TURNS} 発言 話します"
+    )
+    _spawn(run_auto(cid, topic), cid, "自動トーク")
+
+
+_COMMANDS = {
+    "!project": _cmd_project,
+    "!cancel": _cmd_cancel,
+    "!agent": _cmd_agent,
+    "!profile": _cmd_profile,
+    "!trend": _cmd_trend,
+    "!search": _cmd_search,
+    "!short": _cmd_short,
+    "!talk": _cmd_talk,
+}
+
+
 async def _dispatch_message(message):
     content = message.content.strip()
     # テキストまたは添付ファイルがない場合は無視
@@ -4043,99 +4030,19 @@ async def _dispatch_message(message):
     if content == "!restart" or _is_restart_phrase(content):
         await _restart_self(cid)
         return
-    if content.startswith("!project"):
-        topic = content[len("!project"):].strip()
-        if not topic:
-            await message.channel.send("使い方: !project お題（例: !project 犬が主役の30秒CM）")
-            return
-        if projects.get(cid):
-            await message.channel.send("進行中のプロジェクトがあります。!cancel で中止できます。")
-            return
-        _spawn(pipeline_start(cid, topic), cid, "映像プロジェクト")
-        return
-    if content == "!cancel":
-        if projects.pop(cid, None):
-            await message.channel.send("🛑 プロジェクトを中止しました。")
-        else:
-            await message.channel.send("進行中のプロジェクトはありません。")
-        return
-    if content.startswith("!agent"):
-        task = content[len("!agent"):].strip()
-        if not task:
-            await message.channel.send(
-                "使い方: !agent やってほしいこと（例: !agent このフォルダのファイル一覧を出して）\n"
-                "※ Claudeがコマンド実行やファイル編集をする前に、[✅許可][❌拒否] ボタンで確認します。"
-            )
-            return
-        await message.channel.send(f"🤖 エージェント開始: {task}")
-        _spawn(_run_agent_task(cid, task, message.author.id), cid, "エージェント実行")
-        return
-    if content == "!profile":
-        p = _load_profiles()
-        if p:
-            for i in range(0, len(p), 1900):
-                await message.channel.send(("🧠 " if i == 0 else "") + p[i:i + 1900])
-        else:
-            await message.channel.send(
-                "まだプロファイルはありません（会話がたまると自動で作られます）。"
-            )
-        return
-    if content.startswith("!trend"):
-        if not YOUTUBE_API_KEY:
-            await message.channel.send(
-                "YOUTUBE_API_KEY が未設定です。Google Cloud Console で YouTube Data API v3 の"
-                "APIキーを発行し、.env に追加してください（README参照）。"
-            )
-            return
-        topic = content[len("!trend"):].strip()
-        _spawn(_run_trend_study(cid, topic or None), cid, "YouTubeリサーチ")
-        return
-    if content.startswith("!search"):
-        q = content[len("!search"):].strip()
-        if not q:
-            await message.channel.send("使い方: !search 調べたいこと")
-            return
-        async with message.channel.typing():
-            ctx = await web_search_context(q)
-            if not ctx:
-                await send_as(orch, cid, "🔍 検索結果が取得できませんでした。")
-                return
-            ans = await run_claude_cli(
-                "次のWeb検索結果を根拠に、質問へ日本語で簡潔に答え、参考URLも示す。\n\n"
-                f"質問: {q}\n\n{ctx}\n\n回答:"
-            )
-            await send_as(orch, cid, ans)
-        return
-    if content.startswith("!short"):
-        theme = content[len("!short"):].strip()
-        _spawn(_run_short(message, theme or None), cid, "ショート制作")
-        return
-    if content.startswith("!talk"):
-        if state["running"]:
-            await message.channel.send("自動トークが進行中です。!stop で止められます。")
-            return
-        topic = content[len("!talk"):].strip() or "自由なテーマで雑談"
-        add_history(cid, message.author.display_name, f"（お題）{topic} について話して")
-        await message.channel.send(
-            f"🎙️ お題「{topic}」で ClaudeとGemini が最大 {MAX_TURNS} 発言 話します"
-        )
-        _spawn(run_auto(cid, topic), cid, "自動トーク")
+    # !コマンドは表引きで処理（if の羅列をやめ、追加も1行で済むようにした）
+    cmd, _, arg = content.partition(" ")
+    handler = _COMMANDS.get(cmd)
+    if handler:
+        await handler(message, cid, arg.strip())
         return
     if content.startswith("!"):
         return
 
     # ---- 決定的ルーティング（classify_route で判定。テストと同じ関数を使う）----
     _job = _load_motion_job()
-    _video_att = next(
-        (a for a in message.attachments
-         if Path(a.filename).suffix.lower() in SUPPORTED_VIDEO_TYPES),
-        None,
-    ) if message.attachments else None
-    _image_att = next(
-        (a for a in message.attachments
-         if Path(a.filename).suffix.lower() in SUPPORTED_IMAGE_TYPES),
-        None,
-    ) if message.attachments else None
+    _video_att = _find_attachment(message, SUPPORTED_VIDEO_TYPES)
+    _image_att = _find_attachment(message, SUPPORTED_IMAGE_TYPES)
     _lg_rec = _load_last_gen(cid)
     route = classify_route(
         content,
@@ -4199,9 +4106,8 @@ async def _dispatch_message(message):
                 "「これを学習して」と一緒に送ってください。"
             )
         else:
-            full = "🎨 **学習済みスタイル（勝ちパターン集）**\n" + prof
-            for i in range(0, len(full), 1900):
-                await message.channel.send(full[i:i + 1900])
+            await send_long(message.channel, prof,
+                            "🎨 **学習済みスタイル（勝ちパターン集）**\n")
         return
 
     if route == "style_reset":

@@ -89,6 +89,7 @@ import ai_group_chat as bot  # noqa: E402
 # 実物の会話ハンドラ（install_stubs で記録用に差し替わる前に退避）。
 # 「判定＋返事の1回化」など、会話ハンドラ本体の挙動を検証するテストで使う。
 _HANDLE_ORCH = bot._handle_orchestrator
+_EXTRACT_ATT = bot.extract_attachment_context
 
 
 # ---- ダミーのDiscordオブジェクト ----
@@ -234,6 +235,11 @@ async def drive(content, attachments=None, expect=None):
     for _ in range(5):
         await asyncio.sleep(0)
     return {"fired": list(FIRED), "sent": msg.channel.sent, "err": err}
+
+
+async def _dl_ok(url):
+    """添付ダウンロードのスタブ（中身は使わない）。"""
+    return b"data"
 
 
 ok = 0
@@ -444,6 +450,63 @@ async def run():
         check(f"添付 {fn} 例外なし", r["err"] is None, f"例外={r['err']}")
 
     # ===== ④ グローバル例外ガードの動作確認 =====
+    # ===== ③-b 添付ファイルの読み取り（種類ごとの仕様テーブル）=====
+    print("■ E2E: 添付ファイルの内容理解")
+    seen = []
+
+    def _fake_analyze(data, mime, prompt, tag):
+        seen.append((mime, tag))
+        return f"解析結果({tag})"
+
+    install_stubs()
+    bot._download_file = _dl_ok
+    bot._gemini_analyze_media_sync = _fake_analyze
+    msg = _FakeMessage("", [_FakeAttachment("a.png"), _FakeAttachment("b.mp3"),
+                            _FakeAttachment("c.mp4"), _FakeAttachment("d.pdf")])
+    ctx = await _EXTRACT_ATT(msg)
+    check("画像を解析", "解析結果(gemini_analyze_image)" in ctx, ctx[:120])
+    check("音声を書き起こし", "音声の書き起こし: b.mp3" in ctx, ctx[:200])
+    check("動画を解析", "動画の内容: c.mp4" in ctx, ctx[:200])
+    check("PDFを解析", "PDFの内容: d.pdf" in ctx, ctx[:200])
+    check("MIMEが種類ごとに正しい",
+          [m for m, _ in seen][1:] == ["audio/mp3", "video/mp4", "application/pdf"],
+          f"{seen}")
+    check("書き起こしはチャンネルにも投稿",
+          any("書き起こし" in x for x in msg.channel.sent), f"{msg.channel.sent}")
+
+    # サイズ超過・ダウンロード失敗・未対応拡張子
+    install_stubs()
+    bot._download_file = _dl_ok
+    bot._gemini_analyze_media_sync = _fake_analyze
+    big = _FakeAttachment("big.mp4")
+    big.size = 30 * 1024 * 1024
+    ctx = await _EXTRACT_ATT(_FakeMessage("", [big]))
+    check("20MB超は案内を返す", "20MBを超える" in ctx, ctx[:150])
+
+    install_stubs()
+    bot._gemini_analyze_media_sync = _fake_analyze
+
+    async def _dl_ng(url):
+        return None
+    bot._download_file = _dl_ng
+    ctx = await _EXTRACT_ATT(_FakeMessage("", [_FakeAttachment("x.pdf")]))
+    check("DL失敗を報告", "ダウンロード失敗" in ctx, ctx[:150])
+
+    install_stubs()
+    bot._download_file = _dl_ok
+    ctx = await _EXTRACT_ATT(_FakeMessage("", [_FakeAttachment("x.zip")]))
+    check("未対応拡張子でも落ちない", "x.zip" in ctx, ctx[:150])
+
+    # 枠切れ時は握りつぶさず案内する
+    install_stubs()
+    bot._download_file = _dl_ok
+
+    def _quota(*a, **k):
+        raise bot.GeminiQuotaExceeded("枠切れです")
+    bot._gemini_analyze_media_sync = _quota
+    ctx = await _EXTRACT_ATT(_FakeMessage("", [_FakeAttachment("y.pdf")]))
+    check("枠切れを案内", "枠切れです" in ctx, ctx[:150])
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile
