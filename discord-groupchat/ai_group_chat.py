@@ -1423,6 +1423,74 @@ YOUTUBE_CHAT_PROMPT = (
 )
 
 
+# 発言に貼られた画像/動画のURL（生成物のURLを含む）
+_MEDIA_URL_RE = re.compile(
+    r"https?://[^\s<>\"]+?\.(?:png|jpe?g|webp|gif|mp4|mov|webm)(?:\?[^\s<>\"]*)?", re.I
+)
+# 「これ/ここ/どこ」など、直前の生成物そのものについて尋ねている言い回し
+_VISUAL_REF_RE = re.compile(
+    "これ|それ|この画像|この写真|この動画|ここ|どこ|何が|なにが|誰が|だれが|"
+    "写って|映って|背景|場所|建物|風景|人物|色|見える|読める|書いてある"
+)
+_media_ctx_cache = {}   # URL -> (解析結果, 時刻)。同じURLの再解析でGemini枠を使わない
+
+
+async def _describe_media_url(url, channel=None):
+    """画像/動画のURLをGeminiに見せて内容の説明を得る（結果はキャッシュ）。"""
+    hit = _media_ctx_cache.get(url)
+    if hit and time.time() - hit[1] < 86400:
+        return hit[0]
+    ext = re.sub(r"\?.*$", "", url).lower()
+    ext = ext[ext.rfind("."):] if "." in ext else ""
+    spec = _media_spec(ext)
+    if not spec:
+        return ""
+    kind, mime, prompt, tag, _head, _adv = spec
+    data = await _download_file(url)
+    if not data:
+        print(f"[media_url] 取得失敗（サイズ超過/404の可能性）: {url[:80]}")
+        return ""
+    try:
+        text = await asyncio.to_thread(
+            _gemini_analyze_media_sync, data, mime or _detect_mime_type(data), prompt, tag
+        )
+    except GeminiQuotaExceeded as e:
+        if channel:
+            await channel.send(f"⚠️ 画像/動画の内容を読めませんでした: {e}")
+        return ""
+    except Exception as e:  # noqa: BLE001
+        print(f"[media_url] 解析失敗: {str(e)[:150]}")
+        return ""
+    if text:
+        _media_ctx_cache[url] = (text, time.time())
+    return text or ""
+
+
+async def _apply_media_url_context(message, content, cid):
+    """発言中の画像/動画URLをGeminiに見せて内容を文脈に足す。
+    URLが無くても『これどこ？』のように直前の生成物を指していれば、
+    その完成URLを見に行く（生成した画像について質問できるようにするため）。
+    ※Discordの添付は読めていたが、生成物のURLは読んでいなかったため
+      『この画像どこ？』に見当違いの答えを返す不具合が実際に起きた。"""
+    urls = _MEDIA_URL_RE.findall(content or "")
+    if not urls:
+        lg = _load_last_gen(cid) or {}
+        url = lg.get("url")
+        recent = url and time.time() - lg.get("t", 0) < 7200
+        if (recent and not message.attachments
+                and _VISUAL_REF_RE.search(content or "")
+                and _MEDIA_URL_RE.match(url or "")):
+            urls = [url]
+    if not urls:
+        return content
+    async with message.channel.typing():
+        for url in urls[:2]:
+            desc = await _describe_media_url(url, message.channel)
+            if desc:
+                content += f"\n\n【この画像/動画の内容（{url[:80]}）】\n{desc}"
+    return content
+
+
 async def _apply_youtube_context(message, content):
     """メッセージ内のYouTubeリンク（最大2本）をGeminiが視聴し、内容を文脈に合併する。
     返り値: (合併後のcontent, リンクのみの投稿でまとめを投稿済みならTrue)"""
@@ -1680,6 +1748,12 @@ _STATUS_KW_RE = re.compile(
     "あとどれ|どれくらい|どのくらい|どれぐらい|どのぐらい|何分|確認して", re.I
 )
 _STATUS_CTX_RE = re.compile("動画|画像|モーション|生成")
+# 生成物の「中身」についての質問（＝進捗確認ではない）。
+# 例:「どこですかここは」は『動画どこ？』ではなく写っている場所を尋ねている。
+_CONTENT_Q_RE = re.compile(
+    "ここは|ここって|ここが|ここどこ|何が写|誰が写|写って|映って|"
+    "背景|どこの|どこで|場所|建物|風景|何て書|なんて書|読める"
+)
 _GEN_INTENT2_RE = re.compile("作って|作りたい|生成|つくって|animate|動かして|アニメ化")
 _MOTION_KW_RE = re.compile("モーション|この動き|動きで生成|動きを真似|動きをコピー|動きを転写")
 _QUESTION_RE = re.compile(
@@ -1718,6 +1792,7 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     )
     if (not has_attachments and status_kw and status_ctx
             and not re.search("作って|作りたい|つくって|生成して|作成して|描いて|アニメ化", content)
+            and not _CONTENT_Q_RE.search(content)   # 中身への質問は会話へ
             and not _REVISE_RE.search(content)):
         return "status"
     # ①.4 前の生成の作り直し（修正マーカーがあれば発動。記録が無くても
@@ -4198,6 +4273,9 @@ async def _dispatch_message(message):
 
     # YouTubeリンクが貼られていたら、Geminiが動画を視聴して内容を文脈に合併
     content, yt_bare_link = await _apply_youtube_context(message, content)
+
+    # 画像/動画のURL（自分が生成したものを含む）も中身を見て文脈に合併
+    content = await _apply_media_url_context(message, content, cid)
 
     add_history(cid, message.author.display_name, content)
 

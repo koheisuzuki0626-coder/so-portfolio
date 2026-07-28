@@ -90,6 +90,7 @@ import ai_group_chat as bot  # noqa: E402
 # 「判定＋返事の1回化」など、会話ハンドラ本体の挙動を検証するテストで使う。
 _HANDLE_ORCH = bot._handle_orchestrator
 _EXTRACT_ATT = bot.extract_attachment_context
+_MEDIA_CTX = bot._apply_media_url_context
 
 
 # ---- ダミーのDiscordオブジェクト ----
@@ -209,6 +210,10 @@ def install_stubs(mcp_url=None):
     async def _yt(msg, content):
         return content, False
     bot._apply_youtube_context = _yt
+
+    async def _media(msg, content, cid):
+        return content
+    bot._apply_media_url_context = _media
 
     async def _respond(cid, name, b, ask):
         FIRED.append(f"respond:{name}")
@@ -506,6 +511,42 @@ async def run():
     bot._gemini_analyze_media_sync = _quota
     ctx = await _EXTRACT_ATT(_FakeMessage("", [_FakeAttachment("y.pdf")]))
     check("枠切れを案内", "枠切れです" in ctx, ctx[:150])
+
+    # ===== ③-c 画像/動画URLの内容理解（生成物について質問できること）=====
+    print("■ E2E: 画像/動画URLの内容理解")
+    IMG = "https://example.com/a/hf_1234.png"
+
+    def _fake_analyze2(data, mime, prompt, tag):
+        return "石造りの大きな門と塔。熱帯の街並み、ハノイの門に似た建築。"
+
+    install_stubs()
+    bot._apply_media_url_context = _MEDIA_CTX          # 実物に戻す
+    bot._download_file = _dl_ok
+    bot._gemini_analyze_media_sync = _fake_analyze2
+    bot._media_ctx_cache.clear()
+    bot._load_last_gen = lambda cid: {"prompt": "gate", "media_type": "image",
+                                      "label": "自動選定", "url": IMG,
+                                      "t": bot.time.time()}
+    msg = _FakeMessage("どこですかここは")
+    out = await _MEDIA_CTX(msg, "どこですかここは", 1234)
+    check("直前の生成画像を見に行く", "石造りの大きな門" in out, out[:120])
+
+    # 発言に画像URLが直接貼られた場合も読む
+    out = await _MEDIA_CTX(_FakeMessage(IMG), f"これ何？ {IMG}", 1234)
+    check("貼られたURLも読む", "石造りの大きな門" in out, out[:120])
+
+    # 関係ない雑談では見に行かない（Gemini無料枠の節約）
+    out = await _MEDIA_CTX(_FakeMessage("今日は疲れた"), "今日は疲れた", 1234)
+    check("無関係な発言では読まない", "石造り" not in out, out[:120])
+
+    # 画像が無いときは何もしない
+    install_stubs()
+    bot._apply_media_url_context = _MEDIA_CTX
+    bot._download_file = _dl_ok
+    bot._gemini_analyze_media_sync = _fake_analyze2
+    bot._load_last_gen = lambda cid: None
+    out = await _MEDIA_CTX(_FakeMessage("どこですかここは"), "どこですかここは", 1234)
+    check("生成物が無ければそのまま", out == "どこですかここは", out[:80])
 
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()

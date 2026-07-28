@@ -90,6 +90,11 @@ ROUTE_CASES = [
     ("できた？", "plan", {}),
     # 生成・修正の依頼は「ください」等があっても状態確認にしない
     ("猫の動画作ってください", "plan", {"has_last_gen": True}),
+    # 生成物の「中身」への質問は状態確認にせず会話へ（画像の内容を答えるため）
+    ("どこですかここは", "plan", {"has_last_gen": True}),
+    ("この画像どこで撮ったの？", "plan", {"has_last_gen": True}),
+    ("何が写ってるの？", "plan", {"has_last_gen": True}),
+    ("動画どこ？", "status", {"has_job": True}),          # URLの催促は従来どおり
     # 作り直し（明示マーカーがあれば記録の有無に関わらず発動＝Higgsfieldから復元）
     ("もう一回作り直して、顔をアップで", "revise", {"has_last_gen": True}),
     ("さっきの動画もう少し明るくして", "revise", {"has_last_gen": True}),
