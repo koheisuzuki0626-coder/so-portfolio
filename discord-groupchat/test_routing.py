@@ -55,8 +55,13 @@ discord = _stub("discord")
 discord.Intents = _FakeIntents
 discord.Client = _FakeClient
 discord.File = object
+class _FakeView:                       # discord.ui.View 相当（timeout等を受ける）
+    def __init__(self, *a, **k):
+        pass
+
+
 discord.ui = types.SimpleNamespace(
-    View=object, Button=object, button=lambda **k: (lambda f: f)
+    View=_FakeView, Button=object, button=lambda **k: (lambda f: f)
 )
 discord.ButtonStyle = _Anything()
 discord.Interaction = object

@@ -62,6 +62,9 @@ REPLY_CHARS = 400
 SEND_DELAY = 2
 HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "40"))  # プロンプトに入れる直近発言数
 CLAUDE_TIMEOUT = int(os.getenv("CLAUDE_TIMEOUT", "300"))
+# 作業（生成・修正・リサーチ・学習など）の前に、理解した内容とやることを提示して
+# 同意を得る＝反復確認。0 にすると従来どおり即実行する。
+CONFIRM_BEFORE_WORK = os.getenv("CONFIRM_BEFORE_WORK", "1") not in ("0", "false", "False")
 # claude CLI の同時実行を制限（プロファイル学習・要約などのバックグラウンド処理と
 # 会話応答が同時に走ってタイムアウトするのを防ぐ。超過分は順番待ち）
 CLAUDE_CONCURRENCY = int(os.getenv("CLAUDE_CONCURRENCY", "2"))
@@ -3222,16 +3225,21 @@ async def _handle_orchestrator(message, cid):
     if kind == "video":
         # 単発の動画生成は、最適モデルを自動選定して直接生成（滑らかで確実）。
         # 構成案→絵コンテの多段フローが要るときは !project を使う。
-        _spawn(
-            _run_hf_generate(message, _latest_user_msg(history), None, "video", "自動選定"),
-            cid, "動画生成",
-        )
+        _req = _latest_user_msg(history)
+        _gate(message, cid, f"動画の制作（{_req[:50]}）",
+              "内容に合う最適なモデルを自動で選んで動画を生成します",
+              lambda: _run_hf_generate(message, _req, None, "video", "自動選定"),
+              "動画生成", "Higgsfieldのクレジットを消費します")
         return
     if kind == "exec":
         await _start_agent(message, cid, _latest_user_msg(history))
         return
     if kind == "image":
-        _spawn(_handle_image_request(cid, _latest_user_msg(history)), cid, "画像生成")
+        _req = _latest_user_msg(history)
+        _gate(message, cid, f"画像の生成（{_req[:50]}）",
+              "Geminiの無料枠で画像を生成します",
+              lambda: _handle_image_request(cid, _req), "画像生成",
+              "原則無料（Geminiの無料枠）")
         return
     if kind == "selffix":
         _spawn(_run_self_fix(cid, _latest_user_msg(history), message.author.id),
@@ -3250,7 +3258,10 @@ async def _handle_orchestrator(message, cid):
             r"(の)?(トレンド|急上昇|リサーチ|調査|分析|調べて|して|ちょうだい|ください|お願い(します)?|よ|ね)+$",
             "", _latest_user_msg(history).strip(),
         ).strip("　 。、")
-        _spawn(_run_trend_study(cid, topic or None), cid, "YouTubeリサーチ")
+        _gate(message, cid, f"YouTubeのリサーチ（{topic or '急上昇'}）",
+              "人気動画を検索して内容を視聴・分析し、レポートにまとめます",
+              lambda: _run_trend_study(cid, topic or None), "YouTubeリサーチ",
+              "無料（YouTube APIとGeminiの無料枠）")
         return
     if kind == "talk":
         if state["running"]:
@@ -3698,6 +3709,56 @@ async def _run_claude_exec(task, timeout=600):
     if proc.returncode != 0:
         return f"⚠️ 実行に失敗: {(err.decode() or '').strip()[:400]}"
     return out.decode().strip() or "(完了・出力なし)"
+
+
+async def _confirm(message, cid, summary, plan, cost=""):
+    """作業に入る前に『こう理解した／これをやる』を提示して同意を得る（反復確認）。
+    [✅許可] ボタン、または「OK」「はい」などの返信で開始。
+    「やめて」や5分の無反応で中止する。CONFIRM_BEFORE_WORK=0 で無効化できる。"""
+    if not CONFIRM_BEFORE_WORK:
+        return True
+    fut = asyncio.get_running_loop().create_future()
+    owner_id = getattr(message.author, "id", None)
+    _pending_approvals[cid] = (fut, owner_id)
+    try:
+        view = PermissionView(fut, owner_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[confirm] ボタンを作れないため文字承認のみで続行: {str(e)[:120]}")
+        view = None
+    await send_as(
+        orch, cid,
+        "🔎 **確認させてください**\n"
+        f"・ご依頼の理解: {summary}\n"
+        f"・これからやること: {plan}\n"
+        + (f"・コスト: {cost}\n" if cost else "")
+        + "これで進めていいですか？ [✅許可] か「**OK**」で開始します"
+        "（[❌拒否]・「やめて」で中止／5分で自動中止）",
+        view=view,
+    )
+    try:
+        approved = await asyncio.wait_for(fut, timeout=310)
+    except asyncio.TimeoutError:
+        approved = False
+    finally:
+        _pending_approvals.pop(cid, None)
+    if not approved:
+        await send_as(orch, cid, "🛑 やめました。言い直してもらえれば作り直します。")
+        add_history(cid, "Orchestrator", f"（「{summary}」の作業を中止した）")
+    return approved
+
+
+async def _confirm_then(message, cid, summary, plan, factory, cost=""):
+    """確認を取ってから実際の作業を始める。factory は承認後にコルーチンを作る関数
+    （先に作ると中止時に未実行のまま警告が出るため、必ず遅延生成する）。"""
+    if await _confirm(message, cid, summary, plan, cost):
+        await factory()
+
+
+def _gate(message, cid, summary, plan, factory, label, cost=""):
+    """確認つきで作業を起動する（呼び出し側は1行で済む）。"""
+    return _spawn(
+        _confirm_then(message, cid, summary, plan, factory, cost), cid, label
+    )
 
 
 async def run_claude_agent(cid, task, owner_id):
@@ -4202,22 +4263,39 @@ async def _dispatch_message(message):
             r"ネタ|企画|お願い(します)?|を|の|で|、|。|！|!)+", "", content, flags=re.I
         ).strip()
         add_history(cid, message.author.display_name, content)
-        _spawn(_run_short(message, theme or None), cid, "ショート制作")
+        _gate(message, cid,
+              f"ショート動画の制作（テーマ: {theme or '自動でお任せ'}）",
+              "企画（タイトル・フック・英語プロンプト）を作り、"
+              "縦型9:16の動画を生成して投稿パックまで出します",
+              lambda: _run_short(message, theme or None), "ショート制作",
+              "Higgsfieldのクレジットを消費します")
         return
 
     if route == "virality":
         add_history(cid, message.author.display_name, content)
-        _spawn(_run_virality(message), cid, "バズ度分析")
+        _gate(message, cid, "直近の動画のバズ度シミュレーション",
+              "Higgsfieldの virality_predictor で、バズ度・フック強度・"
+              "離脱リスク・改善提案を予測します",
+              lambda: _run_virality(message), "バズ度分析",
+              "Higgsfieldのクレジットを消費します")
         return
 
     if route == "ad":
         add_history(cid, message.author.display_name, content)
-        _spawn(_run_ad_make(message, content), cid, "広告制作")
+        _gate(message, cid, f"広告の制作（{content[:60]}）",
+              "広告企画書（ターゲット・フック・CTA）を作り、"
+              "そのまま縦型9:16のCM動画を生成します",
+              lambda: _run_ad_make(message, content), "広告制作",
+              "Higgsfieldのクレジットを消費します")
         return
 
     if route == "style_learn":
         add_history(cid, message.author.display_name, content + "（参考動画のスタイル学習を依頼）")
-        _spawn(_run_style_learn(message), cid, "スタイル学習")
+        _gate(message, cid, "参考動画からスタイルを学習",
+              "フック・テンポ・構図・色味などを解析して勝ちパターン集に蓄積し、"
+              "以降の企画と生成プロンプトに反映します",
+              lambda: _run_style_learn(message), "スタイル学習",
+              "無料（Geminiの無料枠を使用）")
         return
 
     if route == "style_show":
@@ -4260,19 +4338,31 @@ async def _dispatch_message(message):
                 "🎨 どんな画像を作りますか？（例:「夕暮れの海辺を歩く猫の画像作って」）"
             )
             return
-        _spawn(_handle_image_request(cid, content), cid, "画像生成")
+        _gate(message, cid, f"画像の生成（{_gen_subject(content)[:40]}）",
+              "Geminiの無料枠で画像を生成します"
+              "（使えない場合はHiggsfieldの最適モデルに切り替え）",
+              lambda: _handle_image_request(cid, content), "画像生成",
+              "原則無料（Geminiの無料枠）")
         return
 
     if route == "hf_model":
         model, mtype, label = _match_gen_model(content)
         add_history(cid, message.author.display_name, content)
-        _spawn(_run_hf_generate(message, content, model, mtype, label), cid, "動画/画像生成")
+        _gate(message, cid, f"{label}で{'動画' if mtype == 'video' else '画像'}を生成",
+              "依頼を英語プロンプトに整えてから生成し、完成したらURLを投稿します",
+              lambda: _run_hf_generate(message, content, model, mtype, label),
+              "動画/画像生成", "Higgsfieldのクレジットを消費します")
         return
 
     if route == "hf_auto":
         mtype = "image" if re.search("画像|イラスト|ロゴ|絵|写真|アイコン", content) else "video"
         add_history(cid, message.author.display_name, content)
-        _spawn(_run_hf_generate(message, content, None, mtype, "自動選定"), cid, "動画/画像生成")
+        _gate(message, cid,
+              f"{'動画' if mtype == 'video' else '画像'}の生成（{content[:50]}）",
+              "内容に合う最適なモデルを自動で選び、"
+              "英語プロンプトに整えてから生成します",
+              lambda: _run_hf_generate(message, content, None, mtype, "自動選定"),
+              "動画/画像生成", "Higgsfieldのクレジットを消費します")
         return
 
     if route == "motion":
@@ -4284,7 +4374,11 @@ async def _dispatch_message(message):
             cid, message.author.display_name,
             content + "（参照動画を添付してモーションコントロール生成を依頼）",
         )
-        _spawn(_run_motion_control(message, req, _video_att), cid, "モーション生成")
+        _gate(message, cid, "参照動画の動きを転写して動画生成（モーションコントロール）",
+              "添付動画の動きをキャラクターに転写して生成します"
+              "（キャラ画像が無ければ依頼文から自動生成）",
+              lambda: _run_motion_control(message, req, _video_att),
+              "モーション生成", "Higgsfieldのクレジットを消費します")
         return
 
     if route == "motion_ask":

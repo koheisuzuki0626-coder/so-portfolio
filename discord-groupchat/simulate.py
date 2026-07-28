@@ -71,8 +71,13 @@ discord = _stub("discord")
 discord.Intents = _FakeIntents
 discord.Client = _FakeClient
 discord.File = lambda *a, **k: None
+class _FakeView:                       # discord.ui.View 相当（timeout等を受ける）
+    def __init__(self, *a, **k):
+        pass
+
+
 discord.ui = types.SimpleNamespace(
-    View=object, Button=object, button=lambda **k: (lambda f: f)
+    View=_FakeView, Button=object, button=lambda **k: (lambda f: f)
 )
 discord.ButtonStyle = _Anything()
 discord.Interaction = object
@@ -173,6 +178,7 @@ def _rec_str(label, ret):
 
 def install_stubs(mcp_url=None):
     FIRED.clear()
+    bot.CONFIRM_BEFORE_WORK = False   # 確認は専用テストで検証する
     for ch in _CHANNELS.values():
         ch.sent.clear()   # 前のテストの送信内容が混ざらないように
     bot._self_diagnose = _rec_str("diagnose", "🩺 診断結果（スタブ）")
@@ -474,6 +480,41 @@ async def run():
     r = await drive("geminiで画像生成して")
     check("主題なし→聞き返す", any("どんな画像" in x for x in r["sent"]), f"{r['sent']}")
     check("主題なし→生成しない", "image_gen" not in r["fired"], f"{r['fired']}")
+
+    # ===== ②-c 作業前の反復確認（承認するまで実行しない）=====
+    print("■ E2E: 作業前の反復確認")
+    install_stubs()
+    bot.CONFIRM_BEFORE_WORK = True
+    r = await drive("犬の動画作って")
+    check("確認を出す", any("確認させてください" in x for x in r["sent"]), f"{r['sent']}")
+    check("理解した内容を示す", any("ご依頼の理解" in x for x in r["sent"]), f"{r['sent']}")
+    check("コストを示す", any("クレジット" in x for x in r["sent"]), f"{r['sent']}")
+    check("承認前は実行しない", "hf_generate" not in r["fired"], f"{r['fired']}")
+
+    # 「OK」で実行される
+    r2 = await drive("OK")
+    for _ in range(5):
+        await asyncio.sleep(0)
+    check("OKで実行される", "hf_generate" in r2["fired"], f"{r2['fired']}")
+
+    # 「やめて」で中止され、実行されない
+    install_stubs()
+    bot.CONFIRM_BEFORE_WORK = True
+    r = await drive("猫のイラスト作って")
+    check("画像でも確認を出す", any("確認させてください" in x for x in r["sent"]), f"{r['sent']}")
+    r2 = await drive("やめて")
+    for _ in range(5):
+        await asyncio.sleep(0)
+    check("拒否で実行しない", "image_gen" not in r2["fired"], f"{r2['fired']}")
+    check("中止を伝える", any("やめました" in x for x in r2["sent"]), f"{r2['sent']}")
+
+    # 会話・状態確認には確認を挟まない（余計な往復を増やさない）
+    install_stubs()
+    bot.CONFIRM_BEFORE_WORK = True
+    r = await drive("おはよう")
+    check("雑談には確認を出さない",
+          not any("確認させてください" in x for x in r["sent"]), f"{r['sent']}")
+    bot.CONFIRM_BEFORE_WORK = False
 
     # ===== ③-b 添付ファイルの読み取り（種類ごとの仕様テーブル）=====
     print("■ E2E: 添付ファイルの内容理解")
