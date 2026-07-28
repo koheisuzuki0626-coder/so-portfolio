@@ -182,6 +182,7 @@ def install_stubs(mcp_url=None):
     bot._run_ad_make = _rec("ad")
     bot._run_virality = _rec("virality")
     bot._run_style_learn = _rec("style_learn")
+    bot._handle_image_request = _rec("image_gen")
     import tempfile as _tf
     import pathlib as _pl
     bot.STYLE_PROFILE_FILE = _pl.Path(_tf.mkdtemp()) / "style_profile.md"
@@ -291,6 +292,8 @@ async def run():
         ("おまかせで海の動画作って", "hf_generate", None),
         ("バズる動画作って", "hf_generate", None),
         ("ショート作って", "short", None),
+        ("猫のイラスト作って", "image_gen", None),
+        ("犬の動画作って", "hf_generate", None),
         ("新作スニーカーの広告作って", "ad", None),
         ("コーヒーショップのCM作って", "ad", None),
         ("バズ度分析して", "virality", None),
@@ -466,6 +469,12 @@ async def run():
         check(f"添付 {fn} 例外なし", r["err"] is None, f"例外={r['err']}")
 
     # ===== ④ グローバル例外ガードの動作確認 =====
+    # 主題が無い画像依頼は生成せず聞き返す（無駄な生成を避ける）
+    install_stubs()
+    r = await drive("geminiで画像生成して")
+    check("主題なし→聞き返す", any("どんな画像" in x for x in r["sent"]), f"{r['sent']}")
+    check("主題なし→生成しない", "image_gen" not in r["fired"], f"{r['fired']}")
+
     # ===== ③-b 添付ファイルの読み取り（種類ごとの仕様テーブル）=====
     print("■ E2E: 添付ファイルの内容理解")
     seen = []

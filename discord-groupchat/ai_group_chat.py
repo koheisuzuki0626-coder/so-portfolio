@@ -1780,6 +1780,20 @@ _CONTENT_Q_RE = re.compile(
     "背景|どこの|どこで|場所|建物|風景|何て書|なんて書|読める"
 )
 _GEN_INTENT2_RE = re.compile("作って|作りたい|生成|つくって|animate|動かして|アニメ化")
+# 生成依頼から「何を作るか」以外の言葉（エンジン名・媒体名・依頼表現）を落とす。
+# 「geminiで画像生成して」のように主題が無い依頼を検出して聞き返すために使う。
+_GEN_META_RE = re.compile(
+    r"gemini|ジェミニ|nano ?banana|ナノバナナ|higgsfield|ヒッグスフィールド|"
+    r"画像|イラスト|ロゴ|絵|写真|アイコン|サムネ(イル)?|"
+    r"作って|作りたい|生成して|生成|つくって|お願いします|お願い|ください", re.I
+)
+# 主題の判定で端に残る助詞や記号（「猫の」→「猫」、「で」→「」）
+_GEN_EDGE = " 　でをがのにはとやも、。!！?？「」"
+
+
+def _gen_subject(content):
+    """生成依頼から『何を作るか』の部分だけを粗く取り出す（有無の判定用）。"""
+    return _GEN_META_RE.sub("", content or "").strip(_GEN_EDGE)
 _MOTION_KW_RE = re.compile("モーション|この動き|動きで生成|動きを真似|動きをコピー|動きを転写")
 _QUESTION_RE = re.compile(
     "どう思う|なんで|なぜ|どうやって|できる\\?|できる？|作れる|入れられる|"
@@ -1867,13 +1881,19 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     ):
         if _match_gen_model(content):
             return "hf_model"
-        auto_kw = re.search(
-            "おまかせ|お任せ|自動|最適|いい感じ|良い感じ|どれでも|モデル任せ|よしなに|"
-            "バズる|バズり|バズそう", content
-        )
-        media_ref = has_video_att or has_image_att
-        if auto_kw or media_ref:
-            return "hf_auto"
+        # 「どうやって動画作ってるの？」のような質問では発動しない
+        if not _looks_like_question(content):
+            # 画像は Gemini（無料枠）優先。「geminiで画像作って」もここ
+            if re.search("画像|イラスト|ロゴ|絵|写真|アイコン|サムネ", content):
+                return "image"
+            auto_kw = re.search(
+                "おまかせ|お任せ|自動|最適|いい感じ|良い感じ|どれでも|モデル任せ|よしなに|"
+                "バズる|バズり|バズそう", content
+            )
+            # 媒体が明示されていればAI判定に落とさず生成へ（速度と確実性）
+            media_noun = re.search("動画|映像|ムービー|クリップ|PV|ＰＶ", content)
+            if auto_kw or has_video_att or has_image_att or media_noun:
+                return "hf_auto"
     # ③ モーション転写（キーワード or 依頼待ち中の動画添付）。
     #    「モーション動画じゃないよ」のような否定・単なる言及では発動させず、
     #    生成の意図がある時だけ反応する
@@ -1941,7 +1961,10 @@ async def _plan(history):
         f"のときは、JSONの次の行に「{_PLAN_REPLY_SEP}」とだけ書き、"
         f"その次の行からユーザーへの返事本体を書くこと。"
         f"返事は日本語で{REPLY_CHARS}字以内、前置きや名乗りは無しで本体のみ。"
-        f"それ以外のkind（video/exec/trend等）では返事を書かずJSONだけ返す。\n"
+        f"それ以外のkind（video/exec/trend等）では返事を書かずJSONだけ返す。"
+        f"【厳守】返事は必ずユーザーの最後の要求そのものに答える。"
+        f"下の運用ルールは『守るべき方針』であって返事の内容ではないので、"
+        f"その文言をそのまま返事として出力してはいけない。\n"
         + BOT_OPS_GUIDE + "\n\n"
         + _profiles_context()
         + f"会話:\n{build_transcript(history)}\n\nJSON:"
@@ -4226,6 +4249,18 @@ async def _dispatch_message(message):
             "添付するか、YouTubeリンク（最大2本）を「**これを学習して**」と一緒に送ってください。"
             "フック・テンポ・色味などの勝ちパターンを学習して、以降のショート/広告の生成に反映します。"
         )
+        return
+
+    if route == "image":
+        # 何を描くかが書かれていなければ聞き返す（空プロンプトで作らない）。
+        # 判定にだけ使い、生成には元の文をそのまま渡す（主題を削らないため）
+        add_history(cid, message.author.display_name, content)
+        if not _gen_subject(content):
+            await message.channel.send(
+                "🎨 どんな画像を作りますか？（例:「夕暮れの海辺を歩く猫の画像作って」）"
+            )
+            return
+        _spawn(_handle_image_request(cid, content), cid, "画像生成")
         return
 
     if route == "hf_model":
