@@ -664,6 +664,11 @@ BOT_OPS_GUIDE = (
     "『モーション動画できた？』という古い言い回しは、過去の会話ログに"
     "残っていても絶対に真似しない。"
     "生成の完成/未完成を自分で推測して断言しない（確認は自動チェックに任せる）。"
+    "【重要】生成物が意図と違ったとき、ユーザーの指示の書き方のせいにするのは禁止"
+    "（『具体的すぎる』『曖昧すぎる』『うまく汲み取れなかった』等と言わない）。"
+    "どんな自然な言い方でも適切なプロンプトに翻訳するのはこちらの責任。"
+    "違っていたら素直に謝り、『どこが違いましたか？』と1点だけ聞いて、"
+    "『〇〇を直して作り直して』で直せると案内する。"
     "進捗確認のために再起動を勧めるのは禁止"
     "（再起動すると進行中の完了監視が止まってしまうため）。"
 )
@@ -1997,22 +2002,39 @@ async def _plan(history):
     return kind, mode, lead, search, recall, reply
 
 
-async def _handle_image_request(cid, request):
+async def _handle_image_request(cid, request, refine=True):
     """画像生成の依頼。既定は Gemini（無料枠 約500枚/日）。
-    Gemini が使えないときは Higgsfield MCP の最適モデルへ自動フォールバック。"""
+    Gemini が使えないときは Higgsfield MCP の最適モデルへ自動フォールバック。
+    日本語の会話文はそのまま渡すと『全然違う画像』になるため、必ず英語の
+    描写プロンプトに変換してから生成し、使ったプロンプトも見せる（動画と同じ扱い）。"""
+    original = request
+    if refine:
+        refined = await _refine_prompt(request, "image")
+        if refined and refined != request:
+            request = refined
+            await send_as(orch, cid, f"🖋 プロンプト: {request[:300]}")
+    _save_last_gen(cid, request, "image", None, "画像")
     await send_as(orch, cid, "🎨 Gemini で画像を生成中…（無料枠）")
     try:
         data = await asyncio.to_thread(_gemini_generate_image_sync, request)
-        await send_image_bytes(cid, "✅ できました！修正したい点があれば教えてください。", data, "image.png")
-        add_history(cid, "Orchestrator", f"（依頼「{request[:60]}」の画像をGeminiで生成して投稿した）")
+        await send_image_bytes(
+            cid, "✅ できました！イメージと違うところがあれば「〇〇を直して作り直して」と教えてください。",
+            data, "image.png",
+        )
+        add_history(cid, "Orchestrator", f"（依頼「{original[:60]}」の画像をGeminiで生成して投稿した）")
         return
     except Exception as e:  # noqa: BLE001
         print(f"[image_request] Gemini失敗: {str(e)[:200]}")
         await send_as(orch, cid, "⚠️ Gemini画像が使えないため、Higgsfieldの最適モデルで生成します…")
     url = await _mcp_gen_and_wait(request, media_type="image", model=None)
     if url:
-        add_history(cid, "Orchestrator", f"（依頼「{request[:60]}」の画像をHiggsfieldで生成: {url}）")
-        await send_as(orch, cid, f"✅ できました！\n{url}")
+        _update_last_gen_url(cid, url)
+        add_history(cid, "Orchestrator", f"（依頼「{original[:60]}」の画像をHiggsfieldで生成: {url}）")
+        await send_as(
+            orch, cid,
+            f"✅ できました！\n{url}\n"
+            "イメージと違うところがあれば「〇〇を直して作り直して」と教えてください。"
+        )
     else:
         await send_as(orch, cid, "⚠️ 画像生成に失敗しました。少し時間をおいて再度お試しください。")
 
@@ -2263,6 +2285,9 @@ async def _refine_prompt(request, media_type, style=""):
     ask = (
         f"次の日本語の依頼を、AI {kind}生成用の英語プロンプト1つに変換して。"
         "被写体・構図・カメラワーク・光・色・質感・雰囲気を具体的に描写。"
+        "依頼の言い方が短くても曖昧でも、こちらで良い絵になるように補って描写すること。"
+        "1枚の完成した写真/映像として描写し、キャラクター設定シート・三面図・"
+        "複数コマ・比較レイアウト・文字入りの説明図にはしない（明示された場合を除く）。"
         "カンマ区切りの1行、英語のみ、プロンプト本体だけ出力（説明や引用符は不要）。"
         + (f" スタイル指定: {style}." if style else "")
         + (f"\n学習済みスタイルの傾向（合う範囲で反映）:\n{sp}" if sp else "")

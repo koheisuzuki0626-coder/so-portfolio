@@ -97,6 +97,8 @@ _HANDLE_ORCH = bot._handle_orchestrator
 _EXTRACT_ATT = bot.extract_attachment_context
 _MEDIA_CTX = bot._apply_media_url_context
 _REPLY_CTX = bot._reply_context
+_IMAGE_REQ = bot._handle_image_request
+_LOAD_LAST_GEN = bot._load_last_gen
 
 
 # ---- ダミーのDiscordオブジェクト ----
@@ -515,6 +517,37 @@ async def run():
     check("雑談には確認を出さない",
           not any("確認させてください" in x for x in r["sent"]), f"{r['sent']}")
     bot.CONFIRM_BEFORE_WORK = False
+
+    # ===== ②-d 画像生成は日本語のまま渡さず英語プロンプトに変換する =====
+    print("■ E2E: 画像プロンプトの英訳")
+    used = {}
+
+    def _gen_img(prompt):
+        used["prompt"] = prompt
+        return b"PNG"
+    install_stubs()
+    bot._handle_image_request = _IMAGE_REQ
+    bot._gemini_generate_image_sync = _gen_img
+
+    async def _refine(req, mtype, style=""):
+        return "a 30 year old japanese man cheering with a beer mug, victory"
+    bot._refine_prompt = _refine
+
+    async def _send_img(cid, text, data, name):
+        _channel(1234).sent.append(text)
+    bot.send_image_bytes = _send_img
+    import tempfile as _tf2
+    import pathlib as _pl2
+    bot._LASTGEN_FILE = _pl2.Path(_tf2.mkdtemp()) / "last_gen.json"
+    await _IMAGE_REQ(1234, "30歳が酒飲んで優勝してる画像作って")
+    check("日本語のまま渡さない", "30歳" not in used.get("prompt", ""), used)
+    check("英語プロンプトで生成", "beer mug" in used.get("prompt", ""), used)
+    check("使ったプロンプトを見せる",
+          any("🖋" in x for x in _channel(1234).sent), _channel(1234).sent[:2])
+    check("作り直せると案内する",
+          any("作り直して" in x for x in _channel(1234).sent), _channel(1234).sent[-1:])
+    lg = _LOAD_LAST_GEN(1234)
+    check("画像も作り直しの対象として記録", bool(lg and lg.get("prompt")), lg)
 
     # ===== ③-b 添付ファイルの読み取り（種類ごとの仕様テーブル）=====
     print("■ E2E: 添付ファイルの内容理解")
