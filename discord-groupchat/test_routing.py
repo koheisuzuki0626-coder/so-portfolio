@@ -279,6 +279,12 @@ def run():
     check("主題あり", bot._gen_subject("猫のイラスト作って"), "猫")
     check("主題あり(2)", bot._gen_subject("夕暮れの海辺の写真作って"), "夕暮れの海辺")
 
+    print("■ ログ共有のパス（git add がBASE_DIR基準であること）")
+    import pathlib as _pl3
+    _rel = str(bot.DEBUG_LOG.relative_to(_pl3.Path(bot._BASE)))
+    check("gitに渡すパス", _rel.replace("\\", "/"), "debug/discord_log.md")
+    check("_git_selfの実行位置と一致", bot.BASE_DIR == bot._BASE, True)
+
     print("■ 確認の受付枠 _set_pending / _clear_pending")
     import asyncio as _aio
 

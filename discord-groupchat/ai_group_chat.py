@@ -453,14 +453,22 @@ async def _share_debug_log(cid, limit=80):
         lines.append(f"- **{ts} {who}**: {text[:600]}")
     DEBUG_LOG.write_text("\n".join(lines), encoding="utf-8")
 
-    rel = str(DEBUG_LOG.relative_to(Path(_BASE).parent))
-    await _git_self(["add", rel])
-    code, out = await _git_self(["commit", "-m", f"Discordログを共有（{now}）"])
-    if code != 0 and "nothing to commit" not in out:
-        return f"⚠️ ログのコミットに失敗: {out[:200]}"
+    # _git_self は discord-groupchat/ で動くので、パスもそこからの相対にする
+    # （リポジトリroot基準にすると git add がファイルを見つけられない）
+    rel = str(DEBUG_LOG.relative_to(Path(_BASE)))
+    code, out = await _git_self(["add", "--", rel])
+    if code != 0:
+        return f"⚠️ ログをgitに追加できませんでした: {out[:250]}"
+    code, _ = await _git_self(["diff", "--cached", "--quiet", "--", rel])
+    if code != 0:   # 差分あり（0なら前回と同内容なのでコミット不要）
+        code, out = await _git_self(
+            ["commit", "-m", f"Discordログを共有（{now}）", "--", rel]
+        )
+        if code != 0:
+            return f"⚠️ ログのコミットに失敗: {out[:250]}"
     code, out = await _git_self(["push", "origin", "HEAD"])
     if code != 0:
-        return (f"⚠️ ログのプッシュに失敗: {out[:200]}\n"
+        return (f"⚠️ ログのプッシュに失敗: {out[:250]}\n"
                 "（書き出しは完了しています。ネットワークを確認して再度お試しください）")
     return (f"✅ 直近の会話・エラー・生成状態を共有しました（{rel}）。\n"
             "Claude Codeのチャットで「**ログ見て**」と言えば、そのまま読めます。\n"
