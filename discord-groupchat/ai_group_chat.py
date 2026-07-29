@@ -356,10 +356,27 @@ def _track(task):
     return task
 
 
+# 実行中の背景作業（cid -> {作業名: 開始時刻}）。
+# 「まだ？」と聞かれたとき、直近の生成ではなく【今やっていること】を答えるために使う。
+_running = {}
+
+
+def _running_for(cid):
+    """このチャンネルで実行中の作業を [(名前, 経過秒)] で返す。"""
+    now = time.time()
+    return [(name, int(now - t)) for name, t in (_running.get(cid) or {}).items()]
+
+
 def _spawn(coro, cid, context):
     """背景タスクを、例外が沈黙しないラッパーで起動する。
     on_message のガードは create_task した処理には効かないため、ここで捕捉して
-    errors.log 記録＋チャンネル通知する（裏側の静かな失敗を防ぐ）。"""
+    errors.log 記録＋チャンネル通知する（裏側の静かな失敗を防ぐ）。
+    実行中は _running に登録し、進捗を聞かれたら答えられるようにする。"""
+    # 登録は「起動した瞬間」に行う。タスクが動き出すのを待つと、
+    # 直後に「まだ？」と聞かれたときに実行中だと分からない。
+    started = time.time()
+    _running.setdefault(cid, {})[context] = started
+
     async def _wrapped():
         try:
             await coro
@@ -371,6 +388,10 @@ def _spawn(coro, cid, context):
                 await send_as(orch, cid, f"⚠️ {context} でエラー（記録済み）: {summary}")
             except Exception:  # noqa: BLE001
                 pass
+        finally:
+            d = _running.get(cid) or {}
+            if d.get(context) == started:   # 同名の新しい作業を消さない
+                d.pop(context, None)
     return _track(asyncio.create_task(_wrapped()))
 
 
@@ -3597,6 +3618,17 @@ async def _report_gen_status(channel, cid, author_name=None, said=None):
       片方だけ直して挙動が食い違う不具合が実際に起きたため1本化した。"""
     job = _load_motion_job()
     lg = _load_last_gen(cid) or {}
+    # 生成以外の作業（ログ共有・リサーチ・学習など）を実行中なら、そちらを答える。
+    # これが無いと「まだ？」に対して無関係な直近の画像を出してしまう。
+    busy = [(n, sec) for n, sec in _running_for(cid) if "監視" not in n]
+    if busy and not job:
+        if said and author_name:
+            add_history(cid, author_name, said)
+        detail = "／".join(f"「{n}」({sec}秒経過)" for n, sec in busy[:3])
+        await channel.send(
+            f"⏳ いま {detail} を実行中です。終わったらこのチャンネルに結果を出します。"
+        )
+        return True
     if not job and not lg.get("url"):
         return False   # 会話へ流す。ここで履歴に触れない（後段で二重登録になるため）
     if said and author_name:

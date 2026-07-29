@@ -614,6 +614,39 @@ async def run():
     res_ok, _ = await _INSPECT("依頼", "https://ex.com/a.png")
     check("見られない時は素通し", res_ok is True, f"{res_ok}")
 
+    # ===== ②-f 「まだ？」は今やっている作業の進捗を答える =====
+    print("■ E2E: 実行中の作業の進捗")
+    install_stubs()
+    bot._load_last_gen = lambda cid: {"prompt": "a cat", "media_type": "image",
+                                      "label": "画像", "url": "https://ex.com/old.png",
+                                      "t": bot.time.time()}
+    bot._running[1234] = {"ログ共有": bot.time.time() - 42}
+    r = await drive("まだ？")
+    check("実行中の作業を答える",
+          any("ログ共有" in x and "実行中" in x for x in r["sent"]), f"{r['sent']}")
+    check("無関係な直近画像を出さない",
+          not any("old.png" in x for x in r["sent"]), f"{r['sent']}")
+    bot._running.pop(1234, None)
+
+    # 何も実行中でなければ従来どおり直近の完成物を案内する
+    install_stubs()
+    bot._load_last_gen = lambda cid: {"prompt": "a cat", "media_type": "image",
+                                      "label": "画像", "url": "https://ex.com/old.png",
+                                      "t": bot.time.time()}
+    r = await drive("まだ？")
+    check("非実行中は直近の完成物", any("old.png" in x for x in r["sent"]), f"{r['sent']}")
+
+    # 作業の登録と解除が自動で行われる
+    install_stubs()
+
+    async def _slow():
+        await asyncio.sleep(0)
+    t = bot._spawn(_slow(), 1234, "テスト作業")
+    check("開始で登録される", any(n == "テスト作業" for n, _ in bot._running_for(1234)),
+          f"{bot._running_for(1234)}")
+    await t
+    check("終了で解除される", bot._running_for(1234) == [], f"{bot._running_for(1234)}")
+
     # ===== ③-b 添付ファイルの読み取り（種類ごとの仕様テーブル）=====
     print("■ E2E: 添付ファイルの内容理解")
     seen = []
