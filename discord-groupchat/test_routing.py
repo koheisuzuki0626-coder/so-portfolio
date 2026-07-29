@@ -285,6 +285,31 @@ def run():
     check("gitに渡すパス", _rel.replace("\\", "/"), "debug/discord_log.md")
     check("_git_selfの実行位置と一致", bot.BASE_DIR == bot._BASE, True)
 
+    print("■ 承認/拒否の自然言語判定 _try_text_approval")
+    import asyncio as _aio2
+
+    async def _approvals():
+        loop = _aio2.get_running_loop()
+        res = []
+        cases = (
+            [(t, True) for t in ("それでお願い", "OK", "おっけー", "いいよ", "はい",
+                                 "了解です", "そのままお願いします", "これでいい",
+                                 "進めて", "やって", "よろしく", "それで", "GO")]
+            + [(t, False) for t in ("やめて", "違う", "拒否", "キャンセル", "no",
+                                    "いらない", "中止して", "やっぱやめて", "ストップ")]
+            + [(t, None) for t in ("猫の動画作って", "これどう思う？", "おはよう",
+                                   "愛知県っていうのを分かりやすく", "ログ送って")]
+        )
+        for text, want in cases:
+            f = loop.create_future()
+            bot._set_pending(9, f, 1)
+            got = bot._try_text_approval(9, 1, text)
+            bot._clear_pending(9, f)
+            res.append((f"{text!r}", got, want))
+        return res
+    for desc, got, want in _aio2.run(_approvals()):
+        check(desc, got, want)
+
     print("■ 確認の受付枠 _set_pending / _clear_pending")
     import asyncio as _aio
 

@@ -742,6 +742,10 @@ BOT_OPS_GUIDE = (
     "『モーション動画できた？』という古い言い回しは、過去の会話ログに"
     "残っていても絶対に真似しない。"
     "生成の完成/未完成を自分で推測して断言しない（確認は自動チェックに任せる）。"
+    "【重要】うまく進んでいない理由を推測で説明してはいけない。"
+    "『ツールの権限が下りていない』『APIの制限で』など、実際のエラーを"
+    "確認していない原因を作り話するのは禁止。分からないときは正直に"
+    "『原因が分かっていないので「ログ送って」で状況を共有してください』と言う。"
     "【重要】生成物が意図と違ったとき、ユーザーの指示の書き方のせいにするのは禁止"
     "（『具体的すぎる』『曖昧すぎる』『うまく汲み取れなかった』等と言わない）。"
     "どんな自然な言い方でも適切なプロンプトに翻訳するのはこちらの責任。"
@@ -3874,15 +3878,33 @@ class PermissionView(discord.ui.View):
 # テキストでの承認/却下（ボタンを押さなくても「許可」「拒否」の返信で反応できる）
 _pending_approvals = {}  # cid -> (future, owner_id)
 
-_APPROVE_PHRASES = {
-    "許可", "許可する", "承認", "承認する", "ok", "okay", "おk", "オーケー",
-    "おっけー", "おっけ", "いいよ", "いいですよ", "はい", "うん", "やって",
-    "実行", "実行して", "go", "ゴー", "頼む", "お願い", "お願いします", "進めて",
-}
-_DENY_PHRASES = {
-    "拒否", "拒否する", "だめ", "ダメ", "駄目", "やめて", "やめ", "中止",
-    "中止して", "キャンセル", "cancel", "no", "いいえ", "なし", "却下",
-}
+# 承認/拒否は自然な言い回しで受け取る。決まった単語の完全一致だけにしていたため、
+# 「それでお願い」が承認と認識されず5分後に自動中止される事故が実際に起きた。
+# 記号や語尾のゆれを落としてから全体一致で判定する（長い新規依頼は承認にしない）。
+_APPROVE_RE = re.compile(
+    "^("
+    "はい|うん|ええ|そう|ok|okay|おk|オーケー|おっけ|了解|承知|承認|許可|"
+    "いい|いいよ|いいね|いいです|よし|よろしく|"
+    "それ|それで|それでいい|そのまま|これで|これでいい|"
+    "進めて|進めよう|やって|やろう|やりましょう|お願い|頼む|頼みます|"
+    "go|ゴー|実行|start|オッケ"
+    ")"
+    "(で|でも|よ|ね|な|わ|ぞ|です|ます|して|しといて|ください|下さい|"
+    "しま(す|しょう)|お願い(します)?|でお願い(します)?)*$", re.I
+)
+_DENY_RE = re.compile(
+    "^("
+    "いや|いいえ|ううん|やめ|止め|とめ|中止|キャンセル|cancel|no|"
+    "だめ|ダメ|駄目|却下|拒否|違う|ちがう|なし|ストップ|stop|"
+    "やっぱやめ|やっぱりやめ|いらない|結構"
+    ")"
+    "(で|よ|ね|る|た|て|ます|です|して|ください|下さい|とく| okay)*$", re.I
+)
+
+
+def _norm_reply(text):
+    """返事から記号・空白を落として判定しやすくする。"""
+    return re.sub(r"[\s、。．，・！？!?.…〜~ー\-]+", "", text or "").lower()
 
 
 def _set_pending(cid, fut, owner_id):
@@ -3912,13 +3934,15 @@ def _try_text_approval(cid, user_id, content):
     fut, owner_id = entry
     if fut.done() or (owner_id and user_id != owner_id):
         return None
-    norm = content.strip().rstrip("。.!！?？ 　").lower()
-    if norm in _APPROVE_PHRASES:
-        fut.set_result(True)
-        return True
-    if norm in _DENY_PHRASES:
+    norm = _norm_reply(content)
+    if not norm or len(norm) > 24:
+        return None      # 長い発言は新しい依頼とみなす（誤承認の防止）
+    if _DENY_RE.match(norm):      # 否定を先に見る（「やめて」を承認と誤らないため）
         fut.set_result(False)
         return False
+    if _APPROVE_RE.match(norm):
+        fut.set_result(True)
+        return True
     return None
 
 
@@ -4464,6 +4488,13 @@ async def _dispatch_message(message):
             "✅ 承認を受け付けました。進めます…" if approval else "🛑 却下を受け付けました。"
         )
         return
+    if cid in _pending_approvals:
+        # 確認待ちなのに承認/拒否と読めない発言。黙って会話に流すと
+        # 「何も起きない → AIが理由を作り話する」が起きるので、状況を明示する。
+        await message.channel.send(
+            "（いま確認待ちです。開始するなら「**OK**」、やめるなら「**やめて**」と"
+            "送ってください。別の内容を頼みたい場合はそのまま言ってもらえれば切り替えます）"
+        )
 
     if content == "!stop" or _is_stop_phrase(content):
         await _do_stop(message, cid)
