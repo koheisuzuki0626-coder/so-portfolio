@@ -1338,6 +1338,10 @@ JST = timezone(timedelta(hours=9))
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 TREND_CHANNEL_ID = int(os.getenv("TREND_CHANNEL_ID", "0"))  # 毎日の投稿先チャンネル
 TREND_HOUR = int(os.getenv("TREND_HOUR", "8"))              # 実行時刻（JST・毎日）
+# 自分のチャンネルの週次レポート（既定: 月曜9時。0=月曜〜6=日曜）
+CHANNEL_REPORT_DOW = int(os.getenv("CHANNEL_REPORT_DOW", "0"))
+CHANNEL_REPORT_HOUR = int(os.getenv("CHANNEL_REPORT_HOUR", "9"))
+CHANNEL_REPORT_CID = int(os.getenv("CHANNEL_REPORT_CHANNEL_ID", "0"))
 TREND_REGION = os.getenv("TREND_REGION", "JP")
 TREND_DEEP_COUNT = int(os.getenv("TREND_DEEP_COUNT", "5"))  # 実際に視聴する本数/日
 TREND_MAX_MINUTES = int(os.getenv("TREND_MAX_MINUTES", "20"))  # これより長い動画は視聴しない
@@ -1593,6 +1597,7 @@ async def _analyze_my_channel(cid, quiet=False):
     insight = (await _ai_text_bg(ask, "my_channel")).strip()
     conf.update(channel_id=ch, last_checked=time.time(),
                 video_count=len(vids),
+                report_cid=conf.get("report_cid") or cid,
                 best={"title": top[0]["title"], "views": top[0]["views"]})
     _save_my_channel(conf)
     # 実績を勝ちパターン集にも反映（以降の企画・生成プロンプトへ自動で効く）
@@ -1935,6 +1940,43 @@ async def _run_trend_study(cid, query=None):
     add_history(cid, "🎬映像リサーチ", f"（YouTube{label}リサーチ {today}）\n{digest}")
 
 
+async def _weekly_channel_loop():
+    """毎週 決まった曜日・時刻に自分のチャンネルの実績を分析して投稿する。
+    曜日・時刻・投稿先は .env で変更可（既定: 月曜9時・トレンドと同じチャンネル）。
+    実行済みの週を記録するので、再起動を繰り返しても二重に送らない。"""
+    while True:
+        conf = _load_my_channel()
+        cid = conf.get("report_cid") or CHANNEL_REPORT_CID or TREND_CHANNEL_ID
+        if not cid or not YOUTUBE_API_KEY or not conf.get("channel_id"):
+            await asyncio.sleep(3600)   # 未設定のうちは1時間ごとに様子を見る
+            continue
+        now = datetime.now(JST)
+        # 次に来る「指定曜日の指定時刻」を求める
+        days = (CHANNEL_REPORT_DOW - now.weekday()) % 7
+        run_at = (now + timedelta(days=days)).replace(
+            hour=CHANNEL_REPORT_HOUR, minute=0, second=0, microsecond=0)
+        if run_at <= now:
+            run_at += timedelta(days=7)
+        print(f"[my_channel] 次回の週次レポート: {run_at.isoformat()}")
+        await asyncio.sleep((run_at - now).total_seconds())
+        week = datetime.now(JST).strftime("%G-W%V")
+        conf = _load_my_channel()
+        if conf.get("last_report_week") == week:
+            continue                     # 同じ週に二重送信しない
+        try:
+            await send_as(orch, cid, f"📅 今週のチャンネル実績レポートです（{week}）")
+            await _analyze_my_channel(cid)
+            conf = _load_my_channel()
+            conf["last_report_week"] = week
+            _save_my_channel(conf)
+        except Exception as e:  # noqa: BLE001
+            _log_error("weekly_channel_report", e)
+            try:
+                await send_as(orch, cid, f"⚠️ 週次レポートに失敗しました: {str(e)[:200]}")
+            except Exception:  # noqa: BLE001
+                pass
+
+
 async def _daily_trend_loop():
     """毎日 TREND_HOUR（JST）に急上昇リサーチを自動実行する。"""
     if not TREND_CHANNEL_ID or not YOUTUBE_API_KEY:
@@ -1947,12 +1989,6 @@ async def _daily_trend_loop():
             run_at += timedelta(days=1)
         print(f"[trend] 次回の自動リサーチ: {run_at.isoformat()}")
         await asyncio.sleep((run_at - now).total_seconds())
-        # 自分のチャンネルが登録済みなら、実績も毎日ふりかえって学びを更新する
-        if _load_my_channel().get("channel_id"):
-            try:
-                await _analyze_my_channel(TREND_CHANNEL_ID)
-            except Exception as e:  # noqa: BLE001
-                print(f"[my_channel] 日次の実績分析に失敗: {str(e)[:150]}")
         try:
             await _run_trend_study(TREND_CHANNEL_ID)
         except Exception as e:  # noqa: BLE001
@@ -4577,6 +4613,7 @@ async def on_ready():
         _trend_task_started = True
         _track(asyncio.create_task(_daily_trend_loop()))
         _track(asyncio.create_task(_gemini_recovery_loop()))
+        _track(asyncio.create_task(_weekly_channel_loop()))
         # 再起動前に投入したモーション生成があれば、完了監視を再開する
         job = _load_motion_job()
         if job and job.get("cid") and time.time() - job.get("submitted_at", 0) < 3600:
@@ -4836,10 +4873,14 @@ async def _dispatch_message(message):
                 return
             conf = _load_my_channel()
             conf["channel_id"] = ch
+            conf["report_cid"] = cid      # 週次レポートの送り先として覚える
             _save_my_channel(conf)
+            dow = "月火水木金土日"[CHANNEL_REPORT_DOW % 7]
             await send_as(orch, cid,
                           f"✅ チャンネルを登録しました（{ch}）。\n"
-                          "「**実績分析して**」で、伸びた理由の分析と勝ちパターンへの反映ができます。")
+                          "「**実績分析して**」でいつでも分析できます。\n"
+                          f"また、**毎週{dow}曜{CHANNEL_REPORT_HOUR}時**にこのチャンネルへ"
+                          "自動でレポートを送ります。")
         _spawn(_do_set(), cid, "チャンネル登録")
         return
 
