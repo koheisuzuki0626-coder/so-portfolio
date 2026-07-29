@@ -99,6 +99,10 @@ _MEDIA_CTX = bot._apply_media_url_context
 _REPLY_CTX = bot._reply_context
 _IMAGE_REQ = bot._handle_image_request
 _LOAD_LAST_GEN = bot._load_last_gen
+_INSPECT = bot._inspect_result
+_REPORT = bot._report_result
+_DESCRIBE_MEDIA = bot._describe_media_url
+_AI_TEXT_BG = bot._ai_text_bg
 
 
 # ---- ダミーのDiscordオブジェクト ----
@@ -193,6 +197,13 @@ def install_stubs(mcp_url=None):
     bot._handle_image_request = _rec("image_gen")
     bot._share_debug_log = _rec_str("sharelog", "✅ 共有しました")
     bot._run_video_edit = _rec("edit")
+
+    async def _insp(req, url, mt="image"):
+        return True, ""
+    bot._inspect_result = _insp        # 既定は「合格」（他テストに影響させない）
+    # 個別テストで差し替えたものを毎回戻す（スタブの漏れで後続が誤って落ちるのを防ぐ）
+    bot._describe_media_url = _DESCRIBE_MEDIA
+    bot._ai_text_bg = _AI_TEXT_BG
     import tempfile as _tf
     import pathlib as _pl
     bot.STYLE_PROFILE_FILE = _pl.Path(_tf.mkdtemp()) / "style_profile.md"
@@ -562,6 +573,44 @@ async def run():
     install_stubs()
     r = await drive("字幕つけて")
     check("素材が無ければ編集しない", "edit" not in r["fired"], f"{r['fired']}")
+
+    # ===== ②-e 生成物の自動検品（依頼と食い違ったら先に知らせる）=====
+    print("■ E2E: 生成物の自動検品")
+    install_stubs()
+    bot._inspect_result = _INSPECT
+
+    async def _desc_ok(url, channel=None):
+        return "ビールを掲げて喜ぶ30代の男性の写真"
+    bot._describe_media_url = _desc_ok
+
+    async def _judge(prompt, tag="x"):
+        return '{"ok": true}'
+    bot._ai_text_bg = _judge
+    res_ok, res_why = await _INSPECT("30歳が酒飲んで優勝してる画像",
+                                     "https://ex.com/a.png")
+    check("一致なら合格", res_ok is True, f"{res_ok} {res_why}")
+
+    async def _judge_ng(prompt, tag="x"):
+        return '{"ok": false, "reason": "三面図になっており人物が喜んでいない"}'
+    bot._ai_text_bg = _judge_ng
+    res_ok, res_why = await _INSPECT("30歳が酒飲んで優勝してる画像",
+                                     "https://ex.com/a.png")
+    check("不一致を検出", res_ok is False, f"{res_ok}")
+    check("理由が付く", "三面図" in res_why, res_why)
+
+    # 不一致のときはユーザーに先に知らせる
+    await _REPORT(1234, "30歳が酒飲んで優勝してる画像",
+                  "https://ex.com/a.png", "image", "✅ できました！")
+    sent = _channel(1234).sent
+    check("警告を先に出す", any("依頼と違うもの" in x for x in sent), f"{sent[-1:]}")
+    check("作り直しを案内", any("作り直して" in x for x in sent), f"{sent[-1:]}")
+
+    # 画像が見られない場合は止めない（誤検知で作業を止めない）
+    async def _desc_ng(url, channel=None):
+        return ""
+    bot._describe_media_url = _desc_ng
+    res_ok, _ = await _INSPECT("依頼", "https://ex.com/a.png")
+    check("見られない時は素通し", res_ok is True, f"{res_ok}")
 
     # ===== ③-b 添付ファイルの読み取り（種類ごとの仕様テーブル）=====
     print("■ E2E: 添付ファイルの内容理解")

@@ -2135,11 +2135,7 @@ async def _handle_image_request(cid, request, refine=True):
     if url:
         _update_last_gen_url(cid, url)
         add_history(cid, "Orchestrator", f"（依頼「{original[:60]}」の画像をHiggsfieldで生成: {url}）")
-        await send_as(
-            orch, cid,
-            f"✅ できました！\n{url}\n"
-            "イメージと違うところがあれば「〇〇を直して作り直して」と教えてください。"
-        )
+        await _report_result(cid, request, url, "image", "✅ できました！")
     else:
         await send_as(orch, cid, "⚠️ 画像生成に失敗しました。少し時間をおいて再度お試しください。")
 
@@ -2496,7 +2492,7 @@ async def _run_hf_generate(message, request, model, media_type, label,
         _clear_motion_job()
         _update_last_gen_url(cid, result)
         add_history(cid, "Orchestrator", f"（{disp}で生成した: {result}）")
-        await send_as(orch, cid, f"✅ できました！（{disp}）\n{result}")
+        await _report_result(cid, request, result, media_type, f"✅ できました！（{disp}）")
         return
     _save_motion_job(cid, request, model=chosen, media_type=media_type, label=disp)
     await send_as(
@@ -2681,6 +2677,59 @@ async def _run_revise(message, instruction):
         message, new_prompt, None, media_type,
         "作り直し", aspect_ratio=aspect_ratio, refine=False,
     )
+
+
+# ---------- 生成物の自動検品（依頼と出来上がりをGeminiが照合） ----------
+# 「全然違うものが出てくる」のをユーザーに見つけさせない。生成が終わった時点で
+# Geminiに出来上がりを見せ、依頼と合っているかを判定する。Gemini無料枠のみ使用。
+
+INSPECT_ENABLED = os.getenv("INSPECT_RESULT", "1") not in ("0", "false", "False")
+
+
+async def _inspect_result(request, url, media_type="image"):
+    """出来上がりが依頼どおりか判定する。
+    返り値: (ok, 理由). 判定できないときは (True, "") ＝止めない。"""
+    if not INSPECT_ENABLED or not url:
+        return True, ""
+    desc = await _describe_media_url(url)
+    if not desc:
+        return True, ""          # 見られなかった場合は素通し（誤検知で止めない）
+    ask = (
+        "AI生成の出来上がりが、依頼どおりかを判定して。JSONだけで返す。\n"
+        '形式: {"ok": true|false, "reason": "違う場合だけ、何が足りない/違うかを一言"}\n'
+        "判定基準: 依頼の【主題・被写体・動作・雰囲気】が反映されていればok=true。"
+        "細かな作風の違いは許容する。"
+        "主題が別物、指定した要素が無い、"
+        "設定シートや三面図など想定外の形式になっている場合だけ ok=false。\n"
+        f"【依頼】{request[:400]}\n【出来上がりの内容】{desc[:1200]}\nJSON:"
+    )
+    try:
+        raw = await _ai_text_bg(ask, "inspect")
+        m = re.search(r"\{.*\}", raw or "", re.S)
+        d = json.loads(m.group(0)) if m else {}
+        return bool(d.get("ok", True)), str(d.get("reason") or "")
+    except Exception as e:  # noqa: BLE001
+        print(f"[inspect] 判定できず素通し: {str(e)[:120]}")
+        return True, ""
+
+
+async def _report_result(cid, request, url, media_type, headline):
+    """完成を伝える。依頼と食い違っていれば、その旨を先に知らせる。"""
+    ok, reason = await _inspect_result(request, url, media_type)
+    if ok:
+        await send_as(
+            orch, cid,
+            f"{headline}\n{url}\n"
+            "イメージと違うところがあれば「〇〇を直して作り直して」と教えてください。"
+        )
+        return True
+    await send_as(
+        orch, cid,
+        f"⚠️ 依頼と違うものができた可能性があります（{reason[:120]}）\n{url}\n"
+        "「作り直して」と送ってもらえれば、この点を直してやり直します。"
+    )
+    add_history(cid, "Orchestrator", f"（生成物が依頼と不一致の可能性: {reason[:100]}）")
+    return False
 
 
 # ---------- 完パケ編集（Higgsfieldのクラウドサンドボックスでffmpeg処理） ----------
@@ -3123,7 +3172,8 @@ async def _watch_motion_job(cid):
             _clear_motion_job()
             _update_last_gen_url(cid, vurl)
             add_history(cid, "Orchestrator", f"（{label}が完成: {vurl}）")
-            await send_as(orch, cid, f"✅ {label}ができました！\n{vurl}")
+            await _report_result(cid, job0.get("request", ""), vurl,
+                                 media_type, f"✅ {label}ができました！")
             return
     # 30分たっても完成せず → 記録は残し、後で「できた？」で確認できるようにする
     await send_as(orch, cid, _pending_eta_msg(_load_motion_job() or {}))
