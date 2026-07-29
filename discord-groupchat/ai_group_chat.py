@@ -480,7 +480,9 @@ async def _self_diagnose():
     lines = ["🩺 **システム自己診断**"]
 
     # ① ルーティング＋E2Eの回帰テスト（別プロセスで隔離実行）
-    for tf, name in (("test_routing.py", "ルーティング"), ("simulate.py", "E2Eシミュレーション")):
+    for tf, name in (("test_routing.py", "ルーティング"),
+                     ("test_phrasing.py", "言い回し"),
+                     ("simulate.py", "E2Eシミュレーション")):
         try:
             r = await asyncio.to_thread(
                 subprocess.run, [sys.executable, tf],
@@ -1858,7 +1860,8 @@ _PLAN_TRIGGER_RE = re.compile(
 
 # ---------- ルーティング判定（純粋関数・テスト対象） ----------
 _STATUS_KW_RE = re.compile(
-    "できた|完成|終わった|どうなった|状況|進捗|まだ|見れる|見せて|見たい|"
+    "できた|できてる|出来て|完成|終わった|終わってる|どうなった|状況|進捗|まだ|"
+    "見れる|見せて|見たい|"
     "url|ＵＲＬ|どこ|ある\\?|ある？|ちょうだい|ください|"
     "あとどれ|どれくらい|どのくらい|どれぐらい|どのぐらい|何分|確認して", re.I
 )
@@ -1869,7 +1872,10 @@ _CONTENT_Q_RE = re.compile(
     "ここは|ここって|ここが|ここどこ|何が写|誰が写|写って|映って|"
     "背景|どこの|どこで|場所|建物|風景|何て書|なんて書|読める"
 )
-_GEN_INTENT2_RE = re.compile("作って|作りたい|生成|つくって|animate|動かして|アニメ化")
+_GEN_INTENT2_RE = re.compile(
+    "作って|作りたい|作成|つくって|つくりたい|生成|描いて|えがいて|かいて|"
+    "デザインして|animate|動かして|アニメ化|が?欲しい|がほしい"
+)
 # 生成依頼から「何を作るか」以外の言葉（エンジン名・媒体名・依頼表現）を落とす。
 # 「geminiで画像生成して」のように主題が無い依頼を検出して聞き返すために使う。
 _GEN_META_RE = re.compile(
@@ -1887,7 +1893,8 @@ def _gen_subject(content):
 _MOTION_KW_RE = re.compile("モーション|この動き|動きで生成|動きを真似|動きをコピー|動きを転写")
 _QUESTION_RE = re.compile(
     "どう思う|なんで|なぜ|どうやって|できる\\?|できる？|作れる|入れられる|"
-    "って何|とは|意味|進捗|どうなって|してもいい|でもいい|と思う|かな"
+    "って何|とは|意味|進捗|どうなって|してもいい|でもいい|と思う|かな|"
+    "教えて|仕組み|方法|やり方|どうやって|違いは|どっちが"
 )
 
 
@@ -1922,12 +1929,22 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     if (not has_attachments and status_kw and status_ctx
             and not re.search("作って|作りたい|つくって|生成して|作成して|描いて|アニメ化", content)
             and not _CONTENT_Q_RE.search(content)   # 中身への質問は会話へ
-            and not _REVISE_RE.search(content)):
+            and not _looks_revise(content)):
         return "status"
+    # ※編集は作り直しより先に判定する。「もっと短くして」は作り直しではなく
+    #   尺の編集だが、作り直しの語（もっと等）にも当たるため順序が効く。
+    # ①.7 完パケ編集（既にある動画への後工程。新規生成とは別物）
+    if (has_video_att or has_last_gen) and re.search(
+        "字幕|テロップ|サブタイトル|編集して|加工して|つなげ|繋げ|結合|くっつけ|"
+        "尺を|秒に(して|縮め)|短くして|長くして|カットして|トリム|切り抜いて|"
+        "9:16|縦型に|横型に|縦にして|横にして|音量|BGM|無音に", content
+    ) and not _looks_like_question(content):
+        return "edit"
+
     # ①.4 前の生成の作り直し（修正マーカーがあれば発動。記録が無くても
     #     _run_revise が Higgsfield から直前プロンプトを回収するので安全）。
     #     「前の動画のこと覚えてる？」のような質問では発動しない
-    if (not has_attachments and _REVISE_RE.search(content)
+    if (not has_attachments and _looks_revise(content)
             and not _looks_like_question(content)):
         return "revise"
     # ①.5 ショート量産（「ショート作って」「今日のショート」等）
@@ -1948,16 +1965,10 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         _GEN_INTENT2_RE.search(content) or re.search("お願い|企画", content)
     ):
         return "ad"
-    # ①.7 完パケ編集（既にある動画への後工程。新規生成とは別物）
-    if (has_video_att or has_last_gen) and re.search(
-        "字幕|テロップ|サブタイトル|編集して|加工して|つなげ|繋げ|結合|くっつけ|"
-        "尺を|秒に(して|縮め)|短くして|長くして|カットして|トリム|切り抜いて|"
-        "9:16|縦型に|横型に|音量|BGM|無音に", content
-    ) and not _looks_like_question(content):
-        return "edit"
     # ①.75 デバッグログの共有（スクショを撮らずに開発側へ状況を渡す）
     if re.search("ログ|log", content, re.I) and re.search(
-        "送って|共有|出して|上げて|あげて|渡して|見せて|ちょうだい|ください", content
+        "送って|送っと|送信|共有|出して|上げて|あげて|渡して|見せて|"
+        "ちょうだい|ください|くれ", content
     ) and not re.search("消して|削除", content):
         return "sharelog"
     # ①.8 スタイル学習（参考動画から勝ちパターンを覚えて以降の生成に反映）
@@ -1979,7 +1990,7 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     #    「動画お願い」もAI判定に落とさず生成として扱う
     if not re.search("モーション|この動き|動きを", content) and (
         _GEN_INTENT2_RE.search(content)
-        or re.search("(動画|映像|画像)を?お願い", content)
+        or re.search(r"(動画|映像|画像|イラスト|ロゴ|写真)\S{0,8}お願い", content)
     ):
         if _match_gen_model(content):
             return "hf_model"
@@ -2523,11 +2534,29 @@ def _update_last_gen_url(cid, url):
 
 
 # 「前の生成を修正して作り直す」意図の検出（明確なマーカーのみ）
-_REVISE_RE = re.compile(
+# 作り直しの検出は2段構え。
+# 「さっきの動画」「もう少し」だけでは判断できない（『さっきの動画よかったよ』は
+# ただの感想）。それ単体で作り直しと分かる言い方と、変更を求める語とセットで
+# 初めて作り直しになる言い方を分けている。
+_REVISE_STRONG_RE = re.compile(
     "もう一回|もう一度|もっかい|作り直|作りなお|やり直|やりなお|"
-    "さっきの(動画|画像|映像|やつ|の)|前の(動画|画像|映像|やつ)|"
-    "同じの|別バージョン|別ver|少し変えて|ちょっと変えて|修正して"
+    "同じの|別バージョン|別ver|修正して"
 )
+_REVISE_WEAK_RE = re.compile(
+    "さっきの(動画|画像|映像|やつ|の)|前の(動画|画像|映像|やつ)|"
+    "少し変えて|ちょっと変えて|もうちょい|もうちょっと|もう少し|もっと"
+)
+_CHANGE_VERB_RE = re.compile(
+    "して|しろ|変えて|かえて|直して|なおして|くして|にして|めて|"
+    "してほしい|して欲しい|できる\?|できる？"
+)
+
+
+def _looks_revise(content):
+    """『前の生成を作り直したい』発言か。"""
+    if _REVISE_STRONG_RE.search(content):
+        return True
+    return bool(_REVISE_WEAK_RE.search(content) and _CHANGE_VERB_RE.search(content))
 
 
 async def _interpret_video_turn(cid, latest, last):
@@ -3883,7 +3912,7 @@ _pending_approvals = {}  # cid -> (future, owner_id)
 # 記号や語尾のゆれを落としてから全体一致で判定する（長い新規依頼は承認にしない）。
 _APPROVE_RE = re.compile(
     "^("
-    "はい|うん|ええ|そう|ok|okay|おk|オーケー|おっけ|了解|承知|承認|許可|"
+    "はい|うん|ええ|そう|ok|okay|おk|おけ|オーケー|おっけ|了解|承知|承認|許可|"
     "いい|いいよ|いいね|いいです|よし|よろしく|"
     "それ|それで|それでいい|そのまま|これで|これでいい|"
     "進めて|進めよう|やって|やろう|やりましょう|お願い|頼む|頼みます|"
@@ -4156,7 +4185,7 @@ async def _selfcheck():
         [sys.executable, "-m", "py_compile", str(SELF_FILE)],
         [sys.executable, "-c", f"import {SELF_FILE.stem}"],
     ]
-    for tf in ("test_routing.py", "simulate.py"):
+    for tf in ("test_routing.py", "test_phrasing.py", "simulate.py"):
         if (SELF_FILE.parent / tf).exists():
             checks.append([sys.executable, tf])
     for args in checks:
@@ -4311,7 +4340,7 @@ async def on_ready():
     print(f"オーケストレーター起動: {orch.user}")
     # 起動時のセルフテスト（ルーティング＋E2E）。失敗したら復帰チャンネルに警告。
     routing_ok = True
-    for tf in ("test_routing.py", "simulate.py"):
+    for tf in ("test_routing.py", "test_phrasing.py", "simulate.py"):
         try:
             r = await asyncio.to_thread(
                 subprocess.run, [sys.executable, tf],
