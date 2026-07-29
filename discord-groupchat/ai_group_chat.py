@@ -4043,7 +4043,11 @@ RESTART_MARKER = HISTORY_DIR / "restart_notify.json"
 
 async def _sync_to_origin():
     """GitHubに新しいコードがあれば取り込む（再起動前に呼ぶ）。
-    ローカルにしか無いコミットや未コミット変更がある場合は、壊さないようスキップ。"""
+    ローカルの変更は「捨てずに逃がす」方針:
+      ・未コミットの変更 → git stash に退避
+      ・未プッシュのコミット → まずpush、駄目なら rescue/ ブランチに退避
+    以前は上記があるとスキップしていたため、最新コードが何日も届かず
+    「直したはずの不具合が直らない」状態が実際に起きた。必ず最新にする。"""
     rc, branch = await _git_self(["rev-parse", "--abbrev-ref", "HEAD"])
     branch = branch.strip()
     if rc != 0 or not branch:
@@ -4052,21 +4056,44 @@ async def _sync_to_origin():
     if rc != 0:
         return "fetch失敗のためスキップ（オフライン？）"
     rc, dirty = await _git_self(["status", "--porcelain", "--untracked-files=no"])
+    stashed = ""
     if rc == 0 and dirty.strip():
-        return "未コミットの変更があるためスキップ"
+        # 未コミットの変更があっても、退避（stash）してから同期する。
+        # 以前はここでスキップしており、そのせいで最新コードが届かなかった。
+        stamp = datetime.now(JST).strftime("%Y%m%d-%H%M")
+        rc_s, _ = await _git_self(["stash", "push", "-u", "-m", f"auto-{stamp}"])
+        if rc_s != 0:
+            return "未コミットの変更を退避できないためスキップ"
+        stashed = "（未コミットの変更は git stash に退避）"
     rc, ahead = await _git_self(["rev-list", "--count", f"origin/{branch}..HEAD"])
     if rc != 0:
         return "状態確認失敗のためスキップ"
+    extra = ""
     if int(ahead.strip() or "0") > 0:
-        return "ローカル独自コミット（未プッシュの自己改修）があるためスキップ"
+        # ローカルにしか無いコミットがある。以前はここでスキップしていたが、
+        # そのせいで最新コードが永久に届かない状態が続いた（修正が反映されない）。
+        # まずプッシュを試し、駄目なら退避ブランチに逃がしてから同期する。
+        # どちらにせよ作業は失われず、コードは必ず最新になる。
+        rc_push, _ = await _git_self(["push", "origin", "HEAD"])
+        if rc_push == 0:
+            extra = "（ローカルの変更はGitHubへ反映済み）"
+        else:
+            stamp = datetime.now(JST).strftime("%Y%m%d-%H%M")
+            rescue = f"rescue/local-{stamp}"
+            rc_b, _ = await _git_self(["branch", "-f", rescue, "HEAD"])
+            if rc_b != 0:
+                return "ローカル独自コミットを退避できないためスキップ"
+            extra = f"（ローカルの変更は {rescue} に退避）"
     rc, behind = await _git_self(["rev-list", "--count", f"HEAD..origin/{branch}"])
     if rc != 0:
         return "状態確認失敗のためスキップ"
     n = int(behind.strip() or "0")
-    if n == 0:
+    if n == 0 and not extra and not stashed:
         return "既に最新"
     rc, out = await _git_self(["reset", "--hard", f"origin/{branch}"])
-    return f"最新コードを取得（{n}コミット）" if rc == 0 else "reset失敗のためスキップ"
+    if rc != 0:
+        return "reset失敗のためスキップ"
+    return ((f"最新コードを取得（{n}コミット）" if n else "既に最新") + extra + stashed)
 
 
 async def _restart_self(cid, note=""):
@@ -4076,14 +4103,14 @@ async def _restart_self(cid, note=""):
     print(f"[restart] コード同期: {sync}")
     if "スキップ" in sync:
         # 同期できない＝修正が届かないまま再起動を繰り返す事故（実際に発生）を防ぐ。
-        # 大きく警告し、確実に直すターミナルコマンドを案内する。
+        # ローカル変更は自動で退避するようにしたので、ここに来るのは
+        # 通信不良やgitの異常など、こちらでは直せないケースだけ。
         await send_as(
             orch, cid,
             f"⚠️ **注意: 最新コードを取得できません（{sync}）**\n"
-            "このまま再起動しても修正は反映されません。Macのターミナルで:\n"
-            "```\npkill -f ai_group_chat.py; cd ~/so-portfolio && git fetch origin && "
-            "git reset --hard origin/claude/line-webhook-claude-integration-l3hff3 && "
-            "cd discord-groupchat && source venv/bin/activate && python ai_group_chat.py\n```"
+            "このまま再起動しても修正は反映されません。"
+            "ネットワークを確認して、もう一度「再起動して」と送ってください。"
+            "それでも直らない場合は「ログ送って」で状況を共有してください。"
         )
     try:
         RESTART_MARKER.write_text(
