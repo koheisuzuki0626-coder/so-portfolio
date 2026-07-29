@@ -198,6 +198,7 @@ def install_stubs(mcp_url=None):
     bot._share_debug_log = _rec_str("sharelog", "✅ 共有しました")
     bot._run_video_edit = _rec("edit")
     bot._analyze_my_channel = _rec("ch_stats")
+    bot._run_multi_view = _rec("multiview")
 
     async def _insp(req, url, mt="image"):
         return True, ""
@@ -321,6 +322,7 @@ async def run():
         ("バズ度分析して", "virality", None),
         ("ログ送って", "sharelog", None),
         ("実績分析して", "ch_stats", None),
+        ("多角的に見て", "multiview", None),
         ("この動画の広告効果を予測して", "virality", None),
         ("!short 夜の都市", "short", None),
         ("今日のショートお願い", "short", None),

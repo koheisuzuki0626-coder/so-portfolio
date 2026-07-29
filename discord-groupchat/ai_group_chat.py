@@ -801,6 +801,78 @@ async def ask_claude(history):
     return await run_claude_cli(peer_prompt("Claude", "Gemini", history))
 
 
+# ---------- Claudeの役割ペルソナ（同じサブスクの中で視点を分ける） ----------
+# Discordのアカウントは増やさず、同じClaudeを別の役割で呼び分ける。
+# アカウントを増やすとトークン発行など手作業が要るうえ、
+# 実体は同じClaudeなので、役割（プロンプト）を変えるだけで目的は達せられる。
+CLAUDE_PERSONAS = {
+    "claude1": (
+        "クロード1（情報収集）",
+        "あなたは情報収集の担当。事実・数字・出典・前提条件を集めて整理することに徹する。"
+        "推測と事実を必ず区別し、分からないことは『不明』と書く。"
+        "意見や評価は述べず、判断材料だけを箇条書きで簡潔に並べる。",
+    ),
+    "claude3": (
+        "クロード3（多角的視点）",
+        "あなたは多角的視点の担当。ひとつの結論に飛びつかず、"
+        "賛成・反対・第三の見方を並べ、見落とされがちな観点やリスクを指摘する。"
+        "『こう見ることもできる』という角度を最低3つ挙げ、最後に一番妥当だと思う見方を1行で示す。",
+    ),
+}
+
+
+async def _ask_claude_persona(role, history):
+    """役割つきでClaudeに答えさせる（同じCLIを別の人格で呼ぶ）。"""
+    name, persona = CLAUDE_PERSONAS[role]
+    prompt = (
+        f"あなたは{name}。{persona}\n"
+        f"日本語で{REPLY_CHARS}字以内、前置きや名乗りは不要、回答本体のみ。"
+        + BOT_OPS_GUIDE + "\n\n"
+        + f"会話:\n{build_transcript(history)}\n\nあなたの回答:"
+    )
+    return await run_claude_cli(prompt)
+
+
+async def _run_multi_view(message, content, roles=None):
+    """複数の視点（情報収集／多角的視点／Gemini）で答えて、最後に統合する。
+    同じ質問を別々の役割で見るので、見落としが減る。"""
+    cid = message.channel.id
+    roles = roles or ["claude1", "claude3"]
+    history = get_history(cid)
+    await send_as(orch, cid, "🧠 複数の視点で検討します（少し時間がかかります）…")
+    results = await asyncio.gather(
+        *[_ask_claude_persona(r, history) for r in roles], return_exceptions=True
+    )
+    ok = []
+    for role, res in zip(roles, results):
+        name = CLAUDE_PERSONAS[role][0]
+        if isinstance(res, Exception):
+            await send_as(orch, cid, f"⚠️ {name} は答えられませんでした: {str(res)[:150]}")
+            continue
+        text = (res or "").strip()
+        if not text:
+            continue
+        ok.append((name, text))
+        await send_as(claude_bot, cid, f"**{name}**\n{text}")
+        add_history(cid, name, text)
+    if len(ok) < 2:
+        return
+    try:
+        merged = await _ai_text_bg(
+            "次の複数の視点を統合し、最終的な結論と次に取るべき一手を"
+            f"日本語{REPLY_CHARS}字以内でまとめて。重複は削り、"
+            "食い違う点があれば理由とともにどちらが妥当か示すこと。\n\n"
+            + "\n\n".join(f"【{n}】\n{t}" for n, t in ok),
+            "multi_view",
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[multi_view] 統合に失敗: {str(e)[:120]}")
+        return
+    if merged and merged.strip():
+        add_history(cid, "Orchestrator", merged.strip())
+        await send_as(orch, cid, f"🧩 **まとめ**\n{merged.strip()}")
+
+
 def _is_quota_error(e):
     m = str(e)
     return "429" in m or "RESOURCE_EXHAUSTED" in m or "quota" in m.lower()
@@ -2169,6 +2241,11 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         _GEN_INTENT2_RE.search(content) or re.search("お願い|企画", content)
     ):
         return "ad"
+    # ①.71 複数視点で検討（クロード1＝情報収集／クロード3＝多角的視点）
+    if re.search("クロード\\s*[1１]|クロード\\s*[3３]|claude\\s*[13]", content, re.I) or \
+            re.search("多角的|多角度|いろんな(視点|角度)|色んな(視点|角度)|"
+                      "複数の(視点|角度)|両面から|別の視点", content):
+        return "multiview"
     # ①.72 自分のチャンネルの実績分析／チャンネル登録
     if re.search("チャンネル", content) and re.search(
         "登録|設定|変更|セット|教える|これ", content
@@ -4891,6 +4968,19 @@ async def _dispatch_message(message):
               "Higgsfieldのクラウド編集室（ffmpeg）で加工し、結果のURLを返します",
               lambda: _run_video_edit(message, content), "動画編集",
               "動画生成のクレジットは消費しません（サンドボックス実行）")
+        return
+
+    if route == "multiview":
+        add_history(cid, message.author.display_name, content)
+        # 名指しがあればその役だけ、無ければ両方
+        roles = [r for r, pat in (("claude1", r"クロード\s*[1１]|claude\s*1"),
+                                  ("claude3", r"クロード\s*[3３]|claude\s*3"))
+                 if re.search(pat, content, re.I)] or ["claude1", "claude3"]
+        names = "・".join(CLAUDE_PERSONAS[r][0] for r in roles)
+        _gate(message, cid, f"{names}に検討してもらう",
+              "同じ質問を役割ごとに分けて答え、最後に統合してまとめます",
+              lambda: _run_multi_view(message, content, roles), "複数視点の検討",
+              "Claudeのサブスク枠を役の数だけ使います（追加課金なし）")
         return
 
     if route == "ch_set":
