@@ -279,6 +279,27 @@ def run():
     check("主題あり", bot._gen_subject("猫のイラスト作って"), "猫")
     check("主題あり(2)", bot._gen_subject("夕暮れの海辺の写真作って"), "夕暮れの海辺")
 
+    print("■ 確認の受付枠 _set_pending / _clear_pending")
+    import asyncio as _aio
+
+    async def _slots():
+        loop = _aio.get_running_loop()
+        f1, f2 = loop.create_future(), loop.create_future()
+        bot._set_pending(1, f1, 100)
+        bot._set_pending(1, f2, 100)          # 2件目が来た
+        r = []
+        r.append(("古い確認は自動中止", f1.done() and f1.result() is False, True))
+        bot._clear_pending(1, f1)             # 古い方のタイムアウト後片付け
+        r.append(("新しい確認の受付は残る",
+                  bot._pending_approvals.get(1) is not None, True))
+        r.append(("OKは新しい確認に届く",
+                  bot._try_text_approval(1, 100, "OK"), True))
+        bot._clear_pending(1, f2)
+        r.append(("片付け後は空", bot._pending_approvals.get(1) is None, True))
+        return r
+    for desc, got, want in _aio.run(_slots()):
+        check(desc, got, want)
+
     print("■ プロンプトすり替えの検知 _prompt_drifted")
     req = "a 30 year old japanese man cheering with a beer mug, victory celebration"
     check("同じなら検知しない", bot._prompt_drifted(req, req), False)

@@ -2606,7 +2606,7 @@ async def _run_revise(message, instruction):
     # どこをどう直すかを明示し、承諾をもらってから生成（クレジットの無駄撃ちを防ぐ）
     fut = asyncio.get_running_loop().create_future()
     owner_id = message.author.id
-    _pending_approvals[cid] = (fut, owner_id)
+    _set_pending(cid, fut, owner_id)
     plan_lines = "\n".join(f"・{c}" for c in changes)
     await send_as(
         orch, cid,
@@ -2624,7 +2624,7 @@ async def _run_revise(message, instruction):
     except asyncio.TimeoutError:
         approved = False
     finally:
-        _pending_approvals.pop(cid, None)
+        _clear_pending(cid, fut)
     if not approved:
         await send_as(orch, cid, "🛑 作り直しをやめました（クレジットは消費していません）。")
         add_history(cid, "Orchestrator", "（修正プランが却下されたため作り直しを中止した）")
@@ -3877,6 +3877,24 @@ _DENY_PHRASES = {
 }
 
 
+def _set_pending(cid, fut, owner_id):
+    """新しい確認を出す（1チャンネル1件に保つ）。
+    先に出ていた確認は自動的に中止扱いにする。これをしないと、
+    古い方がタイムアウトした時に【新しい方の受付を消してしまい】、
+    『OKと言っても始まらない → 数分後に急にやめましたと出る』が起きる。"""
+    old = _pending_approvals.get(cid)
+    if old and not old[0].done():
+        old[0].set_result(False)
+    _pending_approvals[cid] = (fut, owner_id)
+
+
+def _clear_pending(cid, fut):
+    """自分が出した確認だけを片付ける（他の確認の受付を消さない）。"""
+    cur = _pending_approvals.get(cid)
+    if cur and cur[0] is fut:
+        del _pending_approvals[cid]
+
+
 def _try_text_approval(cid, user_id, content):
     """承認待ちがあるとき、テキストの「許可/拒否」でも解決する。
     承認=True / 却下=False / 対象外=None を返す。"""
@@ -3923,7 +3941,7 @@ async def _confirm(message, cid, summary, plan, cost=""):
         return True
     fut = asyncio.get_running_loop().create_future()
     owner_id = getattr(message.author, "id", None)
-    _pending_approvals[cid] = (fut, owner_id)
+    _set_pending(cid, fut, owner_id)
     try:
         view = PermissionView(fut, owner_id)
     except Exception as e:  # noqa: BLE001
@@ -3944,7 +3962,7 @@ async def _confirm(message, cid, summary, plan, cost=""):
     except asyncio.TimeoutError:
         approved = False
     finally:
-        _pending_approvals.pop(cid, None)
+        _clear_pending(cid, fut)
     if not approved:
         await send_as(orch, cid, "🛑 やめました。言い直してもらえれば作り直します。")
         add_history(cid, "Orchestrator", f"（「{summary}」の作業を中止した）")
@@ -3979,7 +3997,7 @@ async def run_claude_agent(cid, task, owner_id):
 
     # ② Discordで承認（ボタン or テキストの「許可/拒否」）
     fut = asyncio.get_running_loop().create_future()
-    _pending_approvals[cid] = (fut, owner_id)
+    _set_pending(cid, fut, owner_id)
     await send_as(
         orch, cid,
         f"🤖 タスク: {task}\n\n📋 実行プラン:\n{plan[:1500]}\n\n"
@@ -3992,7 +4010,7 @@ async def run_claude_agent(cid, task, owner_id):
     except asyncio.TimeoutError:
         approved = False
     finally:
-        _pending_approvals.pop(cid, None)
+        _clear_pending(cid, fut)
     if not approved:
         return "🛑 却下されました。実行しません。"
 
@@ -4154,7 +4172,7 @@ async def _run_self_fix(cid, request, owner_id):
 
     _, diffstat = await _git_self(["diff", "--stat", "--", SELF_FILE.name])
     fut = asyncio.get_running_loop().create_future()
-    _pending_approvals[cid] = (fut, owner_id)
+    _set_pending(cid, fut, owner_id)
     await send_as(
         orch, cid,
         f"📋 修正完了・検証OKです。\n\n【修正内容】\n{result[:1000]}\n\n"
@@ -4168,7 +4186,7 @@ async def _run_self_fix(cid, request, owner_id):
     except asyncio.TimeoutError:
         approved = False
     finally:
-        _pending_approvals.pop(cid, None)
+        _clear_pending(cid, fut)
     if not approved:
         shutil.copy2(SELF_BACKUP, SELF_FILE)
         await send_as(orch, cid, "🛑 元のコードに戻しました。適用していません。")
