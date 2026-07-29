@@ -1478,6 +1478,146 @@ async def _search_videos(query, limit=50):
     return videos
 
 
+# ---------- 投稿後の効果測定（自分のチャンネルの実績で勝ちパターンを更新） ----------
+# 「企画→生成→編集→予測」で止まっていた流れを、投稿後の実データまでつなぐ。
+# YouTube Data API（無料）＋ Gemini（無料枠）だけで回る。
+MYCH_FILE = HISTORY_DIR / "my_channel.json"
+
+
+def _load_my_channel():
+    return _read_json(MYCH_FILE)
+
+
+def _save_my_channel(data):
+    _write_json(MYCH_FILE, data, "mychannel")
+
+
+async def _resolve_channel_id(text):
+    """チャンネルURL/ハンドル(@name)/IDから channelId を求める。"""
+    if not YOUTUBE_API_KEY:
+        raise RuntimeError("YOUTUBE_API_KEY が .env に設定されていません")
+    text = (text or "").strip()
+    m = re.search(r"channel/(UC[\w-]{20,})", text) or re.search(r"^(UC[\w-]{20,})$", text)
+    if m:
+        return m.group(1)
+    handle = re.search(r"@([\w.\-]+)", text)
+    async with aiohttp.ClientSession() as session:
+        if handle:
+            async with session.get(
+                "https://www.googleapis.com/youtube/v3/channels",
+                params={"part": "id", "forHandle": "@" + handle.group(1),
+                        "key": YOUTUBE_API_KEY},
+            ) as resp:
+                d = await resp.json()
+                if d.get("items"):
+                    return d["items"][0]["id"]
+        # 最後の手段：チャンネル名で検索
+        async with session.get(
+            "https://www.googleapis.com/youtube/v3/search",
+            params={"part": "snippet", "type": "channel", "maxResults": 1,
+                    "q": re.sub(r"https?://\S+", "", text) or text,
+                    "key": YOUTUBE_API_KEY},
+        ) as resp:
+            d = await resp.json()
+            if d.get("items"):
+                return d["items"][0]["snippet"]["channelId"]
+    return None
+
+
+async def _fetch_my_videos(channel_id, limit=30):
+    """自分のチャンネルの新しい動画を、再生数つきで取得する。"""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            "https://www.googleapis.com/youtube/v3/search",
+            params={"part": "snippet", "channelId": channel_id, "order": "date",
+                    "type": "video", "maxResults": min(limit, 50),
+                    "key": YOUTUBE_API_KEY},
+        ) as resp:
+            d = await resp.json()
+            if resp.status != 200:
+                raise RuntimeError(f"YouTube API エラー: {str(d)[:300]}")
+        ids = [i["id"]["videoId"] for i in d.get("items", []) if i.get("id", {}).get("videoId")]
+        if not ids:
+            return []
+        async with session.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={"part": "snippet,statistics,contentDetails",
+                    "id": ",".join(ids), "key": YOUTUBE_API_KEY},
+        ) as resp:
+            d2 = await resp.json()
+    vids = []
+    for item in d2.get("items", []):
+        v = _video_dict(item)
+        st = item.get("statistics", {})
+        v["likes"] = int(st.get("likeCount", 0) or 0)
+        v["comments"] = int(st.get("commentCount", 0) or 0)
+        v["published"] = item["snippet"].get("publishedAt", "")[:10]
+        vids.append(v)
+    return vids
+
+
+async def _analyze_my_channel(cid, quiet=False):
+    """自分の投稿実績を取得→Geminiが伸びた理由を分析→勝ちパターン集に反映。"""
+    conf = _load_my_channel()
+    ch = conf.get("channel_id")
+    if not ch:
+        if not quiet:
+            await send_as(
+                orch, cid,
+                "まだチャンネルが登録されていません。\n"
+                "「**チャンネル登録して https://www.youtube.com/@あなたのID**」のように"
+                "URLかハンドルを送ってください。"
+            )
+        return None
+    vids = await _fetch_my_videos(ch)
+    if not vids:
+        if not quiet:
+            await send_as(orch, cid, "動画がまだ見つかりませんでした（投稿後に反映されます）。")
+        return None
+    vids.sort(key=lambda v: v["views"], reverse=True)
+    top, low = vids[:5], vids[-5:]
+
+    def _fmt(vs):
+        return "\n".join(
+            f"・{v['views']:,}回 いいね{v['likes']} 尺{v['duration']}秒"
+            f" 「{v['title'][:50]}」" for v in vs
+        )
+    ask = (
+        "あなたはYouTube Shortsのグロース担当。次は【私自身のチャンネルの実績】です。"
+        "伸びた動画と伸びなかった動画を比べ、再現できる勝ちパターンを日本語で"
+        "箇条書き8行以内にまとめて。憶測ではなくデータから言えることだけ書く。\n"
+        "観点: タイトルの型 / 尺 / 題材 / 投稿の傾向。最後に『次に作るべき1本』を1行。\n\n"
+        f"【伸びた動画】\n{_fmt(top)}\n\n【伸びなかった動画】\n{_fmt(low)}\n\n"
+        f"（全{len(vids)}本・平均{sum(v['views'] for v in vids) // len(vids):,}回）"
+    )
+    insight = (await _ai_text_bg(ask, "my_channel")).strip()
+    conf.update(channel_id=ch, last_checked=time.time(),
+                video_count=len(vids),
+                best={"title": top[0]["title"], "views": top[0]["views"]})
+    _save_my_channel(conf)
+    # 実績を勝ちパターン集にも反映（以降の企画・生成プロンプトへ自動で効く）
+    if insight:
+        try:
+            stamp = datetime.now(JST).strftime("%Y-%m-%d")
+            base = _load_style_profile()
+            STYLE_PROFILE_FILE.write_text(
+                (base + f"\n\n## {stamp} 自分のチャンネル実績からの学び\n{insight}").strip(),
+                encoding="utf-8",
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[my_channel] 勝ちパターン更新に失敗: {str(e)[:120]}")
+    if not quiet:
+        avg = sum(v["views"] for v in vids) // len(vids)
+        await send_as(
+            orch, cid,
+            f"📊 **チャンネル実績（全{len(vids)}本・平均{avg:,}回）**\n"
+            f"🥇 最高: {top[0]['views']:,}回「{top[0]['title'][:40]}」\n\n"
+            f"{insight[:1500]}\n\n"
+            "この学びは勝ちパターン集に反映済みです（今後の企画に自動で効きます）。"
+        )
+    return insight
+
+
 VIDEO_STUDY_PROMPT = (
     "あなたは映像制作の研究者。次のYouTube動画を視聴し、映像制作の観点で分析して。\n"
     "① 演出手法（企画構成・冒頭のフック・視聴維持の工夫）\n"
@@ -1807,6 +1947,12 @@ async def _daily_trend_loop():
             run_at += timedelta(days=1)
         print(f"[trend] 次回の自動リサーチ: {run_at.isoformat()}")
         await asyncio.sleep((run_at - now).total_seconds())
+        # 自分のチャンネルが登録済みなら、実績も毎日ふりかえって学びを更新する
+        if _load_my_channel().get("channel_id"):
+            try:
+                await _analyze_my_channel(TREND_CHANNEL_ID)
+            except Exception as e:  # noqa: BLE001
+                print(f"[my_channel] 日次の実績分析に失敗: {str(e)[:150]}")
         try:
             await _run_trend_study(TREND_CHANNEL_ID)
         except Exception as e:  # noqa: BLE001
@@ -1956,6 +2102,7 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     #     「バズる動画作って」のような生成依頼は②へ、
     #     「バズった動画調べて」のようなリサーチはAI(trend)へ譲る。
     if (not _GEN_INTENT2_RE.search(content)
+            and not re.search("チャンネル|実績|成績|投稿した", content)  # それは実績分析
             and re.search("バズ|バイラル|広告効果|再生数|伸び", content)
             and re.search("分析|予測|チェック|診断|シミュレ|測って|判定", content)):
         return "virality"
@@ -1965,6 +2112,19 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         _GEN_INTENT2_RE.search(content) or re.search("お願い|企画", content)
     ):
         return "ad"
+    # ①.72 自分のチャンネルの実績分析／チャンネル登録
+    if re.search("チャンネル", content) and re.search(
+        "登録|設定|変更|セット|教える|これ", content
+    ) and re.search(r"https?://|@[\w.\-]+|UC[\w-]{20,}", content):
+        return "ch_set"
+    #      「実績/成績/再生数」は単体で実績分析。「チャンネル＋分析」も同じ。
+    #      生成依頼（〜作って）が混ざっている場合は制作なので対象外にする。
+    if (not _GEN_INTENT2_RE.search(content)
+            and (re.search("実績|成績|再生数|視聴回数|伸び方", content)
+                 or (re.search("チャンネル", content)
+                     and re.search("分析|レポート|振り返り|どう", content)))
+            and not re.search("この動画|添付", content)):
+        return "ch_stats"
     # ①.75 デバッグログの共有（スクショを撮らずに開発側へ状況を渡す）
     if re.search("ログ|log", content, re.I) and re.search(
         "送って|送っと|送信|共有|出して|上げて|あげて|渡して|見せて|"
@@ -4662,6 +4822,34 @@ async def _dispatch_message(message):
               "Higgsfieldのクラウド編集室（ffmpeg）で加工し、結果のURLを返します",
               lambda: _run_video_edit(message, content), "動画編集",
               "動画生成のクレジットは消費しません（サンドボックス実行）")
+        return
+
+    if route == "ch_set":
+        add_history(cid, message.author.display_name, content)
+
+        async def _do_set():
+            ch = await _resolve_channel_id(content)
+            if not ch:
+                await send_as(orch, cid,
+                              "チャンネルが見つかりませんでした。"
+                              "URL（https://www.youtube.com/@…）で送ってみてください。")
+                return
+            conf = _load_my_channel()
+            conf["channel_id"] = ch
+            _save_my_channel(conf)
+            await send_as(orch, cid,
+                          f"✅ チャンネルを登録しました（{ch}）。\n"
+                          "「**実績分析して**」で、伸びた理由の分析と勝ちパターンへの反映ができます。")
+        _spawn(_do_set(), cid, "チャンネル登録")
+        return
+
+    if route == "ch_stats":
+        add_history(cid, message.author.display_name, content)
+        _gate(message, cid, "自分のチャンネルの実績分析",
+              "投稿済み動画の再生数を取得し、伸びた理由を分析して"
+              "勝ちパターン集に反映します",
+              lambda: _analyze_my_channel(cid), "実績分析",
+              "無料（YouTube APIとGeminiの無料枠）")
         return
 
     if route == "sharelog":
