@@ -770,6 +770,9 @@ BOT_OPS_GUIDE = (
     "返事の先頭に「クロード:」のような話者名を付けてはいけない（本文だけを書く）。"
     "自分がClaudeかGeminiか、他にどの役がいるかといった内輪の説明もしない。"
     "ユーザーが聞いているのはその話ではない。"
+    "【重要】過去の自分の発言で正体やAIの構成について説明していても、"
+    "それを蒸し返さない。訂正・補足・お詫びも含めて一切触れず、"
+    "ユーザーの最後の発言の中身だけに答えること。"
     "【重要】うまく進んでいない理由を推測で説明してはいけない。"
     "『ツールの権限が下りていない』『APIの制限で』など、実際のエラーを"
     "確認していない原因を作り話するのは禁止。分からないときは正直に"
@@ -2099,6 +2102,13 @@ async def _daily_trend_loop():
 #   ② ディベート（各回答を相互に見せて批判・修正）
 #   ③ 司令塔が統合（合意点/対立点を整理して単一回答へ）
 # ---------------------------------------------------------------------------
+# オーケストレーターが直接返事をするときの名乗り。
+# 以前は engine 名（"Claude" / "Gemini"）をそのまま人格として渡していたため、
+# 「俺はGeminiじゃなくてクロード」と正体の訂正を始める事故が起きた。
+# どのエンジンを使うかは内部の都合であって、ユーザーには関係がない。
+ORCH_PERSONA = "koheiの相棒AI（オーケストレーター）"
+
+
 def _answer_prompt(who, history, extra=""):
     return (
         f"あなたは{who}。次の会話の最後の要求に、正確で役立つ回答を日本語で簡潔に述べる。"
@@ -3644,7 +3654,7 @@ async def _orchestrate(mode, lead, search, history, recall=False):
     if mode == "single":
         if lead == "gemini":
             try:
-                ans = await _gemini_call(_answer_prompt("Gemini", history, ctx))
+                ans = await _gemini_call(_answer_prompt(ORCH_PERSONA, history, ctx))
                 if (ans or "").strip():
                     return ans
                 # 安全フィルタ等で本文が空 → 無言にせずClaudeで答え直す
@@ -3652,12 +3662,12 @@ async def _orchestrate(mode, lead, search, history, recall=False):
             except Exception:  # noqa: BLE001
                 pass  # Gemini不可ならClaudeへ
         try:
-            return await run_claude_cli(_answer_prompt("Claude", history, ctx))
+            return await run_claude_cli(_answer_prompt(ORCH_PERSONA, history, ctx))
         except Exception as e:  # noqa: BLE001
             # Claudeがタイムアウト・上限などで落ちたらGeminiで応答（無応答を防ぐ）
             print(f"[orchestrate] Claude失敗 → Geminiへ: {str(e)[:150]}")
             try:
-                return await _gemini_call(_answer_prompt("Gemini", history, ctx))
+                return await _gemini_call(_answer_prompt(ORCH_PERSONA, history, ctx))
             except Exception as e2:  # noqa: BLE001
                 # 両方ダウン：本当の原因（Claude側）を隠さず両方報告する
                 raise RuntimeError(
@@ -3676,7 +3686,7 @@ async def _orchestrate(mode, lead, search, history, recall=False):
 
     # Geminiが使えない場合はClaude単独に縮退
     if not gemini_ans.strip():
-        return claude_ans or await run_claude_cli(_answer_prompt("Claude", history, ctx))
+        return claude_ans or await run_claude_cli(_answer_prompt(ORCH_PERSONA, history, ctx))
     if not claude_ans.strip():
         return gemini_ans
 
@@ -3825,7 +3835,7 @@ async def _handle_orchestrator(message, cid):
         kind, reply = "chat", ""   # 降格時の返事は無いので通常の回答フェーズへ
     # 判定と同時に返事も書けていれば、追加のAI呼び出しをせずそのまま返す（最速）
     if kind == "chat" and reply:
-        reply = _clean_reply(reply)
+        reply = _clean_reply(reply, latest)
         add_history(cid, "Orchestrator", reply)
         await send_as(orch, cid, reply)
         return
@@ -3898,14 +3908,14 @@ async def _handle_orchestrator(message, cid):
         except Exception as e:  # noqa: BLE001
             if _is_quota_error(e):
                 try:
-                    answer = await run_claude_cli(_answer_prompt("Claude", history))
+                    answer = await run_claude_cli(_answer_prompt(ORCH_PERSONA, history))
                 except Exception:  # noqa: BLE001
                     answer = "⚠️ 一時的に応答できませんでした。少し後で試してください。"
             else:
                 if "gemini" in str(e).lower():
                     _gemini_watch["outage_cid"] = cid
                 answer = f"⚠️ 応答に失敗: {str(e)[:300]}"
-    answer = _clean_reply(answer)
+    answer = _clean_reply(answer, latest)
     add_history(cid, "Orchestrator", answer)
     await send_as(orch, cid, answer)
 
@@ -3933,19 +3943,51 @@ _SPEAKER_PREFIX_RE = re.compile(
 )
 
 
-def _clean_reply(text):
-    """返事の先頭に付いた話者名（「クロード: 」等）を取り除く。"""
+# 「俺はGeminiじゃなくてクロード」のような正体の訂正。会話ログに一度出ると
+# モデルが延々と蒸し返すため、ユーザーがAIの話をしていない限り冒頭から落とす。
+_IDENTITY_TALK_RE = re.compile(
+    r"(?=.*(?:gemini|ジェミニ|クロード|claude))"
+    r"(?=.*(?:じゃな|ではな|別のAI|紛らわし|まぎらわし|名前が|同席|参加してる))",
+    re.I | re.S,
+)
+_IDENTITY_TAIL_RE = re.compile(r"紛らわし|まぎらわし|ごめん|すみません|失礼|悪かった")
+_USER_ASKED_AI_RE = re.compile(r"gemini|ジェミニ|クロード|claude|ai|エーアイ", re.I)
+
+
+def _clean_reply(text, user_said=""):
+    """返事の先頭に付いた話者名と、正体の訂正の蒸し返しを取り除く。"""
     t = (text or "").lstrip()
     for _ in range(2):        # 「クロード: オーケストレーター: 」の二重も落とす
         t2 = _SPEAKER_PREFIX_RE.sub("", t, count=1).lstrip()
         if t2 == t:
             break
         t = t2
-    return t
+    if user_said and _USER_ASKED_AI_RE.search(user_said):
+        return t              # 本人がAIの話をしている → 触らない
+    # 冒頭に続く「正体の説明」の文だけを落とす（本題に入ったらそこで止める）
+    parts = re.split(r"(?<=[。\n])", t)
+    i = dropped = 0
+    while i < len(parts):
+        piece = parts[i]
+        if not piece.strip():
+            i += 1
+            continue
+        if _IDENTITY_TALK_RE.match(piece):
+            i += 1
+            dropped += 1
+            continue
+        # 正体の説明に続く短い謝罪・言い訳（「名前がまぎらわしくてごめん。」）も落とす
+        if dropped and len(piece) < 50 and _IDENTITY_TAIL_RE.search(piece):
+            i += 1
+            continue
+        break
+    rest = "".join(parts[i:]).strip()
+    return rest or t          # 全部消える場合は元のまま（無言にしない）
 
 
 async def respond(cid, name, bot, ask):
-    text = _clean_reply(await ask(get_history(cid)))
+    text = _clean_reply(await ask(get_history(cid)),
+                        _latest_user_msg(get_history(cid)))
     # 同じ発言の繰り返しは送信しない（Geminiが同文を連投するバグへの保険）
     h = get_history(cid)
     last_own = next((t for s, t in reversed(h) if s == name), None)

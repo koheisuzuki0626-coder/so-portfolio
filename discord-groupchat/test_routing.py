@@ -325,6 +325,20 @@ def run():
     ):
         check(repr(src), bot._clean_reply(src), want)
 
+    print("■ 正体の訂正の蒸し返しを落とす _clean_reply（第2引数=ユーザー発言）")
+    _bad = ("きみはGeminiじゃないよ、クロード。今この会話にいるのは俺(クロード)と"
+            "クロード3(アドバイザー)だけで、Geminiは別のAIとして参加してる。"
+            "名前がまぎらわしくてごめん。\n\nタバコの話だけど、無理しないでね。")
+    check("正体の説明を落とす",
+          bot._clean_reply(_bad, "タバコばっかり吸ってる"), "タバコの話だけど、無理しないでね。")
+    check("本人がAIの話をしている時は残す",
+          bot._clean_reply(_bad, "きみってGemini？").startswith("きみはGemini"), True)
+    check("普通の謝罪は消さない",
+          bot._clean_reply("ごめん、それは俺のミス。すぐ直すね。", "直して"),
+          "ごめん、それは俺のミス。すぐ直すね。")
+    check("普通の返事は無傷",
+          bot._clean_reply("今日はゆっくり休んだら？", "つかれた"), "今日はゆっくり休んだら？")
+
     print("■ 確認の受付枠 _set_pending / _clear_pending")
     import asyncio as _aio
 
