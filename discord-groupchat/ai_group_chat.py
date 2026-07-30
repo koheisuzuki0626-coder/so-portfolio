@@ -2251,10 +2251,14 @@ _QUESTION_RE = re.compile(
 _ASK_INFO_RE = re.compile(
     "聞きたい|聞くだけ|訊きたい|知りたい|確認したいだけ|"
     "いくら(?!でも)|幾ら|何円|なん円|"
-    "料金|価格|値段|費用|コスト|相場|無料|有料|"
+    "料金|価格|値段|費用|相場|コスト(?!を?(下げ|抑え|削減))|"
+    # 「無料で動画作って」は依頼なので、断定を聞く形のときだけ質問扱いにする
+    "(無料|有料)(なの|ですか|かな|か？|か\\?|？|\\?)|"
     "どれくらいかかる|どのくらいかかる|どれぐらいかかる|どのくらい必要|"
     "何クレジット|なんクレジット|クレジット(は|って|を)?(いくら|どれ|どの|何|なん)"
 )
+# 「今すぐ作れ」という明確な依頼（料金の話が混ざっても作業を止めない）
+_GEN_ORDER_RE = re.compile("作って|作成して|つくって|生成して|描いて|作ってほしい")
 
 
 def _looks_like_question(text):
@@ -2277,8 +2281,8 @@ def _match_gen_model(content):
 def classify_route(content, *, has_attachments=False, has_video_att=False,
                    has_image_att=False, has_job=False, has_last_gen=False):
     """@メンションなし発言のルーティングを判定（AI(_plan)前の決定的ルートのみ）。
-    返り値: 'status'/'revise'/'short'/'virality'/'ad'/'hf_model'/'hf_auto'/
-    'motion'/'motion_ask'/None。
+    返り値: 'status'/'revise'/'short'/'virality'/'ad'/'credits'/'hf_model'/
+    'hf_auto'/'motion'/'motion_ask'/None。
     on_message と同じ順序・同じ正規表現を使うので、これをテストすれば実挙動を検証できる。"""
     # ① 生成物の状態確認（添付なし・状態ワード・文脈）。
     #    直近の生成があれば「できた？」だけでも状態確認につなぐ。
@@ -2353,6 +2357,18 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         "ちょうだい|ください|くれ", content
     ) and not re.search("消して|削除", content):
         return "sharelog"
+    # ①.76 料金・残クレジットの照会（作らずに、実データを調べて答える）。
+    #      「無料で動画作って」のような明確な依頼は制作なので対象外。
+    #      「クレジット」「残高」はそれだけでHiggsfieldの話だが、「プラン」「料金」は
+    #      事業計画や一般の話にも使うので、生成の文脈があるときだけ拾う。
+    if (not _GEN_ORDER_RE.search(content) and _looks_like_question(content)
+            and (re.search("クレジット|残高|課金", content)
+                 or (re.search("料金|価格|値段|費用|コスト|いくら|何円|なん円|"
+                               "無料|有料|プラン", content)
+                     and (_match_gen_model(content)
+                          or re.search("生成|動画|映像|画像|イラスト|higgsfield|ヒッグス",
+                                       content, re.I))))):
+        return "credits"
     # ①.8 スタイル学習（参考動画から勝ちパターンを覚えて以降の生成に反映）
     if re.search("スタイル|作風", content) and re.search("リセット|白紙|消して|忘れて|クリア", content):
         return "style_reset"
@@ -2658,6 +2674,36 @@ async def _mcp_gen_status(media_type="video", model=None):
     return _extract_video_url(out)
 
 
+
+
+async def _run_credits(content):
+    """Higgsfieldのプラン・残クレジットと、モデル別の消費量を実データで答える。
+    「veo3で1本いくら？」のような質問に、生成を始めずに数字だけ返すための経路。
+    数字は必ずMCPツールの返り値から取り、無ければ『不明』と言わせる
+    （推測の金額を答えるのが一番まずいため）。"""
+    hit = _match_gen_model(content)
+    focus = (
+        f"特に {hit[2]}（モデルID: {hit[0]}）で1本生成したときの消費クレジットを重点的に。"
+        if hit else
+        "よく使う動画モデル（Veo 3 / Sora 2 / Kling / Seedance）の"
+        "1本あたりの消費クレジットも分かれば併せて。"
+    )
+    task = (
+        "Higgsfield の MCP ツールを使って、いまのプランと残クレジットを調べて。\n"
+        "1) show_plans_and_credits を呼び、プラン名・残クレジット・更新日を確認する。\n"
+        "2) models_explore でモデルの情報を見て、1回の生成あたりの消費クレジットを確認する。\n"
+        f"{focus}\n"
+        "【厳守】数字はツールの返り値に実際にあったものだけを書く。"
+        "ツールが返さなかった項目は『不明』と書き、推測や記憶による金額を"
+        "書いてはいけない。ツール自体が使えなかったときは"
+        "『Higgsfieldに接続できませんでした』とだけ書く。\n"
+        f"日本語で{REPLY_CHARS}字以内、箇条書きで簡潔に。前置き・説明は不要。"
+    )
+    out = await _run_claude_exec(task, timeout=240)
+    if not out or out.startswith("⚠️"):
+        return ("⚠️ Higgsfieldのクレジット情報を取得できませんでした。"
+                f"（{(out or '応答なし')[:150]}）")
+    return "💳 " + out.strip()
 
 
 # Discordの発言で使えるモデル名 → (MCPモデルID, 種別, 表示名)
@@ -5185,6 +5231,18 @@ async def _dispatch_message(message):
               "勝ちパターン集に反映します",
               lambda: _analyze_my_channel(cid), "実績分析",
               "無料（YouTube APIとGeminiの無料枠）")
+        return
+
+    if route == "credits":
+        # 聞かれているだけなので生成はしない。読み取りだけ・無料なので確認も挟まない。
+        add_history(cid, message.author.display_name, content)
+        await message.channel.send("💳 Higgsfieldのプランと残クレジットを確認しています…")
+
+        async def _do_credits():
+            res = await _run_credits(content)
+            add_history(cid, "Orchestrator", res)
+            await send_as(orch, cid, res)
+        _spawn(_do_credits(), cid, "クレジット確認")
         return
 
     if route == "sharelog":

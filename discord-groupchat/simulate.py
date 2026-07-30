@@ -196,6 +196,7 @@ def install_stubs(mcp_url=None):
     bot._run_style_learn = _rec("style_learn")
     bot._handle_image_request = _rec("image_gen")
     bot._share_debug_log = _rec_str("sharelog", "✅ 共有しました")
+    bot._run_credits = _rec_str("credits", "💳 残クレジット: 1,200（スタブ）")
     bot._run_video_edit = _rec("edit")
     bot._analyze_my_channel = _rec("ch_stats")
     bot._run_multi_view = _rec("multiview")
@@ -321,6 +322,8 @@ async def run():
         ("コーヒーショップのCM作って", "ad", None),
         ("バズ度分析して", "virality", None),
         ("ログ送って", "sharelog", None),
+        ("veo3で動画作ると何クレジット？", "credits", None),
+        ("クレジットあとどれくらい残ってる？", "credits", None),
         ("実績分析して", "ch_stats", None),
         ("多角的に見て", "multiview", None),
         ("この動画の広告効果を予測して", "virality", None),
@@ -338,6 +341,16 @@ async def run():
         if expect:
             check(f"{content!r}→{expect}", expect in r["fired"],
                   f"実際={r['fired']} sent={r['sent'][:1]}")
+
+    # 料金を聞いただけで生成が始まらないこと（実際に起きた事故の再発防止）
+    for _q in ("veo3.1生成するときクレジットいくらくらいか聞きたいだけ",
+               "画像生成の料金っていくら",
+               "動画作るのにいくらかかるか知りたい"):
+        install_stubs()
+        r = await drive(_q)
+        check(f"{_q!r} で生成しない",
+              not ({"hf_generate", "image_gen", "short"} & set(r["fired"])),
+              f"実際={r['fired']}")
 
     # motion_ask は案内文が送られる
     install_stubs()
