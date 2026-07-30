@@ -339,6 +339,16 @@ def run():
     check("普通の返事は無傷",
           bot._clean_reply("今日はゆっくり休んだら？", "つかれた"), "今日はゆっくり休んだら？")
 
+    print("■ 誰が答えたかのラベル _with_speaker")
+    bot._last_engine["name"] = "クロード"
+    check("クロードのラベル", bot._with_speaker("本文"), "**クロード**: 本文")
+    bot._last_engine["name"] = "Gemini"
+    check("Geminiのラベル", bot._with_speaker("本文"), "**Gemini**: 本文")
+    bot._last_engine["name"] = ""
+    check("不明なら付けない", bot._with_speaker("本文"), "本文")
+    bot._last_engine["name"] = "クロード"
+    check("空文には付けない", bot._with_speaker(""), "")
+
     print("■ 確認の受付枠 _set_pending / _clear_pending")
     import asyncio as _aio
 

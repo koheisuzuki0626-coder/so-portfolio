@@ -705,6 +705,12 @@ async def _reap(proc, timeout=5):
         pass
 
 
+# 直近の返事をどのエンジンが書いたか。AIに自分で名乗らせると
+# 「俺はGeminiじゃなくてクロード」のような混乱が起きるので、コード側で把握して
+# ラベルを付ける。ユーザーが「誰が答えたか」を見分けられるようにするため。
+_last_engine = {"name": ""}
+
+
 async def run_claude_cli(prompt):
     """Claude Code CLI をヘッドレスで呼ぶ（サブスク利用・API課金なし）。
     プロンプトは stdin で渡す（長文でOSの引数上限を超えないように）。
@@ -727,6 +733,7 @@ async def run_claude_cli(prompt):
             proc.kill()
             await _reap(proc)   # 待たないとゾンビが残り続ける（常駐プロセスのため）
             raise RuntimeError(f"claude CLI がタイムアウトしました（{CLAUDE_TIMEOUT}秒）")
+    _last_engine["name"] = "クロード"
     out_s = out.decode(errors="replace").strip()
     err_s = err.decode(errors="replace").strip()
     if proc.returncode != 0:
@@ -934,7 +941,9 @@ async def _gemini_recovery_loop():
 
 async def _gemini_call(prompt, tag="gemini"):
     """テキスト生成（非同期）。実装は _gemini_contents_sync に集約。"""
-    return await asyncio.to_thread(_gemini_contents_sync, [prompt], tag)
+    text = await asyncio.to_thread(_gemini_contents_sync, [prompt], tag)
+    _last_engine["name"] = "Gemini"
+    return text
 
 
 async def ask_gemini(history):
@@ -3837,7 +3846,7 @@ async def _handle_orchestrator(message, cid):
     if kind == "chat" and reply:
         reply = _clean_reply(reply, latest)
         add_history(cid, "Orchestrator", reply)
-        await send_as(orch, cid, reply)
+        await send_as(orch, cid, _with_speaker(reply))
         return
     if kind == "video":
         # 単発の動画生成は、最適モデルを自動選定して直接生成（滑らかで確実）。
@@ -3917,7 +3926,7 @@ async def _handle_orchestrator(message, cid):
                 answer = f"⚠️ 応答に失敗: {str(e)[:300]}"
     answer = _clean_reply(answer, latest)
     add_history(cid, "Orchestrator", answer)
-    await send_as(orch, cid, answer)
+    await send_as(orch, cid, _with_speaker(answer))
 
 
 # ---------- 送信・進行 ----------
@@ -3983,6 +3992,13 @@ def _clean_reply(text, user_said=""):
         break
     rest = "".join(parts[i:]).strip()
     return rest or t          # 全部消える場合は元のまま（無言にしない）
+
+
+def _with_speaker(text):
+    """返事の先頭に「誰が答えたか」を付ける（表示用。履歴には入れない）。
+    AIの自称ではなく、実際に呼ばれたエンジンを記録した値を使うので必ず正しい。"""
+    who = _last_engine.get("name")
+    return f"**{who}**: {text}" if who and text else text
 
 
 async def respond(cid, name, bot, ask):
