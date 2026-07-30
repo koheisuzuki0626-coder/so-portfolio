@@ -339,6 +339,42 @@ def run():
     check("普通の返事は無傷",
           bot._clean_reply("今日はゆっくり休んだら？", "つかれた"), "今日はゆっくり休んだら？")
 
+    print("■ 操作案内の誤爆よけ（ボットの話でない時に案内を出さない）")
+    # 実際に起きた事故：合谷（ツボ）の痛みの相談に「ログ送って」と答えた
+    check("ツボの痛みの相談に案内を出さない",
+          bot._clean_reply("原因が分かっていないので「ログ送って」で状況を共有してください。",
+                           "何か原因はある？"),
+          "ごめん、それは分からないな。")
+    check("本題は残して案内文だけ落とす",
+          bot._clean_reply("使いすぎかもしれないね。「ログ送って」で共有してください。",
+                           "合谷が痛い"),
+          "使いすぎかもしれないね。")
+    check("ボットの不具合の話なら案内はそのまま",
+          bot._clean_reply("原因が分かっていないので「ログ送って」で状況を共有してください。",
+                           "ボットがエラー出すんだけど"),
+          "原因が分かっていないので「ログ送って」で状況を共有してください。")
+    check("雑談に再起動の案内を付けない",
+          bot._clean_reply("それはつらいね。あと再起動してください。", "今日つかれた"),
+          "それはつらいね。")
+    check("コードを直した話なら再起動の案内は残す",
+          bot._clean_reply("直したよ。再起動してください。", "コード直して"),
+          "直したよ。再起動してください。")
+
+    print("■ 運用ルールを渡すかどうか ops_guide")
+    check("ツボの話には運用ルールを渡さない",
+          bot.OPS_RULES in bot.ops_guide([("kohei", "合谷が痛い"), ("kohei", "何か原因はある？")]),
+          False)
+    check("話し方のルールは常に渡す",
+          bot.TALK_RULES in bot.ops_guide([("kohei", "合谷が痛い")]), True)
+    check("ボットの話には運用ルールを渡す",
+          bot.OPS_RULES in bot.ops_guide([("kohei", "動画作って")]), True)
+    check("エラー相談にも運用ルールを渡す",
+          bot.OPS_RULES in bot.ops_guide([("kohei", "エラー出た")]), True)
+    check("体調の相談には渡さない",
+          bot.OPS_RULES in bot.ops_guide([("kohei", "頭が痛い")]), False)
+    check("文字列を直接渡しても動く",
+          bot.OPS_RULES in bot.ops_guide("再起動して"), True)
+
     print("■ 雑談の担当と役割分担")
     check("軽い雑談は既定でGemini", bot.CASUAL_LEAD, "gemini")
     import asyncio as _aio3
