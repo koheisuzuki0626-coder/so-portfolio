@@ -15,6 +15,7 @@ LAST = {"has_last_gen": True}
 JOB = {"has_job": True}
 VIDEO_ATT = {"has_video_att": True, "has_attachments": True}
 IMAGE_ATT = {"has_image_att": True, "has_attachments": True}
+AFTER_CREDITS = {"after_credits": True}   # 直前に料金照会をした直後の状態
 
 # (発言, 期待ルート, フラグ)
 CASES = [
@@ -103,6 +104,12 @@ CASES = [
     ("会社を建てるってプランどう思う？", "plan", {}),   # 事業の話は照会しない
     # 制作用語の「クレジット」を残高照会と取り違えない（依頼なので照会に行かない）
     ("この動画にクレジット表記入れて", "plan", LAST),
+    # 料金照会の直後は、続きの短い質問も権限のある経路で答える
+    ("画像生成はどうなの？", "credits", AFTER_CREDITS),
+    ("音声はどう？", "credits", AFTER_CREDITS),
+    ("画像生成はどうなの？", "plan", {}),          # 照会と無関係なら普通の会話
+    ("おはよう", "plan", AFTER_CREDITS),           # 続きでない話題は流さない
+    ("犬の動画作って", "hf_auto", AFTER_CREDITS),  # 依頼は依頼のまま
     ("veo3で犬の動画作って", "hf_model", {}),      # 依頼ならモデル指定は効く
     ("無料で動画作って", "hf_auto", {}),           # 料金の語が混じっても依頼は依頼
     ("コスト抑えて動画作って", "hf_auto", {}),

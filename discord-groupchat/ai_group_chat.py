@@ -2259,6 +2259,13 @@ _ASK_INFO_RE = re.compile(
 )
 # 「今すぐ作れ」という明確な依頼（料金の話が混ざっても作業を止めない）
 _GEN_ORDER_RE = re.compile("作って|作成して|つくって|生成して|描いて|作ってほしい")
+# 会話パスの claude CLI にはMCPの権限が無いため、ツールを呼ぼうとすると弾かれる。
+# その言い訳（「権限が下りない」等）を検知して、権限のある経路で調べ直す。
+_TOOL_DENIED_RE = re.compile(
+    "権限が(下り|降り|おり)|権限エラー|権限を(許可|下ろ)|権限がな|"
+    "ツールが(動かない|使えない|弾かれ|呼べな)|ツールを呼べ|"
+    "permission denied|not permitted|permission error", re.I
+)
 
 
 def _looks_like_question(text):
@@ -2279,7 +2286,8 @@ def _match_gen_model(content):
 
 
 def classify_route(content, *, has_attachments=False, has_video_att=False,
-                   has_image_att=False, has_job=False, has_last_gen=False):
+                   has_image_att=False, has_job=False, has_last_gen=False,
+                   after_credits=False):
     """@メンションなし発言のルーティングを判定（AI(_plan)前の決定的ルートのみ）。
     返り値: 'status'/'revise'/'short'/'virality'/'ad'/'credits'/'hf_model'/
     'hf_auto'/'motion'/'motion_ask'/None。
@@ -2368,6 +2376,14 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
                      and (_match_gen_model(content)
                           or re.search("生成|動画|映像|画像|イラスト|higgsfield|ヒッグス",
                                        content, re.I))))):
+        return "credits"
+    #      直前が料金照会なら、続きの短い質問（「画像生成はどうなの？」等）も照会に流す。
+    #      普通の会話パスにはMCPの権限が無く、ツールが動かずに
+    #      「権限が下りない」と言い出す事故が起きたため。
+    if (after_credits and _looks_like_question(content) and len(content) <= 40
+            and not _GEN_ORDER_RE.search(content)
+            and re.search("画像|動画|映像|イラスト|音声|音楽|モデル|生成|プラン|"
+                          "それ|こっち|そっち|他|ほか|逆に", content)):
         return "credits"
     # ①.8 スタイル学習（参考動画から勝ちパターンを覚えて以降の生成に反映）
     if re.search("スタイル|作風", content) and re.search("リセット|白紙|消して|忘れて|クリア", content):
@@ -2676,20 +2692,29 @@ async def _mcp_gen_status(media_type="video", model=None):
 
 
 
-async def _run_credits(content):
+# チャンネルごとの「最後に料金照会をした時刻」。続きの質問を同じ経路に流すために使う。
+_last_credits = {}
+
+
+async def _run_credits(content, history=None):
     """Higgsfieldのプラン・残クレジットと、モデル別の消費量を実データで答える。
     「veo3で1本いくら？」のような質問に、生成を始めずに数字だけ返すための経路。
     数字は必ずMCPツールの返り値から取り、無ければ『不明』と言わせる
     （推測の金額を答えるのが一番まずいため）。"""
     hit = _match_gen_model(content)
-    focus = (
-        f"特に {hit[2]}（モデルID: {hit[0]}）で1本生成したときの消費クレジットを重点的に。"
-        if hit else
-        "よく使う動画モデル（Veo 3 / Sora 2 / Kling / Seedance）の"
-        "1本あたりの消費クレジットも分かれば併せて。"
-    )
+    if hit:
+        focus = f"特に {hit[2]}（モデルID: {hit[0]}）で1本生成したときの消費クレジット。"
+    elif re.search("画像|イラスト|写真|ロゴ|アイコン|サムネ", content):
+        focus = ("特に画像モデル（Nano Banana 2 / Soul v2 / Seedream v4）の"
+                 "1枚あたりの消費クレジット。")
+    else:
+        focus = ("よく使う動画モデル（Veo 3 / Kling / Seedance / Sora 2）の"
+                 "1本あたりの消費クレジットも分かれば併せて。")
+    # 「画像生成はどうなの？」のような続きの質問を正しく解釈させるため直近を渡す
+    ctx = (f"直前の会話:\n{build_transcript((history or [])[-6:])}\n\n" if history else "")
     task = (
-        "Higgsfield の MCP ツールを使って、いまのプランと残クレジットを調べて。\n"
+        f"{ctx}ユーザーの最新の質問: 「{content}」\n"
+        "Higgsfield の MCP ツールを使って、この質問に必要な料金・残高の情報を調べて。\n"
         "1) show_plans_and_credits を呼び、プラン名・残クレジット・更新日を確認する。\n"
         "2) models_explore でモデルの情報を見て、1回の生成あたりの消費クレジットを確認する。\n"
         f"{focus}\n"
@@ -2697,6 +2722,8 @@ async def _run_credits(content):
         "ツールが返さなかった項目は『不明』と書き、推測や記憶による金額を"
         "書いてはいけない。ツール自体が使えなかったときは"
         "『Higgsfieldに接続できませんでした』とだけ書く。\n"
+        "【厳守】生成ツール（generate_image / generate_video 等）を実際に実行しては"
+        "いけない。料金の確認だけで、1クレジットも消費しないこと。\n"
         f"日本語で{REPLY_CHARS}字以内、箇条書きで簡潔に。前置き・説明は不要。"
     )
     out = await _run_claude_exec(task, timeout=240)
@@ -3956,6 +3983,18 @@ async def _handle_orchestrator(message, cid):
     # 判定と同時に返事も書けていれば、追加のAI呼び出しをせずそのまま返す（最速）
     if kind == "chat" and reply:
         reply = _clean_reply(reply, latest)
+        # 会話パスにはMCPの権限が無い。ツールを呼ぼうとして弾かれた言い訳を
+        # そのまま見せず、権限のある経路で調べ直す（ユーザーに操作を求めない）。
+        if _TOOL_DENIED_RE.search(reply):
+            await message.channel.send("💳 Higgsfieldに問い合わせています…")
+
+            async def _do_retry():
+                res = await _run_credits(latest, get_history(cid))
+                add_history(cid, "Orchestrator", res)
+                await send_as(orch, cid, res)
+            _last_credits[cid] = time.time()
+            _spawn(_do_retry(), cid, "クレジット確認")
+            return
         add_history(cid, "Orchestrator", reply)
         await send_as(orch, cid, _with_speaker(reply))
         return
@@ -5127,6 +5166,8 @@ async def _dispatch_message(message):
         # 「できた？」だけで状態確認につなぐのは直近2時間の生成がある時だけ
         # （何時間も経ってからの「できた？」はコード修正等の話が多いため）
         has_last_gen=bool(_lg_rec and time.time() - _lg_rec.get("t", 0) < 7200),
+        # 料金照会の直後（10分以内）は、続きの質問も権限のある経路で答える
+        after_credits=time.time() - _last_credits.get(cid, 0) < 600,
     )
     # 依頼待ち中に動画が添付された（キーワード無し）ケースもモーション実行に接続
     pm = _pending_motion.get(cid)
@@ -5236,10 +5277,11 @@ async def _dispatch_message(message):
     if route == "credits":
         # 聞かれているだけなので生成はしない。読み取りだけ・無料なので確認も挟まない。
         add_history(cid, message.author.display_name, content)
-        await message.channel.send("💳 Higgsfieldのプランと残クレジットを確認しています…")
+        _last_credits[cid] = time.time()
+        await message.channel.send("💳 Higgsfieldに問い合わせています…")
 
         async def _do_credits():
-            res = await _run_credits(content)
+            res = await _run_credits(content, get_history(cid))
             add_history(cid, "Orchestrator", res)
             await send_as(orch, cid, res)
         _spawn(_do_credits(), cid, "クレジット確認")

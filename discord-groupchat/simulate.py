@@ -352,6 +352,31 @@ async def run():
               not ({"hf_generate", "image_gen", "short"} & set(r["fired"])),
               f"実際={r['fired']}")
 
+    # 料金照会の直後は、続きの短い質問も権限のある経路で答える
+    install_stubs()
+    await drive("veo3で動画作ると何クレジット？")
+    install_stubs()          # FIRED はクリアされるが _last_credits は残る
+    r = await drive("画像生成はどうなの？")
+    check("照会の続きも credits へ", "credits" in r["fired"], f"実際={r['fired']}")
+    bot._last_credits.clear()
+
+    # 会話パスが権限エラーを言い出したら、権限のある経路で調べ直す
+    install_stubs()
+    _orig_plan = bot._plan
+
+    async def _denied_plan(history):
+        return "chat", "single", "claude", False, False, \
+               "権限が下りなくてツールが動かない状況。"
+    bot._plan = _denied_plan
+    try:
+        r = await drive("画像生成のクレジットどうなってる")
+        check("権限エラーは見せずに調べ直す", "credits" in r["fired"], f"実際={r['fired']}")
+        check("権限エラーの言い訳を送らない",
+              not any("権限が下り" in s for s in r["sent"]), f"sent={r['sent']}")
+    finally:
+        bot._plan = _orig_plan
+        bot._last_credits.clear()
+
     # motion_ask は案内文が送られる
     install_stubs()
     r = await drive("モーションコントロールで作りたい")
