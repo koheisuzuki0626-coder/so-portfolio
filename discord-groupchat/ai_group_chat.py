@@ -2245,9 +2245,24 @@ _QUESTION_RE = re.compile(
 )
 
 
+# 「作ってほしい」ではなく「聞きたいだけ」の言い方。
+# 実例:「veo3.1生成するときクレジットいくらくらいか聞きたいだけ」で生成が始まった。
+# 料金・条件を知りたいだけの質問は、生成の意図でも作業の依頼でもない。
+_ASK_INFO_RE = re.compile(
+    "聞きたい|聞くだけ|訊きたい|知りたい|確認したいだけ|"
+    "いくら(?!でも)|幾ら|何円|なん円|"
+    "料金|価格|値段|費用|コスト|相場|無料|有料|"
+    "どれくらいかかる|どのくらいかかる|どれぐらいかかる|どのくらい必要|"
+    "何クレジット|なんクレジット|クレジット(は|って|を)?(いくら|どれ|どの|何|なん)"
+)
+
+
 def _looks_like_question(text):
-    """質問・相談っぽい発言か（作業命令ではない）。selffix/exec の誤爆を防ぐ。"""
-    return bool(text.rstrip().endswith(("？", "?")) or _QUESTION_RE.search(text))
+    """質問・相談っぽい発言か（作業命令ではない）。作業系ルートの誤爆を防ぐ。"""
+    text = text or ""
+    return bool(text.rstrip().endswith(("？", "?"))
+                or _QUESTION_RE.search(text)
+                or _ASK_INFO_RE.search(text))
 
 
 def _match_gen_model(content):
@@ -2359,10 +2374,11 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         _GEN_INTENT2_RE.search(content)
         or re.search(r"(動画|映像|画像|イラスト|ロゴ|写真)\S{0,8}お願い", content)
     ):
-        if _match_gen_model(content):
-            return "hf_model"
-        # 「どうやって動画作ってるの？」のような質問では発動しない
+        # 「どうやって動画作ってるの？」「veo3の料金いくら？」のような
+        # 質問では発動しない。モデル名の指定があっても同じ（質問が先）。
         if not _looks_like_question(content):
+            if _match_gen_model(content):
+                return "hf_model"
             # 画像は Gemini（無料枠）優先。「geminiで画像作って」もここ
             if re.search("画像|イラスト|ロゴ|絵|写真|アイコン|サムネ", content):
                 return "image"
@@ -3886,8 +3902,9 @@ async def _handle_orchestrator(message, cid):
     # 分類＋処理方針＋（雑談ならその返事まで）を1回のAI呼び出しで得る
     async with message.channel.typing():
         kind, mode, lead, search, recall, reply = await _plan(history)
-    # 保険：質問や相談っぽい発言が作業系(selffix/exec)に誤分類されたらchatに戻す
-    if kind in ("selffix", "exec") and _looks_like_question(latest):
+    # 保険：質問や相談っぽい発言が作業系に誤分類されたらchatに戻す。
+    # video/image も対象（「veo3の料金いくら？」で生成が始まる事故があった）。
+    if kind in ("selffix", "exec", "video", "image") and _looks_like_question(latest):
         print(f"[plan] {kind}→chat に降格（質問/相談と判断）")
         kind, reply = "chat", ""   # 降格時の返事は無いので通常の回答フェーズへ
     # 判定と同時に返事も書けていれば、追加のAI呼び出しをせずそのまま返す（最速）
