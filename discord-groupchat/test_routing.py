@@ -339,6 +339,13 @@ def run():
     check("普通の返事は無傷",
           bot._clean_reply("今日はゆっくり休んだら？", "つかれた"), "今日はゆっくり休んだら？")
 
+    print("■ 雑談の担当と役割分担")
+    check("軽い雑談は既定でGemini", bot.CASUAL_LEAD, "gemini")
+    import asyncio as _aio3
+    _fast = _aio3.run(bot._plan([("kohei", "おはよう")]))
+    check("短い雑談はAIを呼ばず即返す（枠の節約）", _fast[0], "chat")
+    check("その担当はCASUAL_LEAD", _fast[2], bot.CASUAL_LEAD)
+
     print("■ 誰が答えたかのラベル _with_speaker")
     bot._last_engine["name"] = "クロード"
     check("クロードのラベル", bot._with_speaker("本文"), "**クロード**: 本文")

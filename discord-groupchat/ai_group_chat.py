@@ -2141,7 +2141,10 @@ def _critique_prompt(me, other, my_ans, other_ans, history):
 
 # 軽い雑談の担当モデル。claude=サブスク定額でGemini枠を温存（応答5〜20秒）/
 # gemini=高速応答1〜3秒（無料枠を消費）。.env の CASUAL_LEAD で切替。
-CASUAL_LEAD = os.getenv("CASUAL_LEAD", "claude")
+# 軽い雑談は既定でGeminiに任せる。Geminiは高速（1〜3秒）で無料枠、
+# Claudeはサブスクの利用上限があり実際に上限到達で止まったことがあるため、
+# 負荷を分散する意味でも雑談はGemini側に寄せる。枠切れ時は自動でClaudeへ。
+CASUAL_LEAD = os.getenv("CASUAL_LEAD", "gemini")
 if CASUAL_LEAD not in ("claude", "gemini"):
     CASUAL_LEAD = "claude"
 
