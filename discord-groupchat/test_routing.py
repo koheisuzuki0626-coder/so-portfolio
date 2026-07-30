@@ -360,6 +360,47 @@ def run():
           bot._clean_reply("直したよ。再起動してください。", "コード直して"),
           "直したよ。再起動してください。")
 
+    print("■ 応答速度：裏方の処理に会話の枠を奪われないこと")
+    import asyncio as _aio5
+
+    async def _speed():
+        """裏方（プロファイル学習・検品・企画など）が何本走っていても、
+        会話用の枠が必ず残ることを確かめる。
+        以前は枠が2つしかなく裏方の関門も無かったため、裏方が2本走った
+        瞬間に会話が完全な順番待ちになり「反応が遅い」状態になっていた。"""
+        orig = bot._claude_cli_run
+        live = {"bg": 0, "peak_bg": 0, "chat_started_with_bg": False}
+
+        async def _fake(prompt):
+            is_bg = prompt.startswith("BG")
+            if is_bg:
+                live["bg"] += 1
+                live["peak_bg"] = max(live["peak_bg"], live["bg"])
+            else:
+                live["chat_started_with_bg"] = live["bg"] > 0
+            await _aio5.sleep(0.02)
+            if is_bg:
+                live["bg"] -= 1
+            return "ok"
+        bot._claude_cli_run = _fake
+        try:
+            bg = _aio5.gather(*[bot.run_claude_cli(f"BG{i}", background=True)
+                                for i in range(8)])
+            for _ in range(5):            # 裏方を先に走り出させる
+                await _aio5.sleep(0)
+            await bot.run_claude_cli("会話の返事")
+            await bg
+            return live
+        finally:
+            bot._claude_cli_run = orig
+
+    _live = _aio5.run(_speed())
+    check("裏方の同時実行は上限を超えない",
+          _live["peak_bg"] <= bot.BG_CONCURRENCY, True)
+    check("裏方が動いている最中でも会話は待たされない",
+          _live["chat_started_with_bg"], True)
+    check("会話用の枠が裏方より多い", bot.CLAUDE_CONCURRENCY > bot.BG_CONCURRENCY, True)
+
     print("■ 会話の前後関係を渡しているか transcript_block")
     _tb = bot.transcript_block([("kohei", "https://youtu.be/abc"), ("kohei", "要約して")])
     check("古い順であることを明示", "一番下が最新" in _tb, True)

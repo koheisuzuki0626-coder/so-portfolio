@@ -65,26 +65,39 @@ CLAUDE_TIMEOUT = int(os.getenv("CLAUDE_TIMEOUT", "300"))
 # 作業（生成・修正・リサーチ・学習など）の前に、理解した内容とやることを提示して
 # 同意を得る＝反復確認。0 にすると従来どおり即実行する。
 CONFIRM_BEFORE_WORK = os.getenv("CONFIRM_BEFORE_WORK", "1") not in ("0", "false", "False")
-# claude CLI の同時実行を制限（プロファイル学習・要約などのバックグラウンド処理と
-# 会話応答が同時に走ってタイムアウトするのを防ぐ。超過分は順番待ち）
-CLAUDE_CONCURRENCY = int(os.getenv("CLAUDE_CONCURRENCY", "2"))
-_claude_sem = None
-_claude_sem_loop = None
+# claude CLI の同時実行数。裏方の処理（プロファイル学習・要約・検品・企画など）と
+# 会話の返事が同じ枠を奪い合うと、返事が順番待ちで遅くなる。
+# 裏方は BG_CONCURRENCY 枠までに抑え、残りは必ず会話用に空けておく。
+CLAUDE_CONCURRENCY = int(os.getenv("CLAUDE_CONCURRENCY", "3"))
+BG_CONCURRENCY = int(os.getenv("BG_CONCURRENCY", "1"))
+# フル権限の実行タスク（調査・自己改修・MCP投入）は特に重いので1本ずつ
+EXEC_CONCURRENCY = int(os.getenv("EXEC_CONCURRENCY", "1"))
+_sems = {}          # (名前, ループ) -> Semaphore
+
+
+def _sem(name, size):
+    """セマフォを【実行中のイベントループ上で】作って返す。
+    モジュール読み込み時に asyncio.Semaphore() を作ると、Python 3.9 では
+    その時点の（Discordが後で使うのとは別の）ループに紐づいてしまい、
+    順番待ちが発生した瞬間だけ
+    『got Future attached to a different loop』で応答が落ちる。
+    実際にMac(python3.9)で発生したため、必ずこの関数経由で取得すること。"""
+    loop = asyncio.get_running_loop()
+    key = (name, id(loop))
+    if key not in _sems:
+        _sems.clear()          # ループが変わったら作り直す（古い分は捨てる）
+        _sems[key] = asyncio.Semaphore(size)
+    return _sems[key]
 
 
 def _get_claude_sem():
-    """Claude CLI 用セマフォを【実行中のイベントループ上で】作って返す。
-    モジュール読み込み時に asyncio.Semaphore() を作ると、Python 3.9 では
-    その時点の（Discordが後で使うのとは別の）ループに紐づいてしまい、
-    同時実行が2件を超えて順番待ちが発生した瞬間だけ
-    『got Future attached to a different loop』で応答が落ちる。
-    実際にMac(python3.9)で発生したため、必ずこの関数経由で取得すること。"""
-    global _claude_sem, _claude_sem_loop
-    loop = asyncio.get_running_loop()
-    if _claude_sem is None or _claude_sem_loop is not loop:
-        _claude_sem = asyncio.Semaphore(CLAUDE_CONCURRENCY)
-        _claude_sem_loop = loop
-    return _claude_sem
+    return _sem("claude", CLAUDE_CONCURRENCY)
+
+
+def _get_bg_sem():
+    """裏方処理用の追加の関門。会話の返事はここを通らないので、
+    裏方が何本走っていても返事用の枠が必ず残る。"""
+    return _sem("bg", BG_CONCURRENCY)
 
 gemini_client = genai.Client()  # 環境変数 GEMINI_API_KEY を自動参照
 
@@ -764,10 +777,18 @@ async def _reap(proc, timeout=5):
 _last_engine = {"name": ""}
 
 
-async def run_claude_cli(prompt):
+async def run_claude_cli(prompt, background=False):
     """Claude Code CLI をヘッドレスで呼ぶ（サブスク利用・API課金なし）。
     プロンプトは stdin で渡す（長文でOSの引数上限を超えないように）。
-    同時実行はセマフォで制限し、渋滞によるタイムアウトを防ぐ。"""
+    同時実行はセマフォで制限し、渋滞によるタイムアウトを防ぐ。
+    background=True の裏方処理は追加の関門を通り、会話用の枠を空けたままにする。"""
+    if background:
+        async with _get_bg_sem():
+            return await _claude_cli_run(prompt)
+    return await _claude_cli_run(prompt)
+
+
+async def _claude_cli_run(prompt):
     # cwd を固定 → discord-groupchat/.claude/settings.json（WebSearch許可）が読まれる。
     # ※ワークスペースを一度「信頼(trust)」しておかないと settings.json は無視される。
     async with _get_claude_sem():
@@ -1070,9 +1091,10 @@ async def _ai_text(prompt, tag="ai_text"):
 
 async def _ai_text_bg(prompt, tag="ai_text_bg"):
     """バックグラウンド処理用テキスト生成：速度不問なので Claude（サブスク定額）を
-    優先して Gemini の無料枠を温存する。Claude 失敗時のみ Gemini へ。"""
+    優先して Gemini の無料枠を温存する。Claude 失敗時のみ Gemini へ。
+    裏方専用の関門を通すので、会話の返事の枠を奪わない。"""
     try:
-        return await run_claude_cli(prompt)
+        return await run_claude_cli(prompt, background=True)
     except Exception as e:  # noqa: BLE001
         print(f"[{tag}] Claude失敗 → Geminiへフォールバック: {str(e)[:150]}")
         return await _gemini_call(prompt)
@@ -4691,7 +4713,15 @@ def _try_text_approval(cid, user_id, content):
 
 
 async def _run_claude_exec(task, timeout=600):
-    """承認済みタスクをフル権限で実行し、標準出力を返す。"""
+    """承認済みタスクをフル権限で実行し、標準出力を返す。
+    重い処理なので同時に1本まで。以前は無制限に起動できたため、
+    調査・自己改修・生成の投入が重なるとMacのCPUを奪い合い、
+    会話の返事まで遅くなっていた。"""
+    async with _sem("exec", EXEC_CONCURRENCY):
+        return await _claude_exec_run(task, timeout)
+
+
+async def _claude_exec_run(task, timeout):
     proc = await asyncio.create_subprocess_exec(
         CLAUDE_BIN, "-p", "--dangerously-skip-permissions", task,
         stdout=asyncio.subprocess.PIPE,
