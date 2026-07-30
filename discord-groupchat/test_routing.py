@@ -360,6 +360,13 @@ def run():
           bot._clean_reply("直したよ。再起動してください。", "コード直して"),
           "直したよ。再起動してください。")
 
+    print("■ 会話の前後関係を渡しているか transcript_block")
+    _tb = bot.transcript_block([("kohei", "https://youtu.be/abc"), ("kohei", "要約して")])
+    check("古い順であることを明示", "一番下が最新" in _tb, True)
+    check("省略表現の解釈を促す", "さっきの" in _tb, True)
+    check("今答えるべき発言を示す", "【いま答えるべき発言】要約して" in _tb, True)
+    check("会話なしでも壊れない", "(まだ会話なし)" in bot.transcript_block([]), True)
+
     print("■ プロンプトの末尾が穴埋めになっていないこと")
     # 実際に起きた事故：末尾が「あなたの回答:」だったため、claude CLI が
     # それをユーザーの貼った文章と読み、「その後が空っぽ」と返した

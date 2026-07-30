@@ -263,8 +263,21 @@ def transcript_block(history):
     「ユーザーが貼った文章」と読んでしまうことがあった。実際に
     「『あなたの回答:』の後が空っぽ。何を貼ろうとしてた？」と返す事故が起きた
     （会話の中身が薄い＝リンクだけ、のときに起きやすい）。
-    区切り線で囲み、最後は穴埋めではなく明確な指示文で終える。"""
-    return f"--- 会話ログ ここから ---\n{build_transcript(history)}\n--- 会話ログ ここまで ---"
+    区切り線で囲み、最後は穴埋めではなく明確な指示文で終える。
+
+    あわせて「どれが最新か」「前後関係」を明示する。名前と本文を並べただけだと
+    AIが各発言を独立した質問として読み、直前のやり取りを踏まえない返事
+    （リンクを貼った直後の「要約して」が何を指すか分からない等）になるため。"""
+    body = build_transcript(history)
+    latest = (_latest_user_msg(history) or "").strip()
+    head = (
+        "会話ログを古い順に並べます。上ほど古く、一番下が最新です。"
+        "前の発言を受けた省略（『それ』『さっきの』『要約して』など）は、"
+        "直前の流れから何を指しているかを判断してください。\n"
+    )
+    tail = f"\n\n【いま答えるべき発言】{latest[:200]}" if latest else ""
+    return (f"{head}--- 会話ログ ここから ---\n{body}\n"
+            f"--- 会話ログ ここまで ---{tail}")
 
 
 def build_transcript(history):
@@ -456,6 +469,44 @@ def _recent_messages(cid, limit=80):
     return rows
 
 
+async def _push_paths(paths, msg, tries=3):
+    """指定ファイルをコミットして、リモートに追いついてからプッシュする。
+    返り値: (成功したか, 失敗理由)。
+
+    以前は pull せずに `git push` するだけだったため、Claude Code 側の新しい
+    コミットがリモートにあると毎回拒否されていた。実際そのせいで
+    「ログ送って」が一度も届かず、スクショに頼るしかない状態が続いた。
+    拒否されたら fetch + rebase で追いついてから再試行する。"""
+    paths = list(paths)
+    rc, out = await _git_self(["add", "--"] + paths)
+    if rc != 0:
+        return False, f"git add に失敗: {out[:200]}"
+    rc, _ = await _git_self(["diff", "--cached", "--quiet", "--"] + paths)
+    if rc != 0:   # 差分あり（0なら前回と同内容なのでコミット不要）
+        rc, out = await _git_self(["commit", "-m", msg, "--"] + paths)
+        if rc != 0:
+            return False, f"コミットに失敗: {out[:200]}"
+    rc, branch = await _git_self(["rev-parse", "--abbrev-ref", "HEAD"])
+    branch = branch.strip()
+    last = ""
+    for _ in range(tries):
+        rc, out = await _git_self(["push", "origin", "HEAD"])
+        if rc == 0:
+            return True, ""
+        last = out
+        if not branch or branch == "HEAD":
+            break
+        # リモートが先に進んでいるだけなら、追いついてから押し直す
+        rc_f, _ = await _git_self(["fetch", "origin", branch])
+        if rc_f != 0:
+            return False, "GitHubに接続できませんでした（オフライン？）"
+        rc_r, out_r = await _git_self(["rebase", f"origin/{branch}"])
+        if rc_r != 0:
+            await _git_self(["rebase", "--abort"])
+            return False, f"リモートの変更に追いつけませんでした: {out_r[:200]}"
+    return False, f"プッシュに失敗: {last[:200]}"
+
+
 async def _share_debug_log(cid, limit=80):
     """直近の会話・エラー・生成状態をリポジトリに書き出してプッシュする。
     プッシュ後は Claude Code のチャット側から中身を直接読める。"""
@@ -489,20 +540,10 @@ async def _share_debug_log(cid, limit=80):
     # _git_self は discord-groupchat/ で動くので、パスもそこからの相対にする
     # （リポジトリroot基準にすると git add がファイルを見つけられない）
     rel = str(DEBUG_LOG.relative_to(Path(_BASE)))
-    code, out = await _git_self(["add", "--", rel])
-    if code != 0:
-        return f"⚠️ ログをgitに追加できませんでした: {out[:250]}"
-    code, _ = await _git_self(["diff", "--cached", "--quiet", "--", rel])
-    if code != 0:   # 差分あり（0なら前回と同内容なのでコミット不要）
-        code, out = await _git_self(
-            ["commit", "-m", f"Discordログを共有（{now}）", "--", rel]
-        )
-        if code != 0:
-            return f"⚠️ ログのコミットに失敗: {out[:250]}"
-    code, out = await _git_self(["push", "origin", "HEAD"])
-    if code != 0:
-        return (f"⚠️ ログのプッシュに失敗: {out[:250]}\n"
-                "（書き出しは完了しています。ネットワークを確認して再度お試しください）")
+    ok, why = await _push_paths([rel], f"Discordログを共有（{now}）")
+    if not ok:
+        return (f"⚠️ ログを共有できませんでした: {why}\n"
+                "（書き出し自体は完了しているので、次回の共有で一緒に届きます）")
     return (f"✅ 直近の会話・エラー・生成状態を共有しました（{rel}）。\n"
             "Claude Codeのチャットで「**ログ見て**」と言えば、そのまま読めます。\n"
             "※会話の内容がGitHubのプライベートリポジトリに保存されます。")
@@ -4819,6 +4860,8 @@ def _changed_self_files(saved):
         elif dst.read_bytes() != bak.read_bytes():
             out.append(name)
     return out
+
+
 RESTART_MARKER = HISTORY_DIR / "restart_notify.json"
 
 
@@ -5019,20 +5062,16 @@ async def _run_self_fix(cid, request, owner_id):
         )
         return
 
-    # 記録用にコミット（プッシュできればプッシュ。失敗しても適用は続行）
-    await _git_self(["add", "--"] + (changed or [SELF_FILE.name]))
-    rc, _ = await _git_self(["commit", "-m", f"Discordからの自己改修: {request[:60]}"])
+    # 記録用にコミット＆プッシュ（リモートが進んでいれば追いついてから押す）
+    ok_push, why = await _push_paths(
+        changed or [SELF_FILE.name], f"Discordからの自己改修: {request[:60]}"
+    )
     note = "修正を適用しました。"
-    if rc == 0:
-        rc_push, _ = await _git_self(["push", "origin", "HEAD"])
-        if rc_push == 0:
-            note += "（GitHubへプッシュ済み）"
-        else:
-            note += (
-                "（⚠️GitHubへのプッシュに失敗＝ローカルのみ。"
-                "次のコード同期で消える可能性があるため、この修正が重要なら "
-                "Claude Code 側でも同じ修正を反映してください）"
-            )
+    note += "（GitHubへプッシュ済み）" if ok_push else (
+        f"（⚠️GitHubへのプッシュに失敗＝ローカルのみ: {why[:120]}。"
+        "次のコード同期で消える可能性があるため、この修正が重要なら "
+        "Claude Code 側でも同じ修正を反映してください）"
+    )
     shutil.rmtree(SELF_BACKUP_DIR, ignore_errors=True)   # 適用済みなので退避は不要
     add_history(cid, "Orchestrator", f"（自己改修を適用: {request[:100]}）")
     await _restart_self(cid, note)
