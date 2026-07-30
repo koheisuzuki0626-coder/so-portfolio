@@ -310,6 +310,21 @@ def run():
     for desc, got, want in _aio2.run(_approvals()):
         check(desc, got, want)
 
+    print("■ 話者名の前置きを落とす _clean_reply")
+    for src, want in (
+        ("クロード: 大丈夫か。", "大丈夫か。"),
+        ("クロード1（リサーチャー）: 事実は不明です", "事実は不明です"),
+        ("アドバイザー: 3つの見方があります", "3つの見方があります"),
+        ("Orchestrator: はい", "はい"),
+        ("オーケストレーター：了解", "了解"),
+        ("Gemini: どうも", "どうも"),
+        ("クロード: オーケストレーター: 二重", "二重"),
+        ("普通の返事です", "普通の返事です"),      # 壊さない
+        ("10:30に始めます", "10:30に始めます"),    # 時刻は消さない
+        ("結論: これでいきましょう", "結論: これでいきましょう"),  # 話者名以外は残す
+    ):
+        check(repr(src), bot._clean_reply(src), want)
+
     print("■ 確認の受付枠 _set_pending / _clear_pending")
     import asyncio as _aio
 

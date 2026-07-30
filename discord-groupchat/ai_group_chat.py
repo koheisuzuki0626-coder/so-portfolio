@@ -767,6 +767,9 @@ BOT_OPS_GUIDE = (
     "『モーション動画できた？』という古い言い回しは、過去の会話ログに"
     "残っていても絶対に真似しない。"
     "生成の完成/未完成を自分で推測して断言しない（確認は自動チェックに任せる）。"
+    "返事の先頭に「クロード:」のような話者名を付けてはいけない（本文だけを書く）。"
+    "自分がClaudeかGeminiか、他にどの役がいるかといった内輪の説明もしない。"
+    "ユーザーが聞いているのはその話ではない。"
     "【重要】うまく進んでいない理由を推測で説明してはいけない。"
     "『ツールの権限が下りていない』『APIの制限で』など、実際のエラーを"
     "確認していない原因を作り話するのは禁止。分からないときは正直に"
@@ -3822,6 +3825,7 @@ async def _handle_orchestrator(message, cid):
         kind, reply = "chat", ""   # 降格時の返事は無いので通常の回答フェーズへ
     # 判定と同時に返事も書けていれば、追加のAI呼び出しをせずそのまま返す（最速）
     if kind == "chat" and reply:
+        reply = _clean_reply(reply)
         add_history(cid, "Orchestrator", reply)
         await send_as(orch, cid, reply)
         return
@@ -3901,6 +3905,7 @@ async def _handle_orchestrator(message, cid):
                 if "gemini" in str(e).lower():
                     _gemini_watch["outage_cid"] = cid
                 answer = f"⚠️ 応答に失敗: {str(e)[:300]}"
+    answer = _clean_reply(answer)
     add_history(cid, "Orchestrator", answer)
     await send_as(orch, cid, answer)
 
@@ -3919,8 +3924,28 @@ async def send_as(bot, channel_id, text, view=None):
     await channel.send((text or "(空の応答)")[:1900], **kwargs)
 
 
+# 会話ログが「名前: 本文」形式なので、モデルが真似て自分の名前を先頭に付けてしまう。
+# 役割（リサーチャー等）を増やしてから特に出やすくなったため、送信前に必ず落とす。
+_SPEAKER_PREFIX_RE = re.compile(
+    r"^\s*(?:オーケストレーター|Orchestrator|"
+    r"クロード\s*[13]?\s*(?:（[^）]*）)?|Claude\s*[13]?|"
+    r"Gemini|ジェミニ|リサーチャー|アドバイザー)\s*[:：]\s*", re.I
+)
+
+
+def _clean_reply(text):
+    """返事の先頭に付いた話者名（「クロード: 」等）を取り除く。"""
+    t = (text or "").lstrip()
+    for _ in range(2):        # 「クロード: オーケストレーター: 」の二重も落とす
+        t2 = _SPEAKER_PREFIX_RE.sub("", t, count=1).lstrip()
+        if t2 == t:
+            break
+        t = t2
+    return t
+
+
 async def respond(cid, name, bot, ask):
-    text = await ask(get_history(cid))
+    text = _clean_reply(await ask(get_history(cid)))
     # 同じ発言の繰り返しは送信しない（Geminiが同文を連投するバグへの保険）
     h = get_history(cid)
     last_own = next((t for s, t in reversed(h) if s == name), None)
