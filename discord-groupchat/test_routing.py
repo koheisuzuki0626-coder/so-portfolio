@@ -360,6 +360,21 @@ def run():
           bot._clean_reply("直したよ。再起動してください。", "コード直して"),
           "直したよ。再起動してください。")
 
+    print("■ プロンプトの末尾が穴埋めになっていないこと")
+    # 実際に起きた事故：末尾が「あなたの回答:」だったため、claude CLI が
+    # それをユーザーの貼った文章と読み、「その後が空っぽ」と返した
+    _h = [("kohei", "https://youtu.be/abc"), ("kohei", "要約して")]
+    for _name, _p in (("_answer_prompt", bot._answer_prompt(bot.ORCH_PERSONA, _h)),
+                      ("peer_prompt", bot.peer_prompt("Claude", "Gemini", _h)),
+                      ("_ask_claude_persona", None)):
+        if _p is None:
+            continue
+        check(f"{_name} が穴埋めで終わらない",
+              _p.rstrip().endswith(("あなたの回答:", "の発言:", "JSON:")), False)
+        check(f"{_name} は会話ログを区切る", "--- 会話ログ ここまで ---" in _p, True)
+    check("会話なしでも区切りは出る",
+          "(まだ会話なし)" in bot.transcript_block([]), True)
+
     print("■ 自己改修の退避と巻き戻し _snapshot_self / _restore_self")
     import pathlib as _pl
     import shutil as _sh

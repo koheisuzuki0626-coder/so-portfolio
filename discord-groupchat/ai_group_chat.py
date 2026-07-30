@@ -255,6 +255,18 @@ async def _summarize_pending(cid):
         _summarizing.discard(cid)
 
 
+def transcript_block(history):
+    """会話ログを、指示文と混ざらないように区切って渡す。
+
+    以前はプロンプトの末尾を「あなたの回答:」のような穴埋め形式にしていたが、
+    claude CLI は補完モデルではなくエージェントなので、この末尾を
+    「ユーザーが貼った文章」と読んでしまうことがあった。実際に
+    「『あなたの回答:』の後が空っぽ。何を貼ろうとしてた？」と返す事故が起きた
+    （会話の中身が薄い＝リンクだけ、のときに起きやすい）。
+    区切り線で囲み、最後は穴埋めではなく明確な指示文で終える。"""
+    return f"--- 会話ログ ここから ---\n{build_transcript(history)}\n--- 会話ログ ここまで ---"
+
+
 def build_transcript(history):
     lines = []
     for name, text in history:
@@ -852,8 +864,9 @@ def peer_persona(me, partner, history=None):
 def peer_prompt(me, partner, history):
     return (
         peer_persona(me, partner, history) + "\n\n" + _profiles_context()
-        + "これまでの会話ログ:\n"
-        f"{build_transcript(history)}\n\n次の {me} の発言:"
+        + transcript_block(history)
+        + f"\n\n上の会話ログの流れに続けて、{me} としての発言を1つだけ書いてください。"
+        "ログや指示文をそのまま繰り返さず、発言の本文だけを書くこと。"
     )
 
 
@@ -888,7 +901,9 @@ async def _ask_claude_persona(role, history):
         f"あなたは{name}。{persona}\n"
         f"日本語で{REPLY_CHARS}字以内、前置きや名乗りは不要、回答本体のみ。"
         + ops_guide(history) + "\n\n"
-        + f"会話:\n{build_transcript(history)}\n\nあなたの回答:"
+        + transcript_block(history)
+        + "\n\n上の会話ログの最後の発言に、あなたの立場で答えてください。"
+        "ログや指示文をそのまま繰り返さず、回答の本文だけを書くこと。"
     )
     return await run_claude_cli(prompt)
 
@@ -1915,7 +1930,7 @@ async def _apply_youtube_context(message, content):
     if not urls:
         return content, False
 
-    summaries = []
+    summaries, unread = [], []
     async with message.channel.typing():
         for url in urls[:2]:
             try:
@@ -1928,6 +1943,10 @@ async def _apply_youtube_context(message, content):
                     f"⚠️ 動画を視聴できませんでした: {e}\n"
                     "（復活を5分おきに自動確認して、復活したら知らせます）"
                 )
+                # 「読めなかった」ことを文脈に残す。残さないとリンクだけが履歴に
+                # 入り、あとで「要約して」と言われたAIが中身を知らないまま
+                # 見当違いの返事をしてしまう。
+                unread.append(url)
                 continue
             except Exception as e:  # noqa: BLE001
                 print(f"[youtube_link] 視聴失敗 {url}: {str(e)[:200]}")
@@ -1935,12 +1954,19 @@ async def _apply_youtube_context(message, content):
                     "⚠️ この動画は読み取れませんでした"
                     "（非公開・年齢制限・配信中・長すぎる等の可能性）。"
                 )
+                unread.append(url)
                 continue
             if summary:
                 summaries.append((url, summary))
 
     for url, summary in summaries:
         content += f"\n\n【YouTube動画の内容（{url}）】\n{summary}"
+    for url in unread:
+        content += (
+            f"\n\n【この動画（{url}）はまだ中身を読めていない】\n"
+            "内容は一切分かっていない。要約や感想を求められても、"
+            "推測で語らず『まだ動画を読めていない』と正直に伝えること。"
+        )
 
     # リンクだけの投稿なら、まとめをそのまま投稿（内容は会話の記憶にも残る）
     text_wo_urls = YOUTUBE_URL_RE.sub("", message.content).strip()
@@ -2169,7 +2195,9 @@ def _answer_prompt(who, history, extra=""):
         "前置きや名乗りは不要、回答本体のみ。" + ops_guide(history) + "\n\n"
         + _profiles_context()
         + (extra + "\n\n" if extra else "")
-        + f"{build_transcript(history)}\n\nあなたの回答:"
+        + transcript_block(history)
+        + "\n\n上の会話ログの最後の要求に答えてください。"
+        "ログや指示文をそのまま繰り返さず、回答の本文だけを書くこと。"
     )
 
 
@@ -2495,7 +2523,8 @@ async def _plan(history):
         f"その文言をそのまま返事として出力してはいけない。\n"
         + ops_guide(history) + "\n\n"
         + _profiles_context()
-        + f"会話:\n{build_transcript(history)}\n\nJSON:"
+        + transcript_block(history)
+        + "\n\n上の会話ログの最後の発言について、指定された形式で出力してください。"
     )
     kind, mode, lead, search, recall, reply = "chat", "single", "claude", False, False, ""
     try:
