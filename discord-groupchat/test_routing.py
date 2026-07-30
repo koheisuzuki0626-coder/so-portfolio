@@ -360,6 +360,23 @@ def run():
           bot._clean_reply("直したよ。再起動してください。", "コード直して"),
           "直したよ。再起動してください。")
 
+    print("■ CLI出力の定型文はがし _strip_cli_boilerplate")
+    # 実際に起きた事故：クレジット照会の回答に CLAUDE.md 由来の案内が付いた
+    _cli = ("Got real numbers from get_cost. Reporting back to the orchestrator.\n\n"
+            "- 残クレジット：75.35\n- Soul v2：0.12クレジット\n\n"
+            "Discordで「再起動して」と送ってください（自動で最新コードを取得して再起動されます）")
+    check("再起動案内を落とす", "再起動" in bot._strip_cli_boilerplate(_cli), False)
+    check("英語ナレーションを落とす",
+          "Reporting back" in bot._strip_cli_boilerplate(_cli), False)
+    check("本体は残る",
+          bot._strip_cli_boilerplate(_cli), "- 残クレジット：75.35\n- Soul v2：0.12クレジット")
+    check("URLの行は消さない",
+          bot._strip_cli_boilerplate("Here is the URL: https://x/y.mp4"),
+          "Here is the URL: https://x/y.mp4")
+    check("日本語混じりの行は消さない",
+          bot._strip_cli_boilerplate("Doneした。完了です。"), "Doneした。完了です。")
+    check("空文字はそのまま", bot._strip_cli_boilerplate(""), "")
+
     print("■ 運用ルールを渡すかどうか ops_guide")
     check("ツボの話には運用ルールを渡さない",
           bot.OPS_RULES in bot.ops_guide([("kohei", "合谷が痛い"), ("kohei", "何か原因はある？")]),

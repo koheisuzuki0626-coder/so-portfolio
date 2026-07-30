@@ -2695,6 +2695,39 @@ async def _mcp_gen_status(media_type="video", model=None):
 # チャンネルごとの「最後に料金照会をした時刻」。続きの質問を同じ経路に流すために使う。
 _last_credits = {}
 
+# claude CLI は作業ディレクトリの CLAUDE.md（開発者向けルール）を読むため、
+# 「変更したら再起動を案内する」が、コードと無関係な調査結果の末尾にも付いてくる。
+# 実例：画像生成のクレジット量の回答に「Discordで『再起動して』」が付いた。
+# CLAUDE.md 側にも条件を書いたが、条件をAIに守らせる方法は当てにならないので
+# コード側でも落とす。
+_CLI_TAIL_RE = re.compile(
+    r"^.*(?:再起動して[」』]?\s*と送って|再起動してください|再起動が必要).*$", re.M
+)
+# 「Got real numbers from get_cost. Reporting back to the orchestrator.」のような
+# 内部向けの英語ナレーション。日本語を含まない行だけを対象にする（誤削除を防ぐ）。
+_CLI_NARRATION_RE = re.compile(
+    r"^\s*(?:Got |Reporting back|Let me |I'?ll |I will |I'?m going|Now I|"
+    r"Checking |Calling |Fetching |Looking |Done[.!]|Perfect[.!]|Great[.!])",
+    re.I,
+)
+_JA_RE = re.compile(r"[ぁ-んァ-ヶ一-龥]")
+
+
+def _strip_cli_boilerplate(text):
+    """claude CLI の出力から、ユーザーに関係のない定型文を落とす。
+    ① CLAUDE.md 由来の再起動案内（開発者向けルールの漏れ）
+    ② 内部向けの英語ナレーション（URLを含む行は消さない）"""
+    if not text:
+        return text
+    kept = []
+    for line in _CLI_TAIL_RE.sub("", text).splitlines():
+        s = line.strip()
+        if (s and not _JA_RE.search(s) and "http" not in s
+                and _CLI_NARRATION_RE.match(s)):
+            continue
+        kept.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
 
 async def _run_credits(content, history=None):
     """Higgsfieldのプラン・残クレジットと、モデル別の消費量を実データで答える。
@@ -2730,7 +2763,8 @@ async def _run_credits(content, history=None):
     if not out or out.startswith("⚠️"):
         return ("⚠️ Higgsfieldのクレジット情報を取得できませんでした。"
                 f"（{(out or '応答なし')[:150]}）")
-    return "💳 " + out.strip()
+    out = _strip_cli_boilerplate(out)
+    return "💳 " + out if out else "⚠️ クレジット情報を読み取れませんでした。"
 
 
 # Discordの発言で使えるモデル名 → (MCPモデルID, 種別, 表示名)
@@ -4688,7 +4722,8 @@ async def run_claude_agent(cid, task, owner_id):
 
     # ③ 承認 → 実行（承認済みのためフル権限）
     await send_as(orch, cid, "▶️ 承認されました。実行します…")
-    return await _run_claude_exec(task)
+    # CLAUDE.md 由来の再起動案内や内部ナレーションは、そのまま見せない
+    return _strip_cli_boilerplate(await _run_claude_exec(task)) or "(完了・出力なし)"
 
 
 async def _run_agent_task(cid, task, owner_id):
