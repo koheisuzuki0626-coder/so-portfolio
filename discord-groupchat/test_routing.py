@@ -360,6 +360,34 @@ def run():
           bot._clean_reply("直したよ。再起動してください。", "コード直して"),
           "直したよ。再起動してください。")
 
+    print("■ 自己改修の退避と巻き戻し _snapshot_self / _restore_self")
+    import pathlib as _pl
+    import shutil as _sh
+    import tempfile as _tmpf
+    _tmp = _pl.Path(_tmpf.mkdtemp())
+    _keep = (bot.SELF_FILE, bot.SELF_BACKUP_DIR)
+    try:
+        bot.SELF_FILE = _tmp / "ai_group_chat.py"
+        bot.SELF_BACKUP_DIR = _tmp / ".selffix_backup"
+        (_tmp / "ai_group_chat.py").write_text("本体v1", encoding="utf-8")
+        (_tmp / "test_routing.py").write_text("テストv1", encoding="utf-8")
+        _saved = bot._snapshot_self()
+        check("改修前のファイルを退避", _saved, {"ai_group_chat.py", "test_routing.py"})
+        # 改修を模擬：本体を書き換え／テストを書き換え／新しいファイルを作る
+        (_tmp / "ai_group_chat.py").write_text("本体v2", encoding="utf-8")
+        (_tmp / "test_routing.py").write_text("テストv2", encoding="utf-8")
+        (_tmp / "simulate.py").write_text("新規", encoding="utf-8")
+        check("変わったファイルを全部検出", set(bot._changed_self_files(_saved)),
+              {"ai_group_chat.py", "test_routing.py", "simulate.py"})
+        bot._restore_self(_saved)
+        check("本体が戻る", (_tmp / "ai_group_chat.py").read_text(encoding="utf-8"), "本体v1")
+        check("テストも戻る（本体だけでなく）",
+              (_tmp / "test_routing.py").read_text(encoding="utf-8"), "テストv1")
+        check("改修で作られたファイルは消える", (_tmp / "simulate.py").exists(), False)
+    finally:
+        bot.SELF_FILE, bot.SELF_BACKUP_DIR = _keep
+        _sh.rmtree(_tmp, ignore_errors=True)
+
     print("■ CLI出力の定型文はがし _strip_cli_boilerplate")
     # 実際に起きた事故：クレジット照会の回答に CLAUDE.md 由来の案内が付いた
     _cli = ("Got real numbers from get_cost. Reporting back to the orchestrator.\n\n"

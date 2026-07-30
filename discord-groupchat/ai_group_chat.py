@@ -4737,6 +4737,59 @@ async def _run_agent_task(cid, task, owner_id):
 # ---------- 自己改修＆自己再起動（Discord内で完結） ----------
 SELF_FILE = Path(os.path.abspath(__file__))
 SELF_BACKUP = SELF_FILE.with_suffix(".py.bak")
+# 自己改修で書き換えてよいファイル。本体だけだと「テストを1件足す」ができず、
+# 巻き戻しも本体しか戻らなかったため、テストと説明書まで範囲に含める。
+SELF_EDITABLE = (
+    "ai_group_chat.py", "test_routing.py", "test_phrasing.py",
+    "simulate.py", "README.md",
+)
+SELF_BACKUP_DIR = SELF_FILE.parent / ".selffix_backup"
+
+
+def _snapshot_self():
+    """改修前に、書き換え対象のファイルを丸ごと退避する。
+    返り値: 退避できたファイル名の集合（＝改修前に存在したファイル）。"""
+    if SELF_BACKUP_DIR.exists():
+        shutil.rmtree(SELF_BACKUP_DIR)
+    SELF_BACKUP_DIR.mkdir(parents=True)
+    saved = set()
+    for name in SELF_EDITABLE:
+        src = SELF_FILE.parent / name
+        if src.exists():
+            shutil.copy2(src, SELF_BACKUP_DIR / name)
+            saved.add(name)
+    return saved
+
+
+def _restore_self(saved):
+    """退避したファイルを全部戻す（改修前の状態に完全に復元する）。
+    改修中に新しく作られたファイルは、元々無かったので削除する。"""
+    restored = []
+    for name in SELF_EDITABLE:
+        dst = SELF_FILE.parent / name
+        bak = SELF_BACKUP_DIR / name
+        if name in saved:
+            if bak.exists():
+                shutil.copy2(bak, dst)
+                restored.append(name)
+        elif dst.exists():
+            dst.unlink()
+            restored.append(f"{name}(削除)")
+    return restored
+
+
+def _changed_self_files(saved):
+    """改修で実際に中身が変わったファイル名の一覧（報告と git add に使う）。"""
+    out = []
+    for name in SELF_EDITABLE:
+        dst, bak = SELF_FILE.parent / name, SELF_BACKUP_DIR / name
+        if not dst.exists():
+            continue
+        if name not in saved or not bak.exists():
+            out.append(name)
+        elif dst.read_bytes() != bak.read_bytes():
+            out.append(name)
+    return out
 RESTART_MARKER = HISTORY_DIR / "restart_notify.json"
 
 
@@ -4880,36 +4933,44 @@ async def _run_self_fix(cid, request, owner_id):
         "※もし「相談・質問だっただけ」なら、続けて『今のは相談』と送ってください。"
     )
     try:
-        shutil.copy2(SELF_FILE, SELF_BACKUP)
+        saved = _snapshot_self()
     except Exception as e:  # noqa: BLE001
         await send_as(orch, cid, f"⚠️ バックアップ作成に失敗したため中止します: {str(e)[:200]}")
         return
 
     task = (
-        f"このフォルダの {SELF_FILE.name}（Discordボット本体）を、次の要望どおりに修正して。\n"
+        f"このフォルダの {SELF_FILE.name}（Discordボット本体）を、"
+        "次の要望どおりに修正して。\n"
         f"要望: {request}\n"
-        "注意: 既存の機能を壊さない最小限の変更にすること。"
+        "注意: 既存の機能を壊さない最小限の変更にすること。\n"
+        f"【編集してよいファイル】{('、'.join(SELF_EDITABLE))} だけ。"
+        "これ以外のファイルは作成も変更もしないこと。\n"
+        "動作が変わる修正をしたときは、test_routing.py か test_phrasing.py に"
+        "回帰テストを1件足すこと（次に同じ壊れ方をしないため）。\n"
         f"修正後に `python3 -m py_compile {SELF_FILE.name}` で構文チェックし、"
         "エラーがあれば直すこと。最後に修正内容の要約を3行以内で出力して。"
     )
-    result = await _run_claude_exec(task)
+    result = _strip_cli_boilerplate(await _run_claude_exec(task))
 
     ok, detail = await _selfcheck()
     if not ok:
-        shutil.copy2(SELF_BACKUP, SELF_FILE)
+        back = _restore_self(saved)
         await send_as(
             orch, cid,
-            f"⚠️ 修正後のコードが検証に失敗したため、自動で元に戻しました。\n"
+            f"⚠️ 修正後のコードが検証に失敗したため、自動で元に戻しました"
+            f"（{'、'.join(back) or '変更なし'}）。\n"
             f"エラー: {detail[:500]}"
         )
         return
 
-    _, diffstat = await _git_self(["diff", "--stat", "--", SELF_FILE.name])
+    changed = _changed_self_files(saved)
+    _, diffstat = await _git_self(["diff", "--stat", "--"] + list(SELF_EDITABLE))
     fut = asyncio.get_running_loop().create_future()
     _set_pending(cid, fut, owner_id)
     await send_as(
         orch, cid,
         f"📋 修正完了・検証OKです。\n\n【修正内容】\n{result[:1000]}\n\n"
+        f"【変更したファイル】\n{'、'.join(changed) or '(なし)'}\n\n"
         f"【変更規模】\n{diffstat[:300] or '(差分なし)'}\n\n"
         "適用して再起動しますか？ [✅許可] を押すか「**許可**」と返信でOK"
         "（❌または「拒否」で元のコードに戻します・5分で自動却下）",
@@ -4922,12 +4983,15 @@ async def _run_self_fix(cid, request, owner_id):
     finally:
         _clear_pending(cid, fut)
     if not approved:
-        shutil.copy2(SELF_BACKUP, SELF_FILE)
-        await send_as(orch, cid, "🛑 元のコードに戻しました。適用していません。")
+        back = _restore_self(saved)
+        await send_as(
+            orch, cid,
+            f"🛑 元のコードに戻しました（{'、'.join(back) or '変更なし'}）。適用していません。"
+        )
         return
 
     # 記録用にコミット（プッシュできればプッシュ。失敗しても適用は続行）
-    await _git_self(["add", SELF_FILE.name])
+    await _git_self(["add", "--"] + (changed or [SELF_FILE.name]))
     rc, _ = await _git_self(["commit", "-m", f"Discordからの自己改修: {request[:60]}"])
     note = "修正を適用しました。"
     if rc == 0:
@@ -4940,6 +5004,7 @@ async def _run_self_fix(cid, request, owner_id):
                 "次のコード同期で消える可能性があるため、この修正が重要なら "
                 "Claude Code 側でも同じ修正を反映してください）"
             )
+    shutil.rmtree(SELF_BACKUP_DIR, ignore_errors=True)   # 適用済みなので退避は不要
     add_history(cid, "Orchestrator", f"（自己改修を適用: {request[:100]}）")
     await _restart_self(cid, note)
 
