@@ -360,6 +360,27 @@ def run():
           bot._clean_reply("直したよ。再起動してください。", "コード直して"),
           "直したよ。再起動してください。")
 
+    print("■ 動画が視聴できない時の代替情報（YouTube APIはGeminiとは別枠）")
+    for _u, _want in (
+        ("https://youtu.be/L5LATULmdJo?si=pdf68PnnINJBaHAq", "L5LATULmdJo"),
+        ("https://www.youtube.com/watch?v=abc123XYZ&t=10", "abc123XYZ"),
+        ("https://www.youtube.com/shorts/QQ11ww22ee", "QQ11ww22ee"),
+        ("https://www.youtube.com/live/ZZ99xx88yy", "ZZ99xx88yy"),
+        ("https://example.com/nope", ""),
+    ):
+        check(f"動画ID抽出 {_u[:40]}", bot._yt_video_id(_u), _want)
+    _xml = ('<transcript><text start="0" dur="2">こんにちは&amp;#39;</text>'
+            '<text start="2">今日は<b>AI</b>の話</text></transcript>')
+    check("字幕の取り出し（二重エスケープも戻す）",
+          bot._decode_caption_xml(_xml), "こんにちは' 今日はAIの話")
+    check("字幕が無ければ空", bot._decode_caption_xml(""), "")
+    _meta = {"title": "T", "channel": "C", "published": "2026-07-01",
+             "desc": "D", "tags": ["a"], "views": 12345, "duration": "10:00"}
+    _fmt = bot._format_video_meta(_meta, "書き起こし")
+    check("メタ情報を整形", "再生数: 12,345" in _fmt and "字幕（書き起こし）" in _fmt, True)
+    check("字幕が無い時は字幕欄を出さない",
+          "字幕" in bot._format_video_meta(_meta, ""), False)
+
     print("■ 応答速度：裏方の処理に会話の枠を奪われないこと")
     import asyncio as _aio5
 

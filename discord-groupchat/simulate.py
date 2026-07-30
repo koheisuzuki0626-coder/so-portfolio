@@ -96,6 +96,7 @@ import ai_group_chat as bot  # noqa: E402
 _HANDLE_ORCH = bot._handle_orchestrator
 _EXTRACT_ATT = bot.extract_attachment_context
 _MEDIA_CTX = bot._apply_media_url_context
+_YT_CTX = bot._apply_youtube_context
 _REPLY_CTX = bot._reply_context
 _IMAGE_REQ = bot._handle_image_request
 _LOAD_LAST_GEN = bot._load_last_gen
@@ -743,6 +744,44 @@ async def run():
     bot._gemini_analyze_media_sync = _quota
     ctx = await _EXTRACT_ATT(_FakeMessage("", [_FakeAttachment("y.pdf")]))
     check("枠切れを案内", "枠切れです" in ctx, ctx[:150])
+
+    # ===== ③-b2 YouTubeが視聴できない時、メタ情報＋字幕で答えられること =====
+    print("■ E2E: 動画が視聴できない時の代替情報")
+    YT = "https://youtu.be/L5LATULmdJo"
+
+    def _watch_ng(*a, **k):
+        raise bot.GeminiQuotaExceeded("枠切れです")
+
+    async def _meta_ok(vid):
+        return {"title": "中国AI KIMI K3の衝撃", "channel": "TBS CROSS DIG",
+                "published": "2026-07-29", "desc": "Kimi K3の性能について",
+                "tags": ["AI"], "views": 98765, "duration": "24:00"}
+
+    async def _cap_ok(vid, limit=6000):
+        return "今日はKimi K3の性能について話します。" * 10
+
+    async def _cap_ng(vid, limit=6000):
+        return ""
+
+    for _cap, _label, _want in ((_cap_ok, "字幕あり", "字幕（書き起こし）"),
+                                (_cap_ng, "字幕なし", "タイトル: 中国AI")):
+        install_stubs()
+        bot._gemini_watch_youtube_sync = _watch_ng
+        bot._fetch_video_meta, bot._fetch_captions = _meta_ok, _cap
+        msg = _FakeMessage(YT)
+        out, bare = await _YT_CTX(msg, YT)
+        check(f"{_label}: 代替情報を文脈に入れる", _want in out, out[:200])
+        check(f"{_label}: 読めていない扱いにしない",
+              "まだ中身を読めていない" not in out, out[:200])
+
+    # メタ情報も取れない時だけ「読めていない」と正直に言う
+    async def _meta_ng(vid):
+        return None
+    install_stubs()
+    bot._gemini_watch_youtube_sync = _watch_ng
+    bot._fetch_video_meta, bot._fetch_captions = _meta_ng, _cap_ng
+    out, _ = await _YT_CTX(_FakeMessage(YT), YT)
+    check("何も取れなければ正直に伝える", "まだ中身を読めていない" in out, out[:200])
 
     # ===== ③-c 画像/動画URLの内容理解（生成物について質問できること）=====
     print("■ E2E: 画像/動画URLの内容理解")

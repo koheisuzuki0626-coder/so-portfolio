@@ -1986,6 +1986,120 @@ async def _apply_media_url_context(message, content, cid):
     return content
 
 
+def _yt_video_id(url):
+    """YouTubeのURLから動画IDを取り出す（watch / youtu.be / shorts / live）。"""
+    m = re.search(r"(?:[?&]v=|youtu\.be/|/shorts/|/live/)([\w\-]{6,})", url or "")
+    return m.group(1) if m else ""
+
+
+async def _fetch_video_meta(vid):
+    """YouTube Data API で動画1本のメタ情報を取る。
+    Geminiの無料枠とは【別の枠】なので、Geminiが枠切れでもこちらは使える。"""
+    if not YOUTUBE_API_KEY or not vid:
+        return None
+    params = {"part": "snippet,statistics,contentDetails", "id": vid,
+              "key": YOUTUBE_API_KEY}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                "https://www.googleapis.com/youtube/v3/videos", params=params,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as r:
+                data = await r.json()
+                if r.status != 200 or not data.get("items"):
+                    print(f"[yt_meta] 取得できず: {str(data)[:200]}")
+                    return None
+    except Exception as e:  # noqa: BLE001
+        print(f"[yt_meta] 失敗: {str(e)[:150]}")
+        return None
+    it = data["items"][0]
+    sn = it.get("snippet", {})
+    return {
+        "title": sn.get("title", ""),
+        "channel": sn.get("channelTitle", ""),
+        "published": (sn.get("publishedAt") or "")[:10],
+        "desc": (sn.get("description") or "").strip()[:1500],
+        "tags": (sn.get("tags") or [])[:12],
+        "views": int(it.get("statistics", {}).get("viewCount") or 0),
+        "duration": _parse_iso_duration(
+            it.get("contentDetails", {}).get("duration")),
+    }
+
+
+_CAPTION_RE = re.compile(r"<text[^>]*>(.*?)</text>", re.S)
+
+
+def _decode_caption_xml(xml):
+    """timedtext のXMLから字幕本文だけを取り出す。"""
+    import html
+    # YouTubeは実体参照を二重にエスケープすることがある（&amp;#39; → '）
+    parts = [html.unescape(html.unescape(re.sub(r"<[^>]+>", "", t))).strip()
+             for t in _CAPTION_RE.findall(xml or "")]
+    return " ".join(p for p in parts if p)
+
+
+async def _fetch_captions(vid, limit=6000):
+    """字幕（自動生成を含む）が公開されていれば本文を返す。取れなければ空。
+    字幕が取れれば、動画を視聴しなくても【本物の】要約ができる。
+    公開エンドポイントのベストエフォートなので、取れないことも普通にある。"""
+    if not vid:
+        return ""
+    try:
+        async with aiohttp.ClientSession() as s:
+            for params in ({"lang": "ja", "v": vid}, {"lang": "en", "v": vid},
+                           {"lang": "ja", "v": vid, "kind": "asr"},
+                           {"lang": "en", "v": vid, "kind": "asr"}):
+                async with s.get(
+                    "https://video.google.com/timedtext", params=params,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as r:
+                    if r.status != 200:
+                        continue
+                    text = _decode_caption_xml(await r.text())
+                    if len(text) > 100:
+                        return text[:limit]
+    except Exception as e:  # noqa: BLE001
+        print(f"[yt_caption] 失敗: {str(e)[:150]}")
+    return ""
+
+
+def _format_video_meta(meta, caption):
+    """メタ情報＋字幕を、AIが読める文脈テキストに整える。"""
+    lines = [f"タイトル: {meta['title']}", f"チャンネル: {meta['channel']}"]
+    if meta.get("published"):
+        lines.append(f"公開日: {meta['published']}")
+    if meta.get("duration"):
+        lines.append(f"長さ: {meta['duration']}")
+    if meta.get("views"):
+        lines.append(f"再生数: {meta['views']:,}")
+    if meta.get("tags"):
+        lines.append("タグ: " + "、".join(meta["tags"]))
+    if meta.get("desc"):
+        lines.append(f"概要欄:\n{meta['desc']}")
+    if caption:
+        lines.append(f"字幕（書き起こし）:\n{caption}")
+    return "\n".join(lines)
+
+
+async def _youtube_fallback_context(url):
+    """動画を視聴できなかったときの代わりの情報源。
+    返り値: (文脈テキスト, 字幕が取れたか)。何も取れなければ ("", False)。"""
+    vid = _yt_video_id(url)
+    meta = await _fetch_video_meta(vid)
+    if not meta:
+        return "", False
+    caption = await _fetch_captions(vid)
+    body = _format_video_meta(meta, caption)
+    head = (
+        f"【この動画（{url}）の情報】※映像は見ていない。"
+        + ("字幕と概要欄から分かる範囲で答えること。"
+           if caption else
+           "字幕は取得できなかったので、タイトル・概要欄・タグから"
+           "分かる範囲だけ答え、映像の中身は推測しないこと。")
+    )
+    return f"\n\n{head}\n{body}", bool(caption)
+
+
 async def _apply_youtube_context(message, content):
     """メッセージ内のYouTubeリンク（最大2本）をGeminiが視聴し、内容を文脈に合併する。
     返り値: (合併後のcontent, リンクのみの投稿でまとめを投稿済みならTrue)"""
@@ -1993,7 +2107,7 @@ async def _apply_youtube_context(message, content):
     if not urls:
         return content, False
 
-    summaries, unread = [], []
+    summaries, unread, fallbacks = [], [], []
     async with message.channel.typing():
         for url in urls[:2]:
             try:
@@ -2002,28 +2116,52 @@ async def _apply_youtube_context(message, content):
                 )
             except GeminiQuotaExceeded as e:
                 _gemini_watch["outage_cid"] = message.channel.id
-                await message.channel.send(
-                    f"⚠️ 動画を視聴できませんでした: {e}\n"
-                    "（復活を5分おきに自動確認して、復活したら知らせます）"
-                )
-                # 「読めなかった」ことを文脈に残す。残さないとリンクだけが履歴に
-                # 入り、あとで「要約して」と言われたAIが中身を知らないまま
-                # 見当違いの返事をしてしまう。
-                unread.append(url)
+                # 映像は見られなくても、YouTube APIは【別の枠】なので生きている。
+                # タイトル・概要欄・タグ・字幕を取れば実際の要約ができる。
+                fb, has_cap = await _youtube_fallback_context(url)
+                if fb:
+                    fallbacks.append(fb)
+                    await message.channel.send(
+                        f"⚠️ 映像は視聴できませんでした（{e}）。\n"
+                        + ("字幕と概要欄を取得したので、そこから答えます。"
+                           if has_cap else
+                           "代わりにタイトル・概要欄・タグを取得しました"
+                           "（字幕は非公開のため、映像の中身までは分かりません）。")
+                    )
+                else:
+                    await message.channel.send(
+                        f"⚠️ 動画を視聴できませんでした: {e}\n"
+                        "（復活を5分おきに自動確認して、復活したら知らせます）"
+                    )
+                    # 「読めなかった」ことを文脈に残す。残さないとリンクだけが履歴に
+                    # 入り、あとで「要約して」と言われたAIが中身を知らないまま
+                    # 見当違いの返事をしてしまう。
+                    unread.append(url)
                 continue
             except Exception as e:  # noqa: BLE001
                 print(f"[youtube_link] 視聴失敗 {url}: {str(e)[:200]}")
-                await message.channel.send(
-                    "⚠️ この動画は読み取れませんでした"
-                    "（非公開・年齢制限・配信中・長すぎる等の可能性）。"
-                )
-                unread.append(url)
+                fb, has_cap = await _youtube_fallback_context(url)
+                if fb:
+                    fallbacks.append(fb)
+                    await message.channel.send(
+                        "⚠️ 映像は読み取れませんでした。"
+                        + ("字幕と概要欄から答えます。" if has_cap
+                           else "タイトル・概要欄から分かる範囲で答えます。")
+                    )
+                else:
+                    await message.channel.send(
+                        "⚠️ この動画は読み取れませんでした"
+                        "（非公開・年齢制限・配信中・長すぎる等の可能性）。"
+                    )
+                    unread.append(url)
                 continue
             if summary:
                 summaries.append((url, summary))
 
     for url, summary in summaries:
         content += f"\n\n【YouTube動画の内容（{url}）】\n{summary}"
+    for fb in fallbacks:
+        content += fb
     for url in unread:
         content += (
             f"\n\n【この動画（{url}）はまだ中身を読めていない】\n"
