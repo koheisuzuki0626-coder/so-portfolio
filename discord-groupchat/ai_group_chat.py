@@ -777,6 +777,14 @@ async def _reap(proc, timeout=5):
 _last_engine = {"name": ""}
 
 
+def _model_args():
+    """claude CLI に渡すモデル指定。未設定ならCLIの既定にまかせる。
+    gen_settings は起動後も書き換わるので、呼ぶたびに読み直す
+    （＝Discordで切り替えたら次の発言から即反映される）。"""
+    m = (gen_settings.get("claude_model") or "").strip()
+    return ["--model", m] if m else []
+
+
 async def run_claude_cli(prompt, background=False):
     """Claude Code CLI をヘッドレスで呼ぶ（サブスク利用・API課金なし）。
     プロンプトは stdin で渡す（長文でOSの引数上限を超えないように）。
@@ -793,7 +801,7 @@ async def _claude_cli_run(prompt):
     # ※ワークスペースを一度「信頼(trust)」しておかないと settings.json は無視される。
     async with _get_claude_sem():
         proc = await asyncio.create_subprocess_exec(
-            CLAUDE_BIN, "-p",
+            CLAUDE_BIN, "-p", *_model_args(),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -1246,7 +1254,9 @@ GEN_SETTINGS_FILE = HISTORY_DIR / "gen_settings.json"
 
 
 def _load_gen_settings():
-    d = {"image_engine": IMAGE_GEN_ENGINE, "image_app": None, "video_app": None}
+    d = {"image_engine": IMAGE_GEN_ENGINE, "image_app": None, "video_app": None,
+         # 会話を担当する claude CLI のモデル。""＝CLIの既定にまかせる
+         "claude_model": os.getenv("CLAUDE_MODEL", "")}
     d.update(_read_json(GEN_SETTINGS_FILE))
     return d
 
@@ -1256,6 +1266,50 @@ gen_settings = _load_gen_settings()
 
 def _save_gen_settings():
     _write_json(GEN_SETTINGS_FILE, gen_settings, "gen_settings")
+
+
+# ---------- 会話モデル（claude CLI）の切替 ----------
+# CLI が受け付ける別名をそのまま渡す（版が上がっても追従できるので固定IDは持たない）。
+CLAUDE_MODEL_ALIASES = {
+    "haiku": ("haiku", "Haiku（軽量・最速）"),
+    "ハイク": ("haiku", "Haiku（軽量・最速）"),
+    "はいく": ("haiku", "Haiku（軽量・最速）"),
+    "sonnet": ("sonnet", "Sonnet（標準）"),
+    "ソネット": ("sonnet", "Sonnet（標準）"),
+    "そねっと": ("sonnet", "Sonnet（標準）"),
+    "opus": ("opus", "Opus（最高性能・低速）"),
+    "オーパス": ("opus", "Opus（最高性能・低速）"),
+    "おーぱす": ("opus", "Opus（最高性能・低速）"),
+    "既定": ("", "CLIの既定"),
+    "デフォルト": ("", "CLIの既定"),
+    "標準": ("", "CLIの既定"),
+}
+# 「モデル」＋名前、または「〜にして/変えて/切り替えて」の言い方を拾う
+_MODEL_SWITCH_RE = re.compile(
+    r"(モデル|model|エンジン)?\s*(?:を|は)?\s*"
+    r"(haiku|ハイク|はいく|sonnet|ソネット|そねっと|opus|オーパス|おーぱす|"
+    r"既定|デフォルト|標準)\s*(?:に|へ)?\s*"
+    r"(?:して|しろ|変えて|変更|切り替え|切替|に戻して|戻して|でお願い|で)",
+    re.I,
+)
+_MODEL_ASK_RE = re.compile(
+    r"(いま|今|現在|どの)?\s*(モデル|model)\s*(は|って|何|なに|教えて|確認)")
+
+
+def _match_claude_model(text):
+    """発言から切り替え先のモデルを判定。(値, 表示名) か None。"""
+    m = _MODEL_SWITCH_RE.search(text or "")
+    if not m:
+        return None
+    return CLAUDE_MODEL_ALIASES.get(m.group(2).lower())
+
+
+def _current_model_label():
+    v = gen_settings.get("claude_model") or ""
+    for val, label in CLAUDE_MODEL_ALIASES.values():
+        if val == v and val:
+            return label
+    return "CLIの既定（未指定）" if not v else v
 
 
 # モデル名の呼び名 → 設定。target: video(Higgsfield動画) / image_hf(Higgsfield画像) /
@@ -4861,7 +4915,7 @@ async def _run_claude_exec(task, timeout=600):
 
 async def _claude_exec_run(task, timeout):
     proc = await asyncio.create_subprocess_exec(
-        CLAUDE_BIN, "-p", "--dangerously-skip-permissions", task,
+        CLAUDE_BIN, "-p", "--dangerously-skip-permissions", *_model_args(), task,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=BASE_DIR,
@@ -5446,6 +5500,25 @@ async def _dispatch_message(message):
     # 初回のみ：導入前の過去ログをDiscordから取り込む（バックグラウンド）
     if cid not in _import_started:
         _track(asyncio.create_task(_backfill_channel_history(message.channel)))
+
+    # 会話モデルの切替・確認（AI判定より前に拾う。AIに任せると
+    # 「コードを直さないと変えられない」と答えてしまい、実際そうなった）
+    _mdl = _match_claude_model(content)
+    if _mdl is not None:
+        gen_settings["claude_model"] = _mdl[0]
+        _save_gen_settings()
+        add_history(cid, message.author.display_name, content)
+        await message.channel.send(
+            f"🔀 会話モデルを **{_mdl[1]}** にしました（次の発言から反映・再起動不要）。"
+        )
+        return
+    if _MODEL_ASK_RE.search(content) and not re.search("画像|動画|映像|生成", content):
+        await message.channel.send(
+            f"🔀 いまの会話モデル: **{_current_model_label()}**\n"
+            "「**ハイクにして**」「**ソネットにして**」「**オーパスにして**」"
+            "「**既定に戻して**」で切り替えられます。"
+        )
+        return
 
     # 自己診断・エラー確認（最優先で拾う）
     if re.search("システムチェック|自己診断|ヘルスチェック|健康診断|全体チェック", content):

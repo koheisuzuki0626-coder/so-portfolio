@@ -360,6 +360,33 @@ def run():
           bot._clean_reply("直したよ。再起動してください。", "コード直して"),
           "直したよ。再起動してください。")
 
+    print("■ 会話モデルの切替 _match_claude_model")
+    # 実際に起きた事故：「ハイクにして」に対して
+    # 「コード側に手を入れる必要がある」と答えて切り替えられなかった
+    for _t, _want in (
+        ("ハイクにして", "haiku"),
+        ("モデルハイクにして", "haiku"),
+        ("モデルをsonnetにして", "sonnet"),
+        ("オーパスに変えて", "opus"),
+        ("ソネットに切り替えて", "sonnet"),
+        ("haikuで", "haiku"),
+        ("モデルを既定に戻して", ""),
+    ):
+        _got = bot._match_claude_model(_t)
+        check(f"{_t!r} → {_want or '既定'}", _got[0] if _got else None, _want)
+    for _t in ("犬の動画作って", "モデルってなに？", "画像モデルをナノバナナにして",
+               "今日はいい天気", "モデルさんかっこいい"):
+        check(f"{_t!r} は切替にしない", bot._match_claude_model(_t), None)
+    _keep = bot.gen_settings.get("claude_model")
+    try:
+        bot.gen_settings["claude_model"] = "haiku"
+        check("CLIにモデルを渡す", bot._model_args(), ["--model", "haiku"])
+        check("表示名が出る", bot._current_model_label(), "Haiku（軽量・最速）")
+        bot.gen_settings["claude_model"] = ""
+        check("既定なら何も渡さない", bot._model_args(), [])
+    finally:
+        bot.gen_settings["claude_model"] = _keep
+
     print("■ 動画が視聴できない時の代替情報（YouTube APIはGeminiとは別枠）")
     for _u, _want in (
         ("https://youtu.be/L5LATULmdJo?si=pdf68PnnINJBaHAq", "L5LATULmdJo"),

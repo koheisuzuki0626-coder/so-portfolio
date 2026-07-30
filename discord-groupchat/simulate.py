@@ -353,6 +353,28 @@ async def run():
               not ({"hf_generate", "image_gen", "short"} & set(r["fired"])),
               f"実際={r['fired']}")
 
+    # 会話モデルの切替がDiscordだけで完結すること
+    _keep_model = bot.gen_settings.get("claude_model")
+    try:
+        for _say, _val, _label in (("ハイクにして", "haiku", "Haiku"),
+                                   ("モデルをsonnetにして", "sonnet", "Sonnet"),
+                                   ("モデルを既定に戻して", "", "既定")):
+            install_stubs()
+            r = await drive(_say)
+            check(f"{_say!r} でモデルが変わる",
+                  bot.gen_settings.get("claude_model") == _val,
+                  f"実際={bot.gen_settings.get('claude_model')}")
+            check(f"{_say!r} の結果を伝える",
+                  any(_label in s2 for s2 in r["sent"]), f"sent={r['sent']}")
+            check(f"{_say!r} でAI応答に流さない",
+                  "orchestrator" not in r["fired"], f"実際={r['fired']}")
+        install_stubs()
+        r = await drive("いまのモデルは？")
+        check("現在のモデルを答える",
+              any("いまの会話モデル" in s2 for s2 in r["sent"]), f"sent={r['sent']}")
+    finally:
+        bot.gen_settings["claude_model"] = _keep_model
+
     # 料金照会の直後は、続きの短い質問も権限のある経路で答える
     install_stubs()
     await drive("veo3で動画作ると何クレジット？")
