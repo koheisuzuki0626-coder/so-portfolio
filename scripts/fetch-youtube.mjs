@@ -180,6 +180,37 @@ export function parseChannel(html, data) {
 
 /* ---------- main ---------- */
 
+async function readExisting() {
+    try {
+        return JSON.parse(await readFile(OUTPUT_PATH, 'utf8'));
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * 既知の動画は初回に確定した投稿日を引き継ぐ。
+ *
+ * チャンネルページの日時は「2 日前」という相対表記しかなく、実行のたびに
+ * 逆算結果がズレる。放置すると内容が変わっていないのに毎回差分が出て、
+ * 6時間ごとに無意味なコミットが積み上がる。
+ */
+export function mergeWithExisting(videos, existingVideos = []) {
+    const previous = new Map(existingVideos.filter((v) => v && v.id).map((v) => [v.id, v]));
+
+    return videos.map((video) => {
+        const old = previous.get(video.id);
+        if (!old || !old.publishedAt) return video;
+        return {
+            ...video,
+            publishedAt: old.publishedAt,
+            publishedRelative: old.publishedRelative ?? video.publishedRelative,
+            publishedIsApproximate: old.publishedIsApproximate ?? video.publishedIsApproximate,
+            year: old.year ?? video.year,
+        };
+    });
+}
+
 async function main() {
     const config = JSON.parse(await readFile(CONFIG_PATH, 'utf8'));
     const maxVideos = Number.isInteger(config.maxVideos) && config.maxVideos > 0
@@ -204,11 +235,21 @@ async function main() {
     console.log(`channel: ${channelTitle ?? '(不明)'} / ${channelId ?? '(不明)'}`);
     console.log(`extracted ${videos.length} videos, keeping ${Math.min(videos.length, maxVideos)}`);
 
+    const existing = await readExisting();
+    const merged = mergeWithExisting(videos, existing?.videos ?? []).slice(0, maxVideos);
+
+    // 中身が同じなら updatedAt も触らない(無意味なコミットを避ける)
+    if (existing && JSON.stringify(existing.videos) === JSON.stringify(merged)
+        && existing.channelId === channelId && existing.channelTitle === channelTitle) {
+        console.log('変更なし。data/videos.json はそのままにします。');
+        return;
+    }
+
     const payload = {
         updatedAt: new Date().toISOString(),
         channelId,
         channelTitle,
-        videos: videos.slice(0, maxVideos),
+        videos: merged,
     };
 
     await mkdir(dirname(OUTPUT_PATH), { recursive: true });
