@@ -389,6 +389,16 @@ def run():
     finally:
         bot.gen_settings["casual_lead"] = _keep_lead
 
+    print("■ 速さのための設定")
+    _dt = bot.DESIGN_CRAFT_RULES
+    check("デザインに速さの指示を入れる場所がある", isinstance(_dt, str), True)
+    check("デザインは会話用と別モデルにできる",
+          isinstance(bot.DESIGN_MODEL, str), True)
+    check("長い作業だけ途中経過を流す",
+          bot.TASK_ETA.get("デザイン制作", 0) >= bot.HEARTBEAT_SEC, True)
+    check("短い作業では途中経過を流さない",
+          bot.TASK_ETA.get("ログ共有", 0) < bot.HEARTBEAT_SEC, True)
+
     print("■ 残り時間の目安 _eta_text")
     check("目安が出る", "あと" in bot._eta_text("デザイン制作", 60), True)
     check("残りが縮む",

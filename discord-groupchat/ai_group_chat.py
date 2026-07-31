@@ -397,6 +397,8 @@ def _track(task):
 # 実行中の背景作業（cid -> {作業名: 開始時刻}）。
 # 「まだ？」と聞かれたとき、直近の生成ではなく【今やっていること】を答えるために使う。
 _running = {}
+# 長い作業の途中経過を何秒おきに流すか（0で無効）。黙り込みを防ぐため。
+HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "90"))
 
 
 def _busy_tasks(cid):
@@ -448,6 +450,24 @@ def _running_for(cid):
     return [(name, int(now - t)) for name, t in (_running.get(cid) or {}).items()]
 
 
+async def _heartbeat(cid, context, every=90):
+    """長い作業のあいだ、黙り込まないように定期的に一言入れる。
+    聞かれる前に状況が出るので『反応が無い＝壊れた？』と思わせない。"""
+    try:
+        while True:
+            await asyncio.sleep(every)
+            busy = dict(_busy_tasks(cid))
+            if context not in busy:
+                return
+            try:
+                await send_as(orch, cid,
+                              f"⏳ 「{context}」続行中（{_eta_text(context, busy[context])}）")
+            except Exception:  # noqa: BLE001
+                return
+    except asyncio.CancelledError:
+        return
+
+
 def _spawn(coro, cid, context):
     """背景タスクを、例外が沈黙しないラッパーで起動する。
     on_message のガードは create_task した処理には効かないため、ここで捕捉して
@@ -459,6 +479,10 @@ def _spawn(coro, cid, context):
     _running.setdefault(cid, {})[context] = started
 
     async def _wrapped():
+        # 目安の長い作業だけ、途中経過を自動で流す（短い作業では邪魔になる）
+        hb = None
+        if HEARTBEAT_SEC and TASK_ETA.get(context, 0) >= HEARTBEAT_SEC:
+            hb = asyncio.create_task(_heartbeat(cid, context, HEARTBEAT_SEC))
         try:
             await coro
         except asyncio.CancelledError:
@@ -473,6 +497,8 @@ def _spawn(coro, cid, context):
             d = _running.get(cid) or {}
             if d.get(context) == started:   # 同名の新しい作業を消さない
                 d.pop(context, None)
+            if hb:
+                hb.cancel()
     return _track(asyncio.create_task(_wrapped()))
 
 
@@ -3791,6 +3817,10 @@ def _engine_switch_hint(engine):
 # 何倍で描画してから縮小するか。2倍にすると文字の輪郭がなめらかになる
 # （等倍で書き出すと日本語の細部がつぶれて安っぽく見える）。
 DESIGN_SCALE = int(os.getenv("DESIGN_SCALE", "2"))
+# デザイン制作に使うモデル。手順は決まっていて必要なのは「速く正確に書くこと」
+# なので、会話用が重いモデルでもここは速いモデルを使う。
+# 空にすると会話用と同じになる。品質を上げたいなら sonnet や opus にする。
+DESIGN_MODEL = os.getenv("DESIGN_MODEL", "sonnet")
 
 # サンドボックスの実測結果に基づく準備手順。ここは毎回そのまま実行させる。
 #  ・素の環境の日本語フォントは IPAGothic / Unifont / WenQuanYi（中国語字形）だけで、
@@ -3867,7 +3897,8 @@ async def _run_design(message, request):
     w, h, label = _design_size(request)
     await send_as(
         orch, cid,
-        f"🎨 デザインを作ります（{label} {w}×{h}）。HTMLで組んで画像に書き出します（2〜5分）…"
+        f"🎨 デザインを作ります（{label} {w}×{h}）。HTMLで組んで画像に書き出します"
+        f"（目安{round(TASK_ETA.get('デザイン制作', 180) / 60)}分）…"
     )
     style = _style_snippet()
     task = (
@@ -3877,6 +3908,12 @@ async def _run_design(message, request):
         f"仕上がりサイズ: {w}x{h}px（{label}）\n"
         + (f"これまでに学習した勝ちパターン:\n{style}\n" if style else "")
         + DESIGN_CRAFT_RULES
+        # 生成時間のほとんどはHTMLを書く時間なので、短く書かせるのが一番効く
+        + "【速さのために守ること】\n"
+        "・HTMLは120行以内。コメント・未使用のCSS・冗長な入れ子は書かない\n"
+        "・下書きや説明文を出力しない。いきなり最終版のHTMLを書く\n"
+        "・一度で仕上げる。LAYOUT_NG が出たときだけ直す（最大2回）\n"
+        "・調べ物やファイル探索はしない。必要な情報はこの指示に全部ある\n"
         + ("【図の描き方】人物や項目は箱（角丸・枠線・背景色）で置き、"
            "関係は線と矢印で結ぶ。線はインラインSVGで引く"
            "（外部ライブラリやMermaidは使わない）。"
@@ -3903,7 +3940,7 @@ async def _run_design(message, request):
                               .replace("SCALE", str(DESIGN_SCALE))
         + "\n最終行に『URL: <公開URL>』だけを出力。失敗なら『ERROR: 理由』。"
     )
-    out = await _run_claude_exec(task, timeout=900)
+    out = await _run_claude_exec(task, timeout=900, model=DESIGN_MODEL or None)
     url = _extract_video_url(out or "")
     last = (out or "").strip().splitlines()[-1:] or [""]
     if not url or last[0].upper().startswith("ERROR"):
@@ -5278,18 +5315,21 @@ def _try_text_approval(cid, user_id, content):
     return None
 
 
-async def _run_claude_exec(task, timeout=600):
+async def _run_claude_exec(task, timeout=600, model=None):
     """承認済みタスクをフル権限で実行し、標準出力を返す。
     重い処理なので同時に1本まで。以前は無制限に起動できたため、
     調査・自己改修・生成の投入が重なるとMacのCPUを奪い合い、
-    会話の返事まで遅くなっていた。"""
+    会話の返事まで遅くなっていた。
+    model を指定すると、会話用とは別のモデルで実行できる
+    （手順が決まっている作業は速いモデルの方が体感が良い）。"""
     async with _sem("exec", EXEC_CONCURRENCY):
-        return await _claude_exec_run(task, timeout)
+        return await _claude_exec_run(task, timeout, model)
 
 
-async def _claude_exec_run(task, timeout):
+async def _claude_exec_run(task, timeout, model=None):
+    args = ["--model", model] if model else _model_args()
     proc = await asyncio.create_subprocess_exec(
-        CLAUDE_BIN, "-p", "--dangerously-skip-permissions", *_model_args(), task,
+        CLAUDE_BIN, "-p", "--dangerously-skip-permissions", *args, task,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=BASE_DIR,
