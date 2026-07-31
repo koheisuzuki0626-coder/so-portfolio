@@ -372,7 +372,7 @@ def run():
 
     print("■ Geminiとクロードの役割分担（声はひとつ、頭は複数）")
     check("Geminiの視点担当の人格がある",
-          "別の切り口" in bot.GEMINI_VIEW_PERSONA, True)
+          "違う切り口" in bot.GEMINI_VIEW_PERSONA, True)
     check("Geminiに推測を書かせない",
           "推測を事実のように書かない" in bot.GEMINI_VIEW_PERSONA, True)
     check("Geminiは返事そのものは書かない（既定）", bot._gemini_replies_on(), False)
