@@ -3640,6 +3640,60 @@ def _design_size(text):
     return DESIGN_SIZES["thumbnail"]
 
 
+# 何倍で描画してから縮小するか。2倍にすると文字の輪郭がなめらかになる
+# （等倍で書き出すと日本語の細部がつぶれて安っぽく見える）。
+DESIGN_SCALE = int(os.getenv("DESIGN_SCALE", "2"))
+
+# サンドボックスの実測結果に基づく準備手順。ここは毎回そのまま実行させる。
+#  ・素の環境の日本語フォントは IPAGothic / Unifont / WenQuanYi（中国語字形）だけで、
+#    太いウェイトが無く古く見える。Noto Sans JP（Black含む）を入れると別物になる。
+#  ・`npx playwright screenshot` には解像度倍率の指定が無いので、
+#    deviceScaleFactor を使う小さなスクリプトを置いて呼ぶ。
+DESIGN_SETUP_SNIPPET = """【環境準備】この通りに実行すること（実測済み）:
+mkdir -p ~/.fonts && cd /home/user && \\
+curl -sL -A "Mozilla/5.0" \\
+ "https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap" \\
+ -o css.txt && i=0 && \\
+for u in $(grep -o 'https://fonts.gstatic.com/[^)]*' css.txt); do \\
+ i=$((i+1)); curl -sL "$u" -o ~/.fonts/noto$i.ttf; done && fc-cache -f >/dev/null 2>&1
+（確認: `fc-list :lang=ja family | grep Noto` に "Noto Sans JP Black" が出ること）
+
+書き出しスクリプト /home/user/s.js を作る:
+const { chromium } = require('playwright');
+(async () => {
+  const [html, out, w, h, scale] = process.argv.slice(2);
+  const b = await chromium.launch();
+  const p = await b.newPage({ viewport:{width:+w,height:+h}, deviceScaleFactor:+scale });
+  await p.goto('file://'+html);
+  await p.evaluate(() => document.fonts.ready);
+  await p.waitForTimeout(300);
+  await p.screenshot({ path: out });
+  await b.close();
+})();
+
+高解像度で描いたあと、狙いのサイズへ高品質縮小する:
+python3 -c "from PIL import Image; im=Image.open('/home/user/out.png'); \\
+im.resize((WIDTH,HEIGHT), Image.LANCZOS).save('/home/user/out.png')"
+"""
+
+# 仕上がりの質を決める作法。これが無いと「情報は合っているが素人っぽい」絵になる。
+DESIGN_CRAFT_RULES = (
+    "【デザインの作法】\n"
+    "・フォントは 'Noto Sans JP' を基本にし、見出しは font-weight:900、"
+    "本文は 400〜700。欧文は Montserrat を混ぜてよい\n"
+    "・文字の階層をはっきりつける（主役の見出しは、次に大きい要素の2倍以上）。"
+    "全部を同じ大きさにしない\n"
+    "・色は3色以内＋アクセント1色。背景と文字のコントラストを強く取る"
+    "（明るい背景に白文字のような読みにくい組み合わせを避ける）\n"
+    "・端から最低5%の余白を空ける。要素同士の間隔も揃える（4の倍数で統一）\n"
+    "・見出しは letter-spacing を少し詰め（-0.02em前後）、行間は1.2〜1.5\n"
+    "・要素は7つ以内に絞る。詰め込まず、優先順位の低い情報は小さく\n"
+    "・背景はベタ塗りだけにせず、グラデーション・図形・帯などで奥行きを出す\n"
+    "・文字が背景に重なる箇所は、影か半透明の帯を敷いて必ず読めるようにする\n"
+    "・絵文字はフォントによって豆腐（□）になるので使わない\n"
+)
+
+
 async def _run_design(message, request):
     """ClaudeがHTMLでデザインを組み、サンドボックスでPNGに書き出して返す。"""
     cid = message.channel.id
@@ -3655,33 +3709,35 @@ async def _run_design(message, request):
         f"依頼（日本語）: {request}\n"
         f"仕上がりサイズ: {w}x{h}px（{label}）\n"
         + (f"これまでに学習した勝ちパターン:\n{style}\n" if style else "")
-        + "手順:\n"
-        "1) Higgsfield の MCP ツール sandbox_exec を使う。まず /home/user/d.html に"
-        "自己完結のHTMLを書く（外部CDN・外部画像は使わない。フォントは"
-        "サンドボックス内の Metropolis / Montserrat と、日本語は "
-        "fc-list で見つかる日本語フォントを font-family に指定する）。\n"
-        f"   ・body と .canvas を {w}x{h}px 固定、margin:0、overflow:hidden にする\n"
-        "   ・文字が主役。可読性最優先（十分なコントラスト、太字、余白）\n"
-        "   ・写真が要る場合は撮影素材を使わず、CSSのグラデーション・図形・"
-        "アイコン的な図版で成立させる\n"
-        + ("   ・図なので、人物や項目は箱（角丸・枠線・背景色）で置き、"
+        + DESIGN_CRAFT_RULES
+        + ("【図の描き方】人物や項目は箱（角丸・枠線・背景色）で置き、"
            "関係は線と矢印で結ぶ。線はインラインSVGで引く"
            "（外部ライブラリやMermaidは使わない）。"
-           "関係の種類（兄弟・親子・主従・対立など）はラベルと線の色で示し、"
-           "凡例を隅に置く。事実関係は史実・公開情報に基づき、"
-           "確実でないことは書かない\n" if _DIAGRAM_RE.search(request or "") else "")
-        + "2) 同じコマンドの中で Playwright のヘッドレスChromiumを使い、"
-        f"viewport {w}x{h} で /home/user/out.png に書き出す\n"
-        "   例: npx playwright screenshot --viewport-size='"
-        f"{w},{h}' file:///home/user/d.html /home/user/out.png\n"
-        "   （うまくいかなければ node で chromium を直接使ってもよい）\n"
-        "3) 文字がはみ出す・重なる場合はHTMLを直して2をやり直す\n"
-        "4) media_upload で署名付きURLを取得し "
+           "関係の種類（兄弟・親子・主従・対立など）は線の色と短いラベルで示し、"
+           "凡例を隅に置く。箱は重ねない・線は交差を最小にする。"
+           "事実関係は史実・公開情報に基づき、確実でないことは書かない。\n"
+           if _DIAGRAM_RE.search(request or "") else "")
+        + "手順（Higgsfield の MCP ツール sandbox_exec を使う）:\n"
+        "1) 下の【環境準備】をそのまま実行する（日本語フォントの導入と"
+        "書き出しスクリプトの作成。実測済みの手順なので変更しないこと）\n"
+        f"2) /home/user/d.html に自己完結のHTMLを書く。"
+        f"body と .canvas を {w}x{h}px 固定、margin:0、overflow:hidden。"
+        "外部CDN・外部画像は使わない（フォントは導入済みのものを使う）\n"
+        f"3) 書き出し: `cd /home/user && export NODE_PATH=$(npm root -g) && "
+        f"node s.js /home/user/d.html /home/user/out.png {w} {h} {DESIGN_SCALE}`\n"
+        f"   （{DESIGN_SCALE}倍で描画してから {w}x{h} に高品質縮小するので、"
+        "文字の輪郭がなめらかになる）\n"
+        "4) 出来上がった /home/user/out.png を Read ツールで【必ず自分の目で確認】する。"
+        "文字のはみ出し・重なり・豆腐（□）・余白の偏り・線の交差が無いか見て、"
+        "問題があればHTMLを直して3からやり直す（最大3回）\n"
+        "5) media_upload で署名付きURLを取得し "
         "curl -X PUT --upload-file /home/user/out.png '<upload_url>' でアップロード\n"
-        "5) media_confirm で確定して公開URLを得る\n"
+        "6) media_confirm で確定して公開URLを得る\n"
         "※サンドボックスは呼び出し間で消えるので、1〜3は && でつないで"
-        "1回のコマンドにまとめること。\n"
-        "最終行に『URL: <公開URL>』だけを出力。失敗なら『ERROR: 理由』。"
+        "1回のコマンドにまとめること。\n\n"
+        # JSの波括弧があるので format ではなく置換で埋める
+        + DESIGN_SETUP_SNIPPET.replace("WIDTH", str(w)).replace("HEIGHT", str(h))
+        + "\n最終行に『URL: <公開URL>』だけを出力。失敗なら『ERROR: 理由』。"
     )
     out = await _run_claude_exec(task, timeout=900)
     url = _extract_video_url(out or "")

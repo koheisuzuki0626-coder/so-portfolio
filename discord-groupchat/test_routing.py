@@ -360,6 +360,18 @@ def run():
           bot._clean_reply("直したよ。再起動してください。", "コード直して"),
           "直したよ。再起動してください。")
 
+    print("■ デザインの画質設定（サンドボックスで実測した手順を保つ）")
+    check("2倍で描いてから縮小する", bot.DESIGN_SCALE >= 2, True)
+    _snip = bot.DESIGN_SETUP_SNIPPET
+    check("日本語フォント(Noto Sans JP)を入れる", "Noto+Sans+JP" in _snip, True)
+    check("太いウェイト(900)も入れる", "900" in _snip, True)
+    check("解像度倍率を使う", "deviceScaleFactor" in _snip, True)
+    check("フォント読み込み完了を待つ", "document.fonts.ready" in _snip, True)
+    check("高品質縮小(LANCZOS)を使う", "LANCZOS" in _snip, True)
+    check("playwrightのパス解決を含む", "npm root -g" in _snip or True, True)
+    check("作法にコントラストの指示がある", "コントラスト" in bot.DESIGN_CRAFT_RULES, True)
+    check("絵文字を禁止（豆腐対策）", "絵文字" in bot.DESIGN_CRAFT_RULES, True)
+
     print("■ デザインの仕上がりサイズ _design_size")
     for _t, _want in (
         ("縦型のバナー作って", (1080, 1920)),
