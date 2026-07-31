@@ -406,6 +406,33 @@ async def run():
     finally:
         bot._running.pop(1234, None)
 
+    # 雑談の担当をDiscordから切り替えられること
+    _keep_lead = bot.gen_settings.get("casual_lead")
+    try:
+        install_stubs()
+        r = await drive("返事はクロードにして")
+        check("雑談の担当が変わる", bot.gen_settings.get("casual_lead") == "claude",
+              f"実際={bot.gen_settings.get('casual_lead')}")
+        check("担当変更を伝える",
+              any("クロード" in s2 for s2 in r["sent"]), f"sent={r['sent']}")
+        check("担当変更はAI応答に流さない",
+              "orchestrator" not in r["fired"], f"実際={r['fired']}")
+    finally:
+        bot.gen_settings["casual_lead"] = _keep_lead
+
+    # 実行中の「いつできる？」も状態確認になること
+    import time as _tm3
+    install_stubs()
+    bot._running[1234] = {"デザイン制作": _tm3.time() - 200}
+    try:
+        r = await drive("いつできる？")
+        check("いつできる？→実行中を報告",
+              any("実行中" in s2 for s2 in r["sent"]), f"sent={r['sent']}")
+        check("いつできる？→AIに流さない",
+              "orchestrator" not in r["fired"], f"実際={r['fired']}")
+    finally:
+        bot._running.pop(1234, None)
+
     # 会話モデルの切替がDiscordだけで完結すること
     _keep_model = bot.gen_settings.get("claude_model")
     try:

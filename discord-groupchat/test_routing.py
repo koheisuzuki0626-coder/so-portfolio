@@ -360,6 +360,35 @@ def run():
           bot._clean_reply("直したよ。再起動してください。", "コード直して"),
           "直したよ。再起動してください。")
 
+    print("■ 「いつできる？」も進捗確認にする")
+    # 実際に起きた事故：「いつできる？」が会話に落ち、Geminiが
+    # 「12:50に上限がリセットされて、今動いている」と作り話をした
+    for _t in ("いつできる？", "いつ終わる？", "いつ仕上がる", "いつできるの"):
+        check(f"{_t!r} 実行中なら状態確認",
+              bot.classify_route(_t, has_running=True), "status")
+        check(f"{_t!r} 何も無ければ会話", bot.classify_route(_t) or "plan", "plan")
+    check("内部の状態を作らせない指示がある",
+          "リセット時刻" in bot.OPS_RULES, True)
+
+    print("■ 雑談の担当を切り替える _match_casual_lead")
+    for _t, _want in (("返事はクロードにして", "claude"),
+                      ("返答をgeminiにして", "gemini"),
+                      ("クロードに答えさせて", "claude"),
+                      ("雑談はクロードでお願い", "claude"),
+                      ("ジェミニに返事させて", "gemini")):
+        _got = bot._match_casual_lead(_t)
+        check(f"{_t!r} → {_want}", _got[0] if _got else None, _want)
+    for _t in ("クロードでサムネ作って", "クロードどう思う", "返事を短くして"):
+        check(f"{_t!r} は担当変更にしない", bot._match_casual_lead(_t), None)
+    _keep_lead = bot.gen_settings.get("casual_lead")
+    try:
+        bot.gen_settings["casual_lead"] = "claude"
+        check("設定が効く", bot._casual_lead(), "claude")
+        bot.gen_settings["casual_lead"] = ""
+        check("未設定なら既定", bot._casual_lead(), bot.CASUAL_LEAD)
+    finally:
+        bot.gen_settings["casual_lead"] = _keep_lead
+
     print("■ 残り時間の目安 _eta_text")
     check("目安が出る", "あと" in bot._eta_text("デザイン制作", 60), True)
     check("残りが縮む",

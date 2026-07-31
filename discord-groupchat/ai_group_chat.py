@@ -927,6 +927,11 @@ OPS_RULES = (
     "（『ツールの権限が下りていない』『APIの制限で』等と推測で言わない）。"
     "ボットの動きが分からないときだけ『「ログ送って」で状況を共有してほしい』と頼む"
     "——それ以外の話題でこの案内を出すのは禁止。"
+    "【重要】内部の状態を具体的な数字・時刻で語らない。"
+    "『12:50に上限がリセットされた』『あと3回で枠切れ』など、"
+    "実際に確認していない枠の残量・リセット時刻・完了時刻を作ってはいけない。"
+    "進捗は上に書かれた実行中の情報だけを使い、書かれていなければ"
+    "『分からない』と言う。"
     "生成物が意図と違ったとき、ユーザーの指示の書き方のせいにするのは禁止"
     "（『具体的すぎる』『曖昧すぎる』『うまく汲み取れなかった』等と言わない）。"
     "どんな自然な言い方でも適切なプロンプトに翻訳するのはこちらの責任。"
@@ -1324,7 +1329,9 @@ GEN_SETTINGS_FILE = HISTORY_DIR / "gen_settings.json"
 def _load_gen_settings():
     d = {"image_engine": IMAGE_GEN_ENGINE, "image_app": None, "video_app": None,
          # 会話を担当する claude CLI のモデル。""＝CLIの既定にまかせる
-         "claude_model": os.getenv("CLAUDE_MODEL", "")}
+         "claude_model": os.getenv("CLAUDE_MODEL", ""),
+         # 軽い雑談を誰が答えるか（"claude" / "gemini"）
+         "casual_lead": ""}
     d.update(_read_json(GEN_SETTINGS_FILE))
     return d
 
@@ -2545,6 +2552,33 @@ CASUAL_LEAD = os.getenv("CASUAL_LEAD", "gemini")
 if CASUAL_LEAD not in ("claude", "gemini"):
     CASUAL_LEAD = "claude"
 
+
+def _casual_lead():
+    """雑談の担当。Discordから変えられるようにしてある（既定は .env の値）。"""
+    v = gen_settings.get("casual_lead")
+    return v if v in ("claude", "gemini") else CASUAL_LEAD
+
+
+# 「返事はクロードにして」のように、雑談の担当を名指しで変える言い方。
+_LEAD_SWITCH_RE = re.compile(
+    r"(?:返事|返答|回答|受け答え|雑談|会話)\S{0,4}(?:は|を)?\s*"
+    r"(クロード|claude|gemini|ジェミニ)\s*(?:に|で)\s*(?:して|しろ|変えて|変更|"
+    r"担当|答えさせて|やらせて|お願い)",
+    re.I,
+)
+_LEAD_SWITCH_RE2 = re.compile(
+    r"(クロード|claude|gemini|ジェミニ)\s*(?:に|が)\s*(?:答えさせて|返事させて|"
+    r"応答させて|担当させて)", re.I)
+
+
+def _match_casual_lead(text):
+    """雑談の担当を変える指示か。('claude'|'gemini', 表示名) か None。"""
+    m = _LEAD_SWITCH_RE.search(text or "") or _LEAD_SWITCH_RE2.search(text or "")
+    if not m:
+        return None
+    who = m.group(1).lower()
+    return ("claude", "クロード") if who in ("クロード", "claude") else ("gemini", "Gemini")
+
 # AI判定が必要そうなキーワード（作業指示・生成依頼・検索・過去記憶）。
 # これに全く該当しない短い発言は、AIを呼ばず雑談として即処理（Gemini無料枠の節約）。
 _PLAN_TRIGGER_RE = re.compile(
@@ -2560,6 +2594,9 @@ _PLAN_TRIGGER_RE = re.compile(
 # ---------- ルーティング判定（純粋関数・テスト対象） ----------
 _STATUS_KW_RE = re.compile(
     "できた|できてる|出来て|完成|終わった|終わってる|どうなった|状況|進捗|まだ|"
+    # 「いつできる？」を入れ忘れていたため会話に落ち、AIが
+    # 「12:50に上限がリセットされて〜」と作り話をする事故が起きた
+    "いつでき|いつ出来|いつ終わ|いつ仕上が|いつ届く|何時に終わ|"
     "見れる|見せて|見たい|"
     "url|ＵＲＬ|どこ|ある\\?|ある？|ちょうだい|ください|"
     "あとどれ|どれくらい|どのくらい|どれぐらい|どのぐらい|何分|確認して", re.I
@@ -2869,7 +2906,7 @@ async def _plan(history):
     トリガー語を含まない短い発言は、そもそもAIを呼ばず即・雑談扱い（枠の節約）。"""
     latest = _latest_user_msg(history)
     if len(latest) <= 60 and not _PLAN_TRIGGER_RE.search(latest):
-        return "chat", "single", CASUAL_LEAD, False, False, ""
+        return "chat", "single", _casual_lead(), False, False, ""
     prompt = (
         "あなたはDiscordボット（オーケストレーター）のルーター。"
         "次の会話の最後の要求を分類し、処理方針をJSONだけで返す。\n"
@@ -5854,6 +5891,17 @@ async def _dispatch_message(message):
             f"🔀 会話モデルを **{_mdl[1]}** にしました（次の発言から反映・再起動不要）。"
         )
         return
+    _lead = _match_casual_lead(content)
+    if _lead is not None:
+        gen_settings["casual_lead"] = _lead[0]
+        _save_gen_settings()
+        add_history(cid, message.author.display_name, content)
+        await message.channel.send(
+            f"🗣 雑談の返事は **{_lead[1]}** が担当します（次の発言から反映）。\n"
+            "※作業（生成・デザイン・調査）の担当は依頼内容で決まるので変わりません。"
+        )
+        return
+
     if _MODEL_ASK_RE.search(content) and not re.search("画像|動画|映像|生成", content):
         await message.channel.send(
             f"🔀 いまの会話モデル: **{_current_model_label()}**\n"
