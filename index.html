@@ -241,9 +241,31 @@
             overflow: hidden;
         }
 
+        .works-actions {
+            margin-top: 40px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 26px;
+        }
+        .more-btn {
+            font: inherit;
+            font-size: 0.76rem;
+            letter-spacing: 0.24em;
+            text-transform: uppercase;
+            color: var(--fg);
+            background: transparent;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 14px 40px;
+            cursor: pointer;
+            transition: border-color 0.3s ease, color 0.3s ease, background 0.3s ease;
+        }
+        .more-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .more-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
         .channel-link {
             display: inline-block;
-            margin-top: 38px;
             font-size: 0.78rem;
             letter-spacing: 0.18em;
             text-transform: uppercase;
@@ -424,7 +446,10 @@
                     </div>
                 </article>
             </div>
-            <a class="channel-link" id="channel-link" href="#" hidden>YouTube チャンネルを見る →</a>
+            <div class="works-actions">
+                <button type="button" class="more-btn" id="more-btn" hidden>More</button>
+                <a class="channel-link" id="channel-link" href="#" hidden>YouTube チャンネルを見る →</a>
+            </div>
         </section>
 
         <section id="contact" class="reveal">
@@ -462,6 +487,7 @@
         /* ---------- YouTube Works ---------- */
         const grid = document.getElementById('works-grid');
         const channelLink = document.getElementById('channel-link');
+        const moreBtn = document.getElementById('more-btn');
         const lightbox = document.getElementById('lightbox');
         const player = document.getElementById('lightbox-player');
         const closeBtn = document.getElementById('lightbox-close');
@@ -559,7 +585,32 @@
                 // 未設定・取得失敗時はプレースホルダーを残す
                 if (videos.length === 0) return;
 
-                grid.replaceChildren(...videos.map(buildCard));
+                const INITIAL = 6;
+                const STEP = 6;
+                let shown = 0;
+
+                function reveal(count) {
+                    const next = videos.slice(shown, shown + count);
+                    const cards = next.map(buildCard);
+                    if (shown === 0) grid.replaceChildren(...cards);
+                    else grid.append(...cards);
+                    shown += next.length;
+
+                    const remaining = videos.length - shown;
+                    if (remaining > 0) {
+                        moreBtn.textContent = `More (${remaining})`;
+                        moreBtn.hidden = false;
+                    } else if (!moreBtn.hidden) {
+                        // ボタンが消えるとフォーカスが宙に浮くので新着カードへ移す
+                        moreBtn.hidden = true;
+                        cards[0]?.querySelector('.card-link')?.focus();
+                    } else {
+                        moreBtn.hidden = true;
+                    }
+                }
+
+                moreBtn.addEventListener('click', () => reveal(STEP));
+                reveal(INITIAL);
 
                 if (data.channelId) {
                     channelLink.href = `https://www.youtube.com/channel/${data.channelId}`;
