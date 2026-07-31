@@ -362,6 +362,22 @@ async def run():
               not ({"hf_generate", "image_gen", "short"} & set(r["fired"])),
               f"実際={r['fired']}")
 
+    # 実行中に「まだ？」と聞かれたら、作り話をせず実行中だと答える
+    # （実際に「その機能自体がまだ実装できていない」と答えた事故の再発防止）
+    import time as _tm2
+    install_stubs()
+    bot._running[1234] = {"デザイン制作": _tm2.time() - 90}
+    try:
+        r = await drive("まだ？")
+        check("実行中を報告する",
+              any("実行中" in s2 for s2 in r["sent"]), f"sent={r['sent']}")
+        check("実行中の作業名を出す",
+              any("デザイン制作" in s2 for s2 in r["sent"]), f"sent={r['sent']}")
+        check("AI応答に流さない（作り話をさせない）",
+              "orchestrator" not in r["fired"], f"実際={r['fired']}")
+    finally:
+        bot._running.pop(1234, None)
+
     # 会話モデルの切替がDiscordだけで完結すること
     _keep_model = bot.gen_settings.get("claude_model")
     try:

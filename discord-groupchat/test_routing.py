@@ -360,6 +360,33 @@ def run():
           bot._clean_reply("直したよ。再起動してください。", "コード直して"),
           "直したよ。再起動してください。")
 
+    print("■ 実行中の作業を認識する（『まだ？』で作り話をさせない）")
+    # 実際に起きた事故：デザイン制作の実行中に「まだ？」と聞いたら
+    # 「その機能自体がまだ実装できていない」と答えた
+    for _t in ("まだ？", "あと何分？", "できた？", "進捗どう"):
+        check(f"{_t!r} 実行中なら状態確認へ",
+              bot.classify_route(_t, has_running=True), "status")
+        check(f"{_t!r} 何も走っていなければ会話へ",
+              bot.classify_route(_t) or "plan", "plan")
+    check("実行中でも雑談は会話のまま",
+          bot.classify_route("おはよう", has_running=True) or "plan", "plan")
+    check("実行中でも制作依頼は制作へ",
+          bot.classify_route("相関図作って", has_running=True), "design")
+    import time as _tm
+    bot._running[4242] = {"デザイン制作": _tm.time() - 120}
+    try:
+        _note = bot._running_note(4242)
+        check("実行中の作業をAIに伝える", "デザイン制作" in _note, True)
+        check("否定させない指示が入る", "機能は無い" in _note, True)
+        check("完了監視は除外する",
+              bot._busy_tasks(4242) and bot._busy_tasks(4242)[0][0], "デザイン制作")
+        bot._running[4242] = {"完了監視": _tm.time()}
+        check("監視だけなら実行中扱いにしない", bot._busy_tasks(4242), [])
+        check("監視だけなら注意書きも出さない", bot._running_note(4242), "")
+    finally:
+        bot._running.pop(4242, None)
+    check("何も走っていなければ空", bot._running_note(999999), "")
+
     print("■ デザインの画質設定（サンドボックスで実測した手順を保つ）")
     check("2倍で描いてから縮小する", bot.DESIGN_SCALE >= 2, True)
     _snip = bot.DESIGN_SETUP_SNIPPET

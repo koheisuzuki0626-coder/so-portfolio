@@ -399,6 +399,27 @@ def _track(task):
 _running = {}
 
 
+def _busy_tasks(cid):
+    """いま実行中の「ユーザーが待っている作業」（完了監視は除く）。"""
+    return [(n, sec) for n, sec in _running_for(cid) if "監視" not in n]
+
+
+def _running_note(cid):
+    """実行中の作業をAIへ伝える一文。これを渡さないと、AIは裏で動いている
+    ことを知らないまま「その機能は無い」と作り話をする（実際に起きた）。"""
+    busy = _busy_tasks(cid) if cid is not None else []
+    if not busy:
+        return ""
+    detail = "／".join(f"「{n}」({sec}秒経過)" for n, sec in busy[:3])
+    return (
+        f"【いま裏で実行中の作業】{detail}\n"
+        "この作業は実際に動いていて、終わればこのチャンネルに結果が出る。"
+        "進捗を聞かれたら『実行中』と答えること。"
+        "『その機能は無い』『実装されていない』のように、"
+        "動いている作業を否定することは絶対にしない。\n\n"
+    )
+
+
 def _running_for(cid):
     """このチャンネルで実行中の作業を [(名前, 経過秒)] で返す。"""
     now = time.time()
@@ -2448,6 +2469,7 @@ def _answer_prompt(who, history, extra=""):
     return (
         f"あなたは{who}。次の会話の最後の要求に、正確で役立つ回答を日本語で簡潔に述べる。"
         "前置きや名乗りは不要、回答本体のみ。" + ops_guide(history) + "\n\n"
+        + _running_note(_cid_of_history(history))
         + _profiles_context()
         + (extra + "\n\n" if extra else "")
         + transcript_block(history)
@@ -2594,7 +2616,7 @@ def _match_gen_model(content):
 
 def classify_route(content, *, has_attachments=False, has_video_att=False,
                    has_image_att=False, has_job=False, has_last_gen=False,
-                   after_credits=False):
+                   after_credits=False, has_running=False):
     """@メンションなし発言のルーティングを判定（AI(_plan)前の決定的ルートのみ）。
     返り値: 'status'/'revise'/'short'/'virality'/'ad'/'credits'/'design'/
     'hf_model'/'hf_auto'/'motion'/'motion_ask'/None。
@@ -2604,8 +2626,11 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     #    ただし「作って」「作り直して」など生成・修正の依頼は状態確認にしない
     #    （「〜作ってください」の「ください」で誤爆しないように）。
     status_kw = _STATUS_KW_RE.search(content)
+    # 実行中の作業があれば「まだ？」「あと何分？」だけでも状態確認につなぐ。
+    # これが無いとAIに流れ、実行中だと知らないAIが
+    # 「その機能自体が無い」と作り話をする事故が実際に起きた。
     status_ctx = _STATUS_CTX_RE.search(content) or (
-        (has_job or has_last_gen) and status_kw
+        (has_job or has_last_gen or has_running) and status_kw
     )
     if (not has_attachments and status_kw and status_ctx
             and not re.search("作って|作りたい|つくって|生成して|作成して|描いて|アニメ化", content)
@@ -2823,6 +2848,7 @@ async def _plan(history):
         f"下の運用ルールは『守るべき方針』であって返事の内容ではないので、"
         f"その文言をそのまま返事として出力してはいけない。\n"
         + ops_guide(history) + "\n\n"
+        + _running_note(_cid_of_history(history))
         + _profiles_context()
         + transcript_block(history)
         + "\n\n上の会話ログの最後の発言について、指定された形式で出力してください。"
@@ -5774,6 +5800,7 @@ async def _dispatch_message(message):
         has_last_gen=bool(_lg_rec and time.time() - _lg_rec.get("t", 0) < 7200),
         # 料金照会の直後（10分以内）は、続きの質問も権限のある経路で答える
         after_credits=time.time() - _last_credits.get(cid, 0) < 600,
+        has_running=bool(_busy_tasks(cid)),
     )
     # 依頼待ち中に動画が添付された（キーワード無し）ケースもモーション実行に接続
     pm = _pending_motion.get(cid)
