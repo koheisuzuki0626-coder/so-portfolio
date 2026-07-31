@@ -199,6 +199,7 @@ def install_stubs(mcp_url=None):
     bot._share_debug_log = _rec_str("sharelog", "✅ 共有しました")
     bot._run_credits = _rec_str("credits", "💳 残クレジット: 1,200（スタブ）")
     bot._run_video_edit = _rec("edit")
+    bot._run_design = _rec("design")
     bot._analyze_my_channel = _rec("ch_stats")
     bot._run_multi_view = _rec("multiview")
 
@@ -318,6 +319,10 @@ async def run():
         ("バズる動画作って", "hf_generate", None),
         ("ショート作って", "short", None),
         ("猫のイラスト作って", "image_gen", None),
+        ("サムネのデザイン作って", "design", None),
+        ("バナー作って", "design", None),
+        ("価格表のデザインして", "design", None),
+        ("ロゴをデザインして", "image_gen", None),
         ("犬の動画作って", "hf_generate", None),
         ("新作スニーカーの広告作って", "ad", None),
         ("コーヒーショップのCM作って", "ad", None),

@@ -2502,6 +2502,13 @@ _CONTENT_Q_RE = re.compile(
     "ここは|ここって|ここが|ここどこ|何が写|誰が写|写って|映って|"
     "背景|どこの|どこで|場所|建物|風景|何て書|なんて書|読める"
 )
+# デザイン制作（文字が主役）の対象物。画像生成AIが苦手な領域。
+_DESIGN_NOUN_RE = re.compile(
+    "バナー|ポスター|チラシ|フライヤー|スライド|図解|インフォグラフィック|"
+    "価格表|料金表|比較表|一覧表|レイアウト|カンプ|名刺|表紙|ジャケット"
+)
+# 絵そのものの依頼。デザインではなく画像生成に回す。
+_IMAGE_NOUN_RE = re.compile("ロゴ|イラスト|絵|写真|アイコン")
 _GEN_INTENT2_RE = re.compile(
     "作って|作りたい|作成|つくって|つくりたい|生成|描いて|えがいて|かいて|"
     "デザインして|animate|動かして|アニメ化|が?欲しい|がほしい"
@@ -2534,7 +2541,8 @@ _QUESTION_RE = re.compile(
 _ASK_INFO_RE = re.compile(
     "聞きたい|聞くだけ|訊きたい|知りたい|確認したいだけ|"
     "いくら(?!でも)|幾ら|何円|なん円|"
-    "料金|価格|値段|費用|相場|コスト(?!を?(下げ|抑え|削減))|"
+    # 「価格表」「料金表」は作るものの名前なので、料金の質問と取り違えない
+    "料金(?!表)|価格(?!表)|値段|費用|相場|コスト(?!を?(下げ|抑え|削減))|"
     # 「無料で動画作って」は依頼なので、断定を聞く形のときだけ質問扱いにする
     "(無料|有料)(なの|ですか|かな|か？|か\\?|？|\\?)|"
     "どれくらいかかる|どのくらいかかる|どれぐらいかかる|どのくらい必要|"
@@ -2572,8 +2580,8 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
                    has_image_att=False, has_job=False, has_last_gen=False,
                    after_credits=False):
     """@メンションなし発言のルーティングを判定（AI(_plan)前の決定的ルートのみ）。
-    返り値: 'status'/'revise'/'short'/'virality'/'ad'/'credits'/'hf_model'/
-    'hf_auto'/'motion'/'motion_ask'/None。
+    返り値: 'status'/'revise'/'short'/'virality'/'ad'/'credits'/'design'/
+    'hf_model'/'hf_auto'/'motion'/'motion_ask'/None。
     on_message と同じ順序・同じ正規表現を使うので、これをテストすれば実挙動を検証できる。"""
     # ① 生成物の状態確認（添付なし・状態ワード・文脈）。
     #    直近の生成があれば「できた？」だけでも状態確認につなぐ。
@@ -2683,6 +2691,20 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         if (_learn_strict and not _looks_like_question(content)
                 and re.search("動画|ショート|映像|スタイル|作風", content)):
             return "style_ask"
+    # ①.9 デザイン制作（文字が主役のもの。画像生成AIは文字が苦手なので
+    #      ClaudeにHTMLで組ませてスクリーンショットする）。
+    #      「猫のイラスト作って」のような絵の依頼は従来どおり画像生成へ。
+    if (_GEN_INTENT2_RE.search(content)
+            or re.search(r"(デザイン|バナー|ポスター|チラシ|フライヤー|スライド|"
+                         r"名刺|表紙|図解)\S{0,6}お願い", content)
+            ) and not _looks_like_question(content) and (
+        _DESIGN_NOUN_RE.search(content)
+        # 「ロゴをデザインして」のような絵の依頼は、従来どおり画像生成に任せる
+        or (re.search("デザイン", content) and not _IMAGE_NOUN_RE.search(content))
+        or (re.search("サムネ|thumbnail|タイトル画像|カバー", content, re.I)
+            and re.search("文字|テキスト|タイトル|キャッチ|コピー|入れて|入り", content))
+    ):
+        return "design"
     # ② Higgsfield生成（モーション以外・生成意図あり）
     #    「動画お願い」もAI判定に落とさず生成として扱う
     if not re.search("モーション|この動き|動きを", content) and (
@@ -3556,6 +3578,88 @@ async def _run_video_edit(message, instruction):
         orch, cid,
         f"✅ 編集できました！\n{url}\n"
         "さらに直したいときは「もう少し字幕を大きく」のように続けて言ってください。"
+    )
+
+
+# ---------- デザイン制作（ClaudeがHTMLで設計 → サンドボックスで画像化） ----------
+# 生成AIは「文字がきれいに入った絵」が苦手（サムネ・バナー・図解・価格表など）。
+# そこは画像生成ではなく、ClaudeにHTML/CSSで組ませて、Higgsfieldの
+# サンドボックス（Playwright + ヘッドレスChromium）で書き出すのが確実。
+# 生成モデルを回さないのでクレジットは消費しない。
+DESIGN_SIZES = {
+    "thumbnail": (1280, 720, "YouTubeサムネイル"),
+    "short": (1080, 1920, "縦型（ショート/ストーリー）"),
+    "square": (1080, 1080, "正方形（SNS）"),
+    "slide": (1920, 1080, "スライド/資料"),
+    "a4": (1240, 1754, "A4チラシ"),
+}
+
+
+def _design_size(text):
+    """発言から仕上がりサイズを決める。既定はYouTubeサムネイル。"""
+    t = text or ""
+    if re.search("縦型|縦長|ショート|ストーリー|リール|9:16|tiktok", t, re.I):
+        return DESIGN_SIZES["short"]
+    if re.search("正方形|スクエア|1:1|インスタ|instagram", t, re.I):
+        return DESIGN_SIZES["square"]
+    if re.search("スライド|資料|プレゼン|16:9の資料|発表", t):
+        return DESIGN_SIZES["slide"]
+    if re.search("チラシ|フライヤー|ポスター|A4|a4|印刷", t):
+        return DESIGN_SIZES["a4"]
+    return DESIGN_SIZES["thumbnail"]
+
+
+async def _run_design(message, request):
+    """ClaudeがHTMLでデザインを組み、サンドボックスでPNGに書き出して返す。"""
+    cid = message.channel.id
+    w, h, label = _design_size(request)
+    await send_as(
+        orch, cid,
+        f"🎨 デザインを作ります（{label} {w}×{h}）。HTMLで組んで画像に書き出します（2〜5分）…"
+    )
+    style = _style_snippet()
+    task = (
+        "デザイン制作をして。画像生成モデルは使わず、自分でHTML/CSSを書いて"
+        "スクリーンショットとして書き出すこと（文字が崩れないのが目的）。\n"
+        f"依頼（日本語）: {request}\n"
+        f"仕上がりサイズ: {w}x{h}px（{label}）\n"
+        + (f"これまでに学習した勝ちパターン:\n{style}\n" if style else "")
+        + "手順:\n"
+        "1) Higgsfield の MCP ツール sandbox_exec を使う。まず /home/user/d.html に"
+        "自己完結のHTMLを書く（外部CDN・外部画像は使わない。フォントは"
+        "サンドボックス内の Metropolis / Montserrat と、日本語は "
+        "fc-list で見つかる日本語フォントを font-family に指定する）。\n"
+        f"   ・body と .canvas を {w}x{h}px 固定、margin:0、overflow:hidden にする\n"
+        "   ・文字が主役。可読性最優先（十分なコントラスト、太字、余白）\n"
+        "   ・写真が要る場合は撮影素材を使わず、CSSのグラデーション・図形・"
+        "アイコン的な図版で成立させる\n"
+        "2) 同じコマンドの中で Playwright のヘッドレスChromiumを使い、"
+        f"viewport {w}x{h} で /home/user/out.png に書き出す\n"
+        "   例: npx playwright screenshot --viewport-size='"
+        f"{w},{h}' file:///home/user/d.html /home/user/out.png\n"
+        "   （うまくいかなければ node で chromium を直接使ってもよい）\n"
+        "3) 文字がはみ出す・重なる場合はHTMLを直して2をやり直す\n"
+        "4) media_upload で署名付きURLを取得し "
+        "curl -X PUT --upload-file /home/user/out.png '<upload_url>' でアップロード\n"
+        "5) media_confirm で確定して公開URLを得る\n"
+        "※サンドボックスは呼び出し間で消えるので、1〜3は && でつないで"
+        "1回のコマンドにまとめること。\n"
+        "最終行に『URL: <公開URL>』だけを出力。失敗なら『ERROR: 理由』。"
+    )
+    out = await _run_claude_exec(task, timeout=900)
+    url = _extract_video_url(out or "")
+    last = (out or "").strip().splitlines()[-1:] or [""]
+    if not url or last[0].upper().startswith("ERROR"):
+        await send_as(orch, cid, f"⚠️ デザインの書き出しに失敗しました: {(out or '')[-300:]}")
+        return
+    _save_last_gen(cid, request, "image", f"{w}:{h}", f"デザイン（{label}）")
+    _update_last_gen_url(cid, url)
+    add_history(cid, "Orchestrator", f"（デザインを制作: {request[:60]} / {url}）")
+    await send_as(
+        orch, cid,
+        f"✅ デザインができました！（{label} {w}×{h}）\n{url}\n"
+        "直したいときは「文字をもっと大きく」「背景を暗くして」のように"
+        "続けて言ってください。"
     )
 
 
@@ -5681,6 +5785,16 @@ async def _dispatch_message(message):
               "勝ちパターン集に反映します",
               lambda: _analyze_my_channel(cid), "実績分析",
               "無料（YouTube APIとGeminiの無料枠）")
+        return
+
+    if route == "design":
+        add_history(cid, message.author.display_name, content)
+        _w, _h, _label = _design_size(content)
+        _gate(message, cid, f"デザインの制作（{content[:40]}）",
+              f"ClaudeがHTMLでレイアウトを組み、{_label} {_w}×{_h} の画像に"
+              "書き出して投稿します（文字が崩れないので、サムネ・バナー向き）",
+              lambda: _run_design(message, content), "デザイン制作",
+              "無料（生成モデルを使わないのでクレジットは消費しません）")
         return
 
     if route == "credits":
