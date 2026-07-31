@@ -2509,6 +2509,17 @@ _DESIGN_NOUN_RE = re.compile(
 )
 # 絵そのものの依頼。デザインではなく画像生成に回す。
 _IMAGE_NOUN_RE = re.compile("ロゴ|イラスト|絵|写真|アイコン")
+# 「クロードでサムネ作って」「geminiでサムネ作って」のように作り手を名指しする言い方。
+# クロード＝HTMLで組む（文字が正確）／Gemini＝画像生成（絵が得意）。
+# 同じ「サムネ」でも、どちらに投げたいかは本人にしか決められないので明示を優先する。
+_BY_CLAUDE_RE = re.compile(
+    r"(クロード|claude|くろーど|html)\s*(?:で|に|を使って|使って|側で)", re.I)
+_BY_GEMINI_RE = re.compile(
+    r"(gemini|ジェミニ|じぇみに)\s*(?:で|に|を使って|使って|側で)", re.I)
+# 作り手を名指しできる対象物（絵・デザインの両方）
+_VISUAL_NOUN_RE = re.compile(
+    "サムネ|thumbnail|バナー|画像|イラスト|ロゴ|絵|写真|アイコン|デザイン|"
+    "ポスター|チラシ|フライヤー|表紙|カバー|スライド|図解|価格表|料金表|名刺", re.I)
 _GEN_INTENT2_RE = re.compile(
     "作って|作りたい|作成|つくって|つくりたい|生成|描いて|えがいて|かいて|"
     "デザインして|animate|動かして|アニメ化|が?欲しい|がほしい"
@@ -2691,6 +2702,14 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         if (_learn_strict and not _looks_like_question(content)
                 and re.search("動画|ショート|映像|スタイル|作風", content)):
             return "style_ask"
+    # ①.85 作り手の名指しが最優先（「クロードでサムネ作って」「geminiでサムネ作って」）。
+    #       本人が指定した以上、こちらの自動判定より優先する。
+    if (_GEN_INTENT2_RE.search(content) and not _looks_like_question(content)
+            and _VISUAL_NOUN_RE.search(content)):
+        if _BY_CLAUDE_RE.search(content):
+            return "design"
+        if _BY_GEMINI_RE.search(content):
+            return "image"
     # ①.9 デザイン制作（文字が主役のもの。画像生成AIは文字が苦手なので
     #      ClaudeにHTMLで組ませてスクリーンショットする）。
     #      「猫のイラスト作って」のような絵の依頼は従来どおり画像生成へ。

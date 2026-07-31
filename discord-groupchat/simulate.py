@@ -323,6 +323,8 @@ async def run():
         ("バナー作って", "design", None),
         ("価格表のデザインして", "design", None),
         ("ロゴをデザインして", "image_gen", None),
+        ("クロードでサムネ作って", "design", None),
+        ("geminiで猫のサムネ作って", "image_gen", None),
         ("犬の動画作って", "hf_generate", None),
         ("新作スニーカーの広告作って", "ad", None),
         ("コーヒーショップのCM作って", "ad", None),
