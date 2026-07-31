@@ -1077,37 +1077,64 @@ async def _ask_claude_persona(role, history):
     return await run_claude_cli(prompt)
 
 
+GEMINI_VIEW_PERSONA = (
+    "あなたは別のモデル（Gemini）としての視点担当。"
+    "クロードとは違う切り口を出すことに徹する。"
+    "特に、最新の動向・数字・具体例・視覚的/体験的な観点・"
+    "見落とされている前提を挙げる。"
+    "確実でないことは『不明』と書き、推測を事実のように書かない。"
+    f"日本語{REPLY_CHARS}字以内、箇条書きで簡潔に。前置き不要。"
+)
+
+
+async def _ask_gemini_view(history):
+    """Geminiに『別の視点』だけを出させる（返事そのものは書かせない）。"""
+    prompt = (
+        GEMINI_VIEW_PERSONA + "\n\n" + transcript_block(history)
+        + "\n\n上の会話の最後の論点について、あなたの視点を出してください。"
+    )
+    return await _gemini_call(prompt, "gemini_view")
+
+
 async def _run_multi_view(message, content, roles=None):
-    """複数の視点（情報収集／多角的視点／Gemini）で答えて、最後に統合する。
-    同じ質問を別々の役割で見るので、見落としが減る。"""
+    """複数の視点で検討して統合する。クロードの2役に加えてGeminiにも
+    別の切り口を出させ、最後はクロードが1つにまとめて答える
+    （＝声はひとつ、頭は複数）。"""
     cid = message.channel.id
     roles = roles or ["claude1", "claude3"]
     history = get_history(cid)
     await send_as(orch, cid, "🧠 複数の視点で検討します（少し時間がかかります）…")
-    results = await asyncio.gather(
-        *[_ask_claude_persona(r, history) for r in roles], return_exceptions=True
-    )
+    tasks = [_ask_claude_persona(r, history) for r in roles]
+    use_gemini = not _gemini_all_cooling()
+    if use_gemini:
+        tasks.append(_ask_gemini_view(history))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    names = [CLAUDE_PERSONAS[r][0] for r in roles]
+    if use_gemini:
+        names.append("Gemini（別モデルの視点）")
     ok = []
-    for role, res in zip(roles, results):
-        name = CLAUDE_PERSONAS[role][0]
+    for name, res in zip(names, results):
         if isinstance(res, Exception):
-            await send_as(orch, cid, f"⚠️ {name} は答えられませんでした: {str(res)[:150]}")
+            print(f"[multi_view] {name} 失敗: {str(res)[:150]}")
             continue
         text = (res or "").strip()
         if not text:
             continue
         ok.append((name, text))
-        await send_as(claude_bot, cid, f"**{name}**\n{text}")
+        speaker = gemini_bot if name.startswith("Gemini") else claude_bot
+        await send_as(speaker, cid, f"**{name}**\n{text}")
         add_history(cid, name, text)
     if len(ok) < 2:
         return
     try:
-        merged = await _ai_text_bg(
+        # まとめは必ずクロードが書く（出す声をひとつに保つため）
+        merged = await run_claude_cli(
             "次の複数の視点を統合し、最終的な結論と次に取るべき一手を"
             f"日本語{REPLY_CHARS}字以内でまとめて。重複は削り、"
-            "食い違う点があれば理由とともにどちらが妥当か示すこと。\n\n"
+            "食い違う点があれば理由とともにどちらが妥当か示すこと。"
+            "誰がどう言ったかの実況は不要、結論本体だけを書く。\n\n"
             + "\n\n".join(f"【{n}】\n{t}" for n, t in ok),
-            "multi_view",
+            background=True,
         )
     except Exception as e:  # noqa: BLE001
         print(f"[multi_view] 統合に失敗: {str(e)[:120]}")
@@ -2975,15 +3002,19 @@ async def _plan(history):
         "- search: 最新情報・時事・製品/価格・実在の事実確認が要るときだけtrue。\n"
         "- recall: 『前に話した』『昨日の』『以前決めた』など、直近の会話に無い"
         "過去の記憶が必要なときだけtrue。\n"
-        # ここが速度の肝：chatならこの1回で返事まで書かせる（往復を半分にする）
-        f"\n【返事も同時に書く】kindがchat、かつ mode=single、search=false、recall=false"
-        f"のときは、JSONの次の行に「{_PLAN_REPLY_SEP}」とだけ書き、"
-        f"その次の行からユーザーへの返事本体を書くこと。"
-        f"返事は日本語で{REPLY_CHARS}字以内、前置きや名乗りは無しで本体のみ。"
-        f"それ以外のkind（video/exec/trend等）では返事を書かずJSONだけ返す。"
-        f"【厳守】返事は必ずユーザーの最後の要求そのものに答える。"
-        f"下の運用ルールは『守るべき方針』であって返事の内容ではないので、"
-        f"その文言をそのまま返事として出力してはいけない。\n"
+        # 分類はGeminiが担当（速い・無料枠）。返事はクロードが書くので、
+        # Geminiに返事を書かせない設定のときは、ここで返事を求めない
+        # （求めるとGeminiの文がそのまま表に出て、声が混ざる）。
+        + (f"\n【返事も同時に書く】kindがchat、かつ mode=single、search=false、"
+           f"recall=false のときは、JSONの次の行に「{_PLAN_REPLY_SEP}」とだけ書き、"
+           f"その次の行からユーザーへの返事本体を書くこと。"
+           f"返事は日本語で{REPLY_CHARS}字以内、前置きや名乗りは無しで本体のみ。"
+           f"それ以外のkind（video/exec/trend等）では返事を書かずJSONだけ返す。"
+           f"【厳守】返事は必ずユーザーの最後の要求そのものに答える。"
+           f"下の運用ルールは『守るべき方針』であって返事の内容ではないので、"
+           f"その文言をそのまま返事として出力してはいけない。\n"
+           if _gemini_replies_on() else
+           "\n返事は書かず、JSONだけを返すこと（返事はクロードが書く）。\n")
         + ops_guide(history) + "\n\n"
         + _running_note(_cid_of_history(history))
         + _profiles_context()

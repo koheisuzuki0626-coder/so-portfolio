@@ -370,6 +370,15 @@ def run():
     check("内部の状態を作らせない指示がある",
           "リセット時刻" in bot.OPS_RULES, True)
 
+    print("■ Geminiとクロードの役割分担（声はひとつ、頭は複数）")
+    check("Geminiの視点担当の人格がある",
+          "別の切り口" in bot.GEMINI_VIEW_PERSONA, True)
+    check("Geminiに推測を書かせない",
+          "推測を事実のように書かない" in bot.GEMINI_VIEW_PERSONA, True)
+    check("Geminiは返事そのものは書かない（既定）", bot._gemini_replies_on(), False)
+    check("Geminiは裏方の解析で使い続ける",
+          callable(bot._describe_media_url) and callable(bot._inspect_result), True)
+
     print("■ 雑談の担当を切り替える _match_casual_lead")
     _kl = bot.gen_settings.get("casual_lead")
     try:
