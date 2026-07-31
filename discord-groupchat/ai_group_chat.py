@@ -931,11 +931,36 @@ def _recent_text(history, n=4):
     return "\n".join(t for _, t in (history or [])[-n:] if t)
 
 
+# このボットが実際にできること。AIは自分の機能一覧を知らないので、
+# 渡さないと「その機能は無い」「まだ実装できていない」と作り話をする。
+# 実際に、動いている最中のデザイン制作を「機能自体が無い」と否定し、
+# 再起動後もその発言を履歴から読んで繰り返す事故が起きた。
+BOT_CAPABILITIES = (
+    "・動画生成（モデル指定も自動選定も可）／動画の編集（字幕・尺・縦型化・連結）\n"
+    "・画像生成（Geminiの無料枠）\n"
+    "・デザイン制作＝HTMLで組んでPNGに書き出す。サムネ・バナー・チラシ・"
+    "スライド・価格表に加えて、相関図・家系図・年表・組織図・フローチャートも作れる\n"
+    "・モーション転写／作り直し・修正\n"
+    "・YouTubeリサーチ／自分のチャンネルの実績分析（週次レポート）／バズ度予測\n"
+    "・参考動画からのスタイル学習／料金・残クレジットの照会\n"
+    "・自己改修・再起動・ログ共有／会話モデルの切替\n"
+)
+CAPABILITY_RULES = (
+    "【このボットができること】\n" + BOT_CAPABILITIES
+    + "上にある機能を『無い』『実装されていない』『今この場では作れない』と"
+    "言ってはいけない。過去の自分の発言でそう言っていても、それは誤りなので"
+    "繰り返さない。作業が終わっていないだけなら『まだ実行中』と答えること。"
+    "実際にエラーが出た場合だけ、そのエラーの内容を伝える。\n"
+)
+
+
 def ops_guide(context_text=""):
     """その場の話題に合わせた応答ルールを返す。
     ボット・制作の話でなければ運用ルールは渡さない（案内文の誤爆防止）。"""
     text = context_text if isinstance(context_text, str) else _recent_text(context_text)
-    return TALK_RULES + (OPS_RULES if _OPS_TOPIC_RE.search(text or "") else "")
+    if not _OPS_TOPIC_RE.search(text or ""):
+        return TALK_RULES
+    return TALK_RULES + OPS_RULES + CAPABILITY_RULES
 
 
 # 後方互換（外部から参照された場合は全部入りを返す）
@@ -2517,7 +2542,9 @@ _STATUS_KW_RE = re.compile(
     "url|ＵＲＬ|どこ|ある\\?|ある？|ちょうだい|ください|"
     "あとどれ|どれくらい|どのくらい|どれぐらい|どのぐらい|何分|確認して", re.I
 )
-_STATUS_CTX_RE = re.compile("動画|画像|モーション|生成")
+_STATUS_CTX_RE = re.compile(
+    "動画|画像|モーション|生成|デザイン|サムネ|バナー|相関図|関係図|家系図|"
+    "系図|組織図|構成図|年表|チャート|フローチャート|図解|チラシ|ポスター|スライド")
 # 生成物の「中身」についての質問（＝進捗確認ではない）。
 # 例:「どこですかここは」は『動画どこ？』ではなく写っている場所を尋ねている。
 _CONTENT_Q_RE = re.compile(
@@ -4400,7 +4427,7 @@ async def _report_gen_status(channel, cid, author_name=None, said=None):
     lg = _load_last_gen(cid) or {}
     # 生成以外の作業（ログ共有・リサーチ・学習など）を実行中なら、そちらを答える。
     # これが無いと「まだ？」に対して無関係な直近の画像を出してしまう。
-    busy = [(n, sec) for n, sec in _running_for(cid) if "監視" not in n]
+    busy = _busy_tasks(cid)
     if busy and not job:
         if said and author_name:
             add_history(cid, author_name, said)
@@ -4410,6 +4437,18 @@ async def _report_gen_status(channel, cid, author_name=None, said=None):
         )
         return True
     if not job and not lg.get("url"):
+        # 作るものを名指しで聞かれている（「相関図できた？」等）のに、実行中でも
+        # 完成物でもない＝前回が途中で終わっている。会話に流すとAIが理由を
+        # 作り話するので、事実だけを返して作り直しを案内する。
+        if said and _STATUS_CTX_RE.search(said):
+            if author_name:
+                add_history(cid, author_name, said)
+            await channel.send(
+                "📭 いま動いている作業も、直近の完成物もありません"
+                "（前回は途中で終わったようです）。\n"
+                "もう一度お願いするなら、そのまま同じ内容で頼んでください。"
+            )
+            return True
         return False   # 会話へ流す。ここで履歴に触れない（後段で二重登録になるため）
     if said and author_name:
         add_history(cid, author_name, said)

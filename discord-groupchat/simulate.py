@@ -362,6 +362,15 @@ async def run():
               not ({"hf_generate", "image_gen", "short"} & set(r["fired"])),
               f"実際={r['fired']}")
 
+    # 再起動後に「相関図できた？」と聞かれても、機能の存在を否定しない
+    install_stubs()
+    bot._load_last_gen = lambda cid: None
+    r = await drive("相関図できた？")
+    check("相関図できた？→事実を返す",
+          any("直近の完成物もありません" in s for s in r["sent"]), f"sent={r['sent']}")
+    check("相関図できた？→AIに流さない",
+          "orchestrator" not in r["fired"], f"fired={r['fired']}")
+
     # 実行中に「まだ？」と聞かれたら、作り話をせず実行中だと答える
     # （実際に「その機能自体がまだ実装できていない」と答えた事故の再発防止）
     import time as _tm2
@@ -489,11 +498,15 @@ async def run():
     r = await drive("モーション動画できた？")
     check("完成→URL表示", any("done.mp4" in s for s in r["sent"]), f"sent={r['sent']}")
 
-    # ジョブも直近生成も無い →「できた？」は状態確認に入らず普通の会話へ
+    # ジョブも直近生成も無い →「事実だけ」を返す。会話に流すとAIが
+    # 「その機能は実装されていない」と理由を作り話する事故が実際に起きた
     install_stubs()
     r = await drive("モーション動画できた？")
-    check("ジョブ無し→自然な会話へ", "orchestrator" in r["fired"],
+    check("ジョブ無し→事実を返す",
+          any("動いている作業も、直近の完成物もありません" in s for s in r["sent"]),
           f"fired={r['fired']} sent={r['sent']}")
+    check("ジョブ無し→AIに作り話をさせない",
+          "orchestrator" not in r["fired"], f"fired={r['fired']}")
     check("ジョブ無し 例外なし", r["err"] is None)
 
     # ジョブ無し・直近生成が完成済み（URLあり）→ 即答で再案内
@@ -524,7 +537,8 @@ async def run():
     before = len(bot.get_history(1234))
     r = await drive("動画できた？")
     added = len(bot.get_history(1234)) - before
-    check("生成なし→会話へ", "orchestrator" in r["fired"], f"fired={r['fired']}")
+    check("生成なし→事実を返す（AIに理由を作らせない）",
+          any("直近の完成物もありません" in s for s in r["sent"]), f"sent={r['sent']}")
     check("履歴の二重登録なし（発言1件＋応答1件）", added <= 2, f"追加={added}件")
 
     # ===== ②-b 高速化：判定と返事を1回のAI呼び出しで済ませる =====
