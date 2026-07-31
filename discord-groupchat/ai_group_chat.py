@@ -2643,7 +2643,7 @@ def _match_gen_model(content):
 
 def classify_route(content, *, has_attachments=False, has_video_att=False,
                    has_image_att=False, has_job=False, has_last_gen=False,
-                   after_credits=False, has_running=False):
+                   after_credits=False, has_running=False, last_was_design=False):
     """@メンションなし発言のルーティングを判定（AI(_plan)前の決定的ルートのみ）。
     返り値: 'status'/'revise'/'short'/'virality'/'ad'/'credits'/'design'/
     'hf_model'/'hf_auto'/'motion'/'motion_ask'/None。
@@ -2679,7 +2679,24 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     #     「前の動画のこと覚えてる？」のような質問では発動しない
     if (not has_attachments and _looks_revise(content)
             and not _looks_like_question(content)):
+        # 作り直しでも「誰に作らせるか」の指定が最優先。
+        # 「クロードで作り直して」を作風の指定と読んで Higgsfield に投げ、
+        # 「Claude.ai風デザイン」の画像を生成してしまう事故が起きた。
+        if _BY_CLAUDE_RE.search(content):
+            return "design"
+        if _BY_GEMINI_RE.search(content):
+            return "image"
+        # 直前がデザインなら、作り直しも同じ作り方（HTML）で行う。
+        # 画像生成に投げると、せっかくの文字が崩れたものに置き換わってしまう。
+        if last_was_design:
+            return "design"
         return "revise"
+    # 直前がデザインなら、短い手直し（「背景を暗くして」等）も作り直しとして扱う。
+    # 動画/画像と違い、デザインは細かい調整を重ねる使い方が普通のため。
+    if (last_was_design and not has_attachments
+            and not _looks_like_question(content)
+            and len(content) <= 40 and _CHANGE_VERB_RE.search(content)):
+        return "design"
     # ①.5 ショート量産（「ショート作って」「今日のショート」等）
     if re.search("ショート|shorts?|ショート動画", content, re.I) and (
         _GEN_INTENT2_RE.search(content) or re.search("今日の|ネタ|企画|お願い", content)
@@ -5840,6 +5857,8 @@ async def _dispatch_message(message):
         # 料金照会の直後（10分以内）は、続きの質問も権限のある経路で答える
         after_credits=time.time() - _last_credits.get(cid, 0) < 600,
         has_running=bool(_busy_tasks(cid)),
+        # 直前がデザインなら「作り直して」も同じ作り方（HTML）で行う
+        last_was_design=str((_lg_rec or {}).get("label", "")).startswith("デザイン"),
     )
     # 依頼待ち中に動画が添付された（キーワード無し）ケースもモーション実行に接続
     pm = _pending_motion.get(cid)
@@ -5948,11 +5967,17 @@ async def _dispatch_message(message):
 
     if route == "design":
         add_history(cid, message.author.display_name, content)
-        _w, _h, _label = _design_size(content)
-        _gate(message, cid, f"デザインの制作（{content[:40]}）",
+        # 「クロードで作り直して」のように指示だけの場合、それ単体では
+        # 何を作るのか分からない。前回の依頼に今回の修正を足して渡す。
+        _req = content
+        _prev = (_lg_rec or {}).get("prompt") or ""
+        if _prev and (_looks_revise(content) or len(_strip_media_context(content)) < 25):
+            _req = f"{_prev}\n【今回の修正指示】{content}"
+        _w, _h, _label = _design_size(_req)
+        _gate(message, cid, f"デザインの制作（{_req[:40]}）",
               f"ClaudeがHTMLでレイアウトを組み、{_label} {_w}×{_h} の画像に"
               "書き出して投稿します（文字が崩れないので、サムネ・バナー向き）",
-              lambda: _run_design(message, content), "デザイン制作",
+              lambda: _run_design(message, _req), "デザイン制作",
               "無料（生成モデルを使わないのでクレジットは消費しません）")
         return
 

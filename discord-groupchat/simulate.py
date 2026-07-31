@@ -362,6 +362,25 @@ async def run():
               not ({"hf_generate", "image_gen", "short"} & set(r["fired"])),
               f"実際={r['fired']}")
 
+    # 「クロードで作り直して」がHiggsfieldの画像生成に流れないこと
+    install_stubs()
+    bot._load_last_gen = lambda cid: {
+        "prompt": "豊臣兄弟の相関図", "media_type": "image",
+        "aspect_ratio": "1600:1200", "label": "デザイン（図（相関図・年表など））",
+        "url": "https://example.com/soukanzu.png", "t": bot.time.time()}
+    r = await drive("クロードで作り直して")
+    check("クロードで作り直して→デザイン", "design" in r["fired"], f"実際={r['fired']}")
+    check("クロードで作り直して→画像生成しない",
+          "hf_generate" not in r["fired"] and "revise" not in r["fired"],
+          f"実際={r['fired']}")
+    install_stubs()
+    bot._load_last_gen = lambda cid: {
+        "prompt": "豊臣兄弟の相関図", "media_type": "image",
+        "aspect_ratio": "1600:1200", "label": "デザイン（図（相関図・年表など））",
+        "url": "https://example.com/soukanzu.png", "t": bot.time.time()}
+    r = await drive("背景を暗くして")
+    check("デザインの手直しもデザインで", "design" in r["fired"], f"実際={r['fired']}")
+
     # 再起動後に「相関図できた？」と聞かれても、機能の存在を否定しない
     install_stubs()
     bot._load_last_gen = lambda cid: None

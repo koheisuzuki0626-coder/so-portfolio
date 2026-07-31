@@ -360,6 +360,26 @@ def run():
           bot._clean_reply("直したよ。再起動してください。", "コード直して"),
           "直したよ。再起動してください。")
 
+    print("■ デザインの作り直し（誰に作らせるかの指定を守る）")
+    # 実際に起きた事故：「クロードで作り直して」を作風の指定と読んで
+    # Higgsfieldに投げ、「Claude.ai風デザイン」の画像を生成した
+    _LG = {"has_last_gen": True}
+    _LGD = {"has_last_gen": True, "last_was_design": True}
+    check("クロードで作り直して→HTMLで作り直す",
+          bot.classify_route("クロードで作り直して", **_LG), "design")
+    check("geminiで作り直して→画像生成",
+          bot.classify_route("geminiで作り直して", **_LG), "image")
+    check("指定なしの作り直しは従来どおり",
+          bot.classify_route("作り直して", **_LG), "revise")
+    check("直前がデザインなら作り直しもデザイン",
+          bot.classify_route("作り直して", **_LGD), "design")
+    for _t in ("背景を暗くして", "文字をもっと大きくして", "秀吉を中央にして"):
+        check(f"デザインの手直し {_t!r}", bot.classify_route(_t, **_LGD), "design")
+    for _t, _w in (("ありがとう", "plan"), ("これどう思う？", "plan"),
+                   ("動画作って", "hf_auto"), ("ログ送って", "sharelog")):
+        check(f"デザイン後でも {_t!r} は誤爆しない",
+              bot.classify_route(_t, **_LGD) or "plan", _w)
+
     print("■ 機能一覧をAIに渡す（『その機能は無い』と言わせない）")
     # 実際に起きた事故：デザイン制作が動いているのに「機能自体が実装できていない」
     # と答え、再起動後もその発言を履歴から読んで繰り返した
