@@ -17,6 +17,8 @@
 
         * { box-sizing: border-box; }
         html { scroll-behavior: smooth; }
+        /* display を指定した要素でも hidden 属性を効かせる */
+        [hidden] { display: none !important; }
 
         body {
             font-family: 'Helvetica Neue', 'Arial', sans-serif;
@@ -200,6 +202,26 @@
             border-bottom: 8px solid transparent;
         }
         .card:hover .play { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+        .thumb img {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+            background: var(--bg-soft);
+            transition: transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+        }
+        .card:hover .thumb img { transform: scale(1.08); }
+        .card-link {
+            position: absolute;
+            inset: 0;
+            z-index: 4;
+        }
+        .card-link:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: -3px;
+        }
         .card-body { padding: 20px 22px 24px; }
         .card-body .meta {
             font-size: 0.68rem;
@@ -208,7 +230,74 @@
             color: var(--accent);
         }
         .card-body h3 { margin: 9px 0 6px; font-size: 1.15rem; font-weight: 600; }
-        .card-body p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+        .card-body p {
+            margin: 0;
+            color: var(--muted);
+            font-size: 0.92rem;
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            line-clamp: 2;
+            overflow: hidden;
+        }
+
+        .channel-link {
+            display: inline-block;
+            margin-top: 38px;
+            font-size: 0.78rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--muted);
+            border-bottom: 1px solid var(--line);
+            padding-bottom: 5px;
+            transition: color 0.25s ease, border-color 0.25s ease;
+        }
+        .channel-link:hover { color: var(--accent); border-color: var(--accent); }
+
+        /* ---------- Lightbox ---------- */
+        .lightbox {
+            position: fixed;
+            inset: 0;
+            z-index: 200;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(16, 16, 20, 0.94);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+        }
+        .lightbox.open { opacity: 1; visibility: visible; }
+        .lightbox-frame {
+            position: relative;
+            width: min(100%, 1100px);
+            aspect-ratio: 16 / 9;
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            transform: scale(0.97);
+            transition: transform 0.35s cubic-bezier(0.2, 0.7, 0.2, 1);
+        }
+        .lightbox.open .lightbox-frame { transform: scale(1); }
+        .lightbox-frame iframe { width: 100%; height: 100%; border: 0; display: block; }
+        .lightbox-close {
+            position: absolute;
+            top: 22px; right: 24px;
+            z-index: 2;
+            width: 42px; height: 42px;
+            border: 1px solid rgba(255,255,255,0.35);
+            border-radius: 50%;
+            background: transparent;
+            color: #fff;
+            font-size: 1.1rem;
+            line-height: 1;
+            cursor: pointer;
+            transition: background 0.25s ease, border-color 0.25s ease;
+        }
+        .lightbox-close:hover { background: rgba(255,255,255,0.14); border-color: #fff; }
 
         /* ---------- Contact ---------- */
         #contact { text-align: center; }
@@ -292,7 +381,9 @@
         <section id="works" class="reveal">
             <div class="section-label">02 — Works</div>
             <h2>Selected Works</h2>
-            <div class="grid">
+            <!-- YouTube の新着は data/videos.json から自動描画される。
+                 取得前・取得失敗時は以下のプレースホルダーがそのまま残る。 -->
+            <div class="grid" id="works-grid">
                 <article class="card">
                     <div class="thumb">
                         <div class="art" style="background:
@@ -333,6 +424,7 @@
                     </div>
                 </article>
             </div>
+            <a class="channel-link" id="channel-link" href="#" hidden>YouTube チャンネルを見る →</a>
         </section>
 
         <section id="contact" class="reveal">
@@ -345,6 +437,11 @@
                 <a href="#">Vimeo</a>
             </div>
         </section>
+    </div>
+
+    <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="動画プレイヤー" hidden>
+        <button type="button" class="lightbox-close" id="lightbox-close" aria-label="閉じる">✕</button>
+        <div class="lightbox-frame" id="lightbox-player"></div>
     </div>
 
     <footer>© so. All Rights Reserved.</footer>
@@ -361,6 +458,112 @@
             });
         }, { threshold: 0.15 });
         document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+
+        /* ---------- YouTube Works ---------- */
+        const grid = document.getElementById('works-grid');
+        const channelLink = document.getElementById('channel-link');
+        const lightbox = document.getElementById('lightbox');
+        const player = document.getElementById('lightbox-player');
+        const closeBtn = document.getElementById('lightbox-close');
+        let lastFocused = null;
+
+        function openVideo(id, title) {
+            const iframe = document.createElement('iframe');
+            iframe.src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1&rel=0`;
+            iframe.title = title || 'YouTube video player';
+            iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+            iframe.allowFullscreen = true;
+            player.replaceChildren(iframe);
+
+            lastFocused = document.activeElement;
+            lightbox.hidden = false;
+            requestAnimationFrame(() => lightbox.classList.add('open'));
+            document.body.style.overflow = 'hidden';
+            closeBtn.focus();
+        }
+
+        function closeVideo() {
+            lightbox.classList.remove('open');
+            document.body.style.overflow = '';
+            // 再生を確実に止めるため iframe を破棄する
+            setTimeout(() => { player.replaceChildren(); lightbox.hidden = true; }, 300);
+            if (lastFocused) lastFocused.focus();
+        }
+
+        closeBtn.addEventListener('click', closeVideo);
+        lightbox.addEventListener('click', (e) => { if (e.target === lightbox) closeVideo(); });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && !lightbox.hidden) closeVideo();
+        });
+
+        function buildCard(video) {
+            const card = document.createElement('article');
+            card.className = 'card';
+
+            const thumb = document.createElement('div');
+            thumb.className = 'thumb';
+
+            const img = document.createElement('img');
+            img.loading = 'lazy';
+            img.alt = video.title || '';
+            img.src = `https://i.ytimg.com/vi/${video.id}/maxresdefault.jpg`;
+            // maxres が無い動画は hqdefault にフォールバック(1回だけ)
+            img.addEventListener('error', () => {
+                const fallback = video.thumbnail || `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`;
+                if (img.src !== fallback) img.src = fallback;
+            }, { once: true });
+
+            const play = document.createElement('div');
+            play.className = 'play';
+            play.setAttribute('aria-hidden', 'true');
+
+            const link = document.createElement('a');
+            link.className = 'card-link';
+            link.href = video.url || `https://www.youtube.com/watch?v=${video.id}`;
+            link.setAttribute('aria-label', `${video.title || 'この動画'} を再生`);
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                openVideo(video.id, video.title);
+            });
+
+            thumb.append(img, play, link);
+
+            const body = document.createElement('div');
+            body.className = 'card-body';
+
+            const meta = document.createElement('div');
+            meta.className = 'meta';
+            meta.textContent = video.year ? `YouTube · ${video.year}` : 'YouTube';
+
+            const h3 = document.createElement('h3');
+            h3.textContent = video.title || 'Untitled';
+
+            const p = document.createElement('p');
+            const summary = (video.description || '').split('\n').find((line) => line.trim()) || '';
+            p.textContent = summary.length > 90 ? summary.slice(0, 90) + '…' : summary;
+
+            body.append(meta, h3, p);
+            card.append(thumb, body);
+            return card;
+        }
+
+        fetch('data/videos.json', { cache: 'no-cache' })
+            .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+            .then((data) => {
+                const videos = Array.isArray(data.videos) ? data.videos.filter((v) => v && v.id) : [];
+                // 未設定・取得失敗時はプレースホルダーを残す
+                if (videos.length === 0) return;
+
+                grid.replaceChildren(...videos.map(buildCard));
+
+                if (data.channelId) {
+                    channelLink.href = `https://www.youtube.com/channel/${data.channelId}`;
+                    channelLink.target = '_blank';
+                    channelLink.rel = 'noopener';
+                    channelLink.hidden = false;
+                }
+            })
+            .catch((err) => console.warn('[works] YouTube データを読み込めませんでした:', err.message));
     </script>
 </body>
 </html>
