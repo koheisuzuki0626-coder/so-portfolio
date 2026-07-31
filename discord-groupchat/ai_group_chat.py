@@ -3710,6 +3710,25 @@ def _design_size(text):
     return DESIGN_SIZES["thumbnail"]
 
 
+# 確認画面に出す「何で作るか」の表示。同じ『サムネ』でも作り手で
+# 出来上がりが全く違うので、始める前に必ず見せて選べるようにする。
+ENGINE_DESIGN = "クロード（HTMLで組んで画像化）＝文字が正確・クレジット消費なし"
+ENGINE_GEMINI_IMG = "Gemini画像生成＝絵として描く・無料枠（文字は崩れやすい）"
+
+
+def _engine_label_hf(model_label, media="動画"):
+    return f"Higgsfield「{model_label}」で{media}を生成＝クレジットを消費"
+
+
+def _engine_switch_hint(engine):
+    """今と違う作り手に切り替えたいときの言い方を返す。"""
+    if engine.startswith("クロード"):
+        return "geminiで作って"
+    if engine.startswith("Gemini"):
+        return "クロードで作って"
+    return "別のモデルで作って"
+
+
 # 何倍で描画してから縮小するか。2倍にすると文字の輪郭がなめらかになる
 # （等倍で書き出すと日本語の細部がつぶれて安っぽく見える）。
 DESIGN_SCALE = int(os.getenv("DESIGN_SCALE", "2"))
@@ -4602,7 +4621,8 @@ async def _handle_orchestrator(message, cid):
         _gate(message, cid, f"動画の制作（{_req[:50]}）",
               "内容に合う最適なモデルを自動で選んで動画を生成します",
               lambda: _run_hf_generate(message, _req, None, "video", "自動選定"),
-              "動画生成", "Higgsfieldのクレジットを消費します")
+              "動画生成", "Higgsfieldのクレジットを消費します",
+              engine=_engine_label_hf("自動選定", "動画"))
         return
     if kind == "exec":
         await _start_agent(message, cid, _latest_user_msg(history))
@@ -4612,7 +4632,7 @@ async def _handle_orchestrator(message, cid):
         _gate(message, cid, f"画像の生成（{_req[:50]}）",
               "Geminiの無料枠で画像を生成します",
               lambda: _handle_image_request(cid, _req), "画像生成",
-              "原則無料（Geminiの無料枠）")
+              "原則無料（Geminiの無料枠）", engine=ENGINE_GEMINI_IMG)
         return
     if kind == "selffix":
         _spawn(_run_self_fix(cid, _latest_user_msg(history), message.author.id),
@@ -5210,10 +5230,12 @@ async def _claude_exec_run(task, timeout):
     return out.decode().strip() or "(完了・出力なし)"
 
 
-async def _confirm(message, cid, summary, plan, cost=""):
+async def _confirm(message, cid, summary, plan, cost="", engine=""):
     """作業に入る前に『こう理解した／これをやる』を提示して同意を得る（反復確認）。
     [✅許可] ボタン、または「OK」「はい」などの返信で開始。
-    「やめて」や5分の無反応で中止する。CONFIRM_BEFORE_WORK=0 で無効化できる。"""
+    「やめて」や5分の無反応で中止する。CONFIRM_BEFORE_WORK=0 で無効化できる。
+    engine には『何で作るか』を書く。同じ「サムネ」でもクロード(HTML)と
+    Gemini(画像生成)で出来上がりが全く違うため、始める前に見せて選べるようにする。"""
     if not CONFIRM_BEFORE_WORK:
         return True
     fut = asyncio.get_running_loop().create_future()
@@ -5228,10 +5250,13 @@ async def _confirm(message, cid, summary, plan, cost=""):
         orch, cid,
         "🔎 **確認させてください**\n"
         f"・ご依頼の理解: {summary}\n"
-        f"・これからやること: {plan}\n"
+        + (f"・**何で作るか**: {engine}\n" if engine else "")
+        + f"・これからやること: {plan}\n"
         + (f"・コスト: {cost}\n" if cost else "")
         + "これで進めていいですか？ [✅許可] か「**OK**」で開始します"
-        "（[❌拒否]・「やめて」で中止／5分で自動中止）",
+        "（[❌拒否]・「やめて」で中止／5分で自動中止）"
+        + (f"\n※違うもので作るなら「{_engine_switch_hint(engine)}」と言ってください"
+           if engine else ""),
         view=view,
     )
     try:
@@ -5246,17 +5271,17 @@ async def _confirm(message, cid, summary, plan, cost=""):
     return approved
 
 
-async def _confirm_then(message, cid, summary, plan, factory, cost=""):
+async def _confirm_then(message, cid, summary, plan, factory, cost="", engine=""):
     """確認を取ってから実際の作業を始める。factory は承認後にコルーチンを作る関数
     （先に作ると中止時に未実行のまま警告が出るため、必ず遅延生成する）。"""
-    if await _confirm(message, cid, summary, plan, cost):
+    if await _confirm(message, cid, summary, plan, cost, engine):
         await factory()
 
 
-def _gate(message, cid, summary, plan, factory, label, cost=""):
+def _gate(message, cid, summary, plan, factory, label, cost="", engine=""):
     """確認つきで作業を起動する（呼び出し側は1行で済む）。"""
     return _spawn(
-        _confirm_then(message, cid, summary, plan, factory, cost), cid, label
+        _confirm_then(message, cid, summary, plan, factory, cost, engine), cid, label
     )
 
 
@@ -5978,7 +6003,8 @@ async def _dispatch_message(message):
               f"ClaudeがHTMLでレイアウトを組み、{_label} {_w}×{_h} の画像に"
               "書き出して投稿します（文字が崩れないので、サムネ・バナー向き）",
               lambda: _run_design(message, _req), "デザイン制作",
-              "無料（生成モデルを使わないのでクレジットは消費しません）")
+              "無料（生成モデルを使わないのでクレジットは消費しません）",
+              engine=ENGINE_DESIGN)
         return
 
     if route == "credits":
@@ -6056,7 +6082,7 @@ async def _dispatch_message(message):
               "Geminiの無料枠で画像を生成します"
               "（使えない場合はHiggsfieldの最適モデルに切り替え）",
               lambda: _handle_image_request(cid, content), "画像生成",
-              "原則無料（Geminiの無料枠）")
+              "原則無料（Geminiの無料枠）", engine=ENGINE_GEMINI_IMG)
         return
 
     if route == "hf_model":
@@ -6065,7 +6091,8 @@ async def _dispatch_message(message):
         _gate(message, cid, f"{label}で{'動画' if mtype == 'video' else '画像'}を生成",
               "依頼を英語プロンプトに整えてから生成し、完成したらURLを投稿します",
               lambda: _run_hf_generate(message, content, model, mtype, label),
-              "動画/画像生成", "Higgsfieldのクレジットを消費します")
+              "動画/画像生成", "Higgsfieldのクレジットを消費します",
+              engine=_engine_label_hf(label, "動画" if mtype == "video" else "画像"))
         return
 
     if route == "hf_auto":
@@ -6076,7 +6103,9 @@ async def _dispatch_message(message):
               "内容に合う最適なモデルを自動で選び、"
               "英語プロンプトに整えてから生成します",
               lambda: _run_hf_generate(message, content, None, mtype, "自動選定"),
-              "動画/画像生成", "Higgsfieldのクレジットを消費します")
+              "動画/画像生成", "Higgsfieldのクレジットを消費します",
+              engine=_engine_label_hf("自動選定",
+                                      "動画" if mtype == "video" else "画像"))
         return
 
     if route == "motion":

@@ -360,6 +360,47 @@ def run():
           bot._clean_reply("直したよ。再起動してください。", "コード直して"),
           "直したよ。再起動してください。")
 
+    print("■ 確認画面に『何で作るか』が出ること")
+    import asyncio as _aio6
+    import types as _ty
+
+    async def _confirm_text(engine):
+        got = []
+
+        async def _fake_send_as(b, cid, text, **k):
+            got.append(text)
+        _orig = bot.send_as
+        bot.send_as = _fake_send_as
+        try:
+            msg = _ty.SimpleNamespace(
+                author=_ty.SimpleNamespace(id=1, display_name="kohei"))
+            t = _aio6.get_running_loop().create_task(
+                bot._confirm(msg, 1, "サムネの制作", "やること", "コスト", engine))
+            await _aio6.sleep(0.05)
+            t.cancel()
+            try:
+                await t
+            except _aio6.CancelledError:
+                pass
+        finally:
+            bot.send_as = _orig
+            bot._pending_approvals.pop(1, None)
+        return got[0] if got else ""
+
+    _txt = _aio6.run(_confirm_text(bot.ENGINE_DESIGN))
+    check("何で作るかを表示", "何で作るか" in _txt, True)
+    check("クロードだと分かる", "クロード" in _txt, True)
+    check("クレジット消費なしと分かる", "クレジット消費なし" in _txt, True)
+    check("切り替え方も案内", "geminiで作って" in _txt, True)
+    _txt2 = _aio6.run(_confirm_text(bot.ENGINE_GEMINI_IMG))
+    check("Geminiだと分かる", "Gemini画像生成" in _txt2, True)
+    check("切り替え先はクロード", "クロードで作って" in _txt2, True)
+    _txt3 = _aio6.run(_confirm_text(bot._engine_label_hf("Veo 3", "動画")))
+    check("モデル名まで出る", "Higgsfield「Veo 3」" in _txt3, True)
+    check("クレジット消費だと分かる", "クレジットを消費" in _txt3, True)
+    _txt4 = _aio6.run(_confirm_text(""))
+    check("指定が無ければ従来どおり", "何で作るか" in _txt4, False)
+
     print("■ デザインの作り直し（誰に作らせるかの指定を守る）")
     # 実際に起きた事故：「クロードで作り直して」を作風の指定と読んで
     # Higgsfieldに投げ、「Claude.ai風デザイン」の画像を生成した
