@@ -538,11 +538,16 @@
             const h3 = document.createElement('h3');
             h3.textContent = video.title || 'Untitled';
 
-            const p = document.createElement('p');
-            const summary = (video.description || '').split('\n').find((line) => line.trim()) || '';
-            p.textContent = summary.length > 90 ? summary.slice(0, 90) + '…' : summary;
+            body.append(meta, h3);
 
-            body.append(meta, h3, p);
+            // 説明文が無い動画では空の余白を作らない
+            const summary = (video.description || '').split('\n').find((line) => line.trim()) || '';
+            if (summary) {
+                const p = document.createElement('p');
+                p.textContent = summary.length > 90 ? summary.slice(0, 90) + '…' : summary;
+                body.append(p);
+            }
+
             card.append(thumb, body);
             return card;
         }
