@@ -36,6 +36,9 @@ index.html が読み込んで Works を描画
    | チャンネルURL | `https://www.youtube.com/channel/UC_x5XG1OV2P6uZZ5FSM9Ttw` |
 
    `maxVideos` は掲載する最大件数(既定 6)。YouTube の RSS は**最新15件まで**しか返さないため、それ以上は指定できません。
+   `note` は自由記述のメモで、スクリプトからは無視されます。
+
+   ハンドルはあとから変更される可能性があるため、チャンネルID(`UC...`)で指定しておくのが確実です。
 
 2. **Actions に書き込み権限を与える**
 
