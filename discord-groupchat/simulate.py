@@ -406,6 +406,17 @@ async def run():
     finally:
         bot._running.pop(1234, None)
 
+    # 既定ではGeminiが返事を書かないこと
+    install_stubs()
+    _kl2 = bot.gen_settings.get("casual_lead")
+    bot.gen_settings["casual_lead"] = ""
+    try:
+        _plan_out = await bot._plan([("kohei", "おはよう")])
+        check("雑談の担当はクロード", _plan_out[2], "claude")
+        check("Geminiの返事はオフ", bot._gemini_replies_on() is False, True)
+    finally:
+        bot.gen_settings["casual_lead"] = _kl2
+
     # 雑談の担当をDiscordから切り替えられること
     _keep_lead = bot.gen_settings.get("casual_lead")
     try:

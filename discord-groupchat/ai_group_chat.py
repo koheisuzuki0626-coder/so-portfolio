@@ -2574,15 +2574,23 @@ def _critique_prompt(me, other, my_ans, other_ans, history):
 # 軽い雑談は既定でGeminiに任せる。Geminiは高速（1〜3秒）で無料枠、
 # Claudeはサブスクの利用上限があり実際に上限到達で止まったことがあるため、
 # 負荷を分散する意味でも雑談はGemini側に寄せる。枠切れ時は自動でClaudeへ。
-CASUAL_LEAD = os.getenv("CASUAL_LEAD", "gemini")
+# 返事は既定でクロードに一本化する。Geminiにも書かせていた頃は
+# 「誰が答えたのか分からない」「Geminiが勝手に作り話をする」が続いたため。
+# Geminiは返事以外（画像生成・動画視聴・添付の解析・検品・要約）で今も働く。
+CASUAL_LEAD = os.getenv("CASUAL_LEAD", "claude")
 if CASUAL_LEAD not in ("claude", "gemini"):
     CASUAL_LEAD = "claude"
 
 
 def _casual_lead():
-    """雑談の担当。Discordから変えられるようにしてある（既定は .env の値）。"""
+    """雑談の担当。Discordから変えられる（「返答をgeminiにして」で戻せる）。"""
     v = gen_settings.get("casual_lead")
     return v if v in ("claude", "gemini") else CASUAL_LEAD
+
+
+def _gemini_replies_on():
+    """Geminiに返事を書かせてよいか。既定はオフ。"""
+    return _casual_lead() == "gemini"
 
 
 # 「返事はクロードにして」のように、雑談の担当を名指しで変える言い方。
@@ -4511,6 +4519,11 @@ async def _orchestrate(mode, lead, search, history, recall=False):
             rc = await _recall_context(cid, _latest_user_msg(history))
             if rc:
                 ctx = (ctx + "\n\n" + rc).strip() if ctx else rc
+
+    # Geminiに返事を書かせない設定なら、ここで単発（クロード）に寄せる。
+    # ディベートはGeminiが相方なので、オフのときは成立しない。
+    if not _gemini_replies_on():
+        mode, lead = "single", "claude"
 
     # ① 単発モード：簡単な要求は得意モデル1つで即答（コスト節約）
     if mode == "single":

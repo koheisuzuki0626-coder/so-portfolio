@@ -371,6 +371,14 @@ def run():
           "リセット時刻" in bot.OPS_RULES, True)
 
     print("■ 雑談の担当を切り替える _match_casual_lead")
+    _kl = bot.gen_settings.get("casual_lead")
+    try:
+        bot.gen_settings["casual_lead"] = "gemini"
+        check("明示すればGeminiも返事に戻せる", bot._gemini_replies_on(), True)
+        bot.gen_settings["casual_lead"] = "claude"
+        check("クロードに戻せる", bot._gemini_replies_on(), False)
+    finally:
+        bot.gen_settings["casual_lead"] = _kl
     for _t, _want in (("返事はクロードにして", "claude"),
                       ("返答をgeminiにして", "gemini"),
                       ("クロードに答えさせて", "claude"),
@@ -724,7 +732,10 @@ def run():
           bot.OPS_RULES in bot.ops_guide("再起動して"), True)
 
     print("■ 雑談の担当と役割分担")
-    check("軽い雑談は既定でGemini", bot.CASUAL_LEAD, "gemini")
+    # 返事はクロードに一本化（Geminiが勝手に作り話をする／誰が答えたか
+    # 分からない、という声を受けて既定をオフにした）
+    check("返事は既定でクロード", bot.CASUAL_LEAD, "claude")
+    check("Geminiの返事は既定でオフ", bot._gemini_replies_on(), False)
     import asyncio as _aio3
     _fast = _aio3.run(bot._plan([("kohei", "おはよう")]))
     check("短い雑談はAIを呼ばず即返す（枠の節約）", _fast[0], "chat")
