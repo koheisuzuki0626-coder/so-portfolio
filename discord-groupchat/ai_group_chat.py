@@ -404,13 +404,35 @@ def _busy_tasks(cid):
     return [(n, sec) for n, sec in _running_for(cid) if "監視" not in n]
 
 
+# 作業ごとの目安時間（秒）。「あとどのくらい？」に答えるために使う。
+TASK_ETA = {
+    "デザイン制作": 180, "動画生成": 300, "動画/画像生成": 300, "画像生成": 60,
+    "ショート量産": 600, "広告制作": 600, "モーション生成": 420, "動画編集": 300,
+    "クレジット確認": 60, "ログ共有": 30, "実績分析": 120, "スタイル学習": 120,
+    "YouTubeリサーチ": 180, "自己改修": 300, "複数視点": 120, "エージェント実行": 300,
+}
+
+
+def _eta_text(name, sec):
+    """『あと何分か』の目安。長引いているときは正直にそう言う。"""
+    eta = TASK_ETA.get(name)
+    if not eta:
+        return f"{sec}秒経過"
+    left = eta - sec
+    if left > 60:
+        return f"{sec}秒経過／目安あと{round(left / 60)}分ほど"
+    if left > 0:
+        return f"{sec}秒経過／目安あと{left}秒ほど"
+    return f"{sec}秒経過／目安({round(eta / 60)}分)を超えています。もう少し待つか「やめて」で中止できます"
+
+
 def _running_note(cid):
     """実行中の作業をAIへ伝える一文。これを渡さないと、AIは裏で動いている
     ことを知らないまま「その機能は無い」と作り話をする（実際に起きた）。"""
     busy = _busy_tasks(cid) if cid is not None else []
     if not busy:
         return ""
-    detail = "／".join(f"「{n}」({sec}秒経過)" for n, sec in busy[:3])
+    detail = "／".join(f"「{n}」({_eta_text(n, sec)})" for n, sec in busy[:3])
     return (
         f"【いま裏で実行中の作業】{detail}\n"
         "この作業は実際に動いていて、終わればこのチャンネルに結果が出る。"
@@ -3738,16 +3760,17 @@ DESIGN_SCALE = int(os.getenv("DESIGN_SCALE", "2"))
 #    太いウェイトが無く古く見える。Noto Sans JP（Black含む）を入れると別物になる。
 #  ・`npx playwright screenshot` には解像度倍率の指定が無いので、
 #    deviceScaleFactor を使う小さなスクリプトを置いて呼ぶ。
-DESIGN_SETUP_SNIPPET = """【環境準備】この通りに実行すること（実測済み）:
-mkdir -p ~/.fonts && cd /home/user && \\
+DESIGN_SETUP_SNIPPET = """【一括スクリプト】sandbox_exec に、これを1回だけ渡す。
+HTMLの中身（<<'HTML' 〜 HTML の間）だけを依頼に合わせて差し替えること。
+UPLOAD_URL は media_upload で取得した署名付きURLに置き換える。
+
+cd /home/user && mkdir -p ~/.fonts && \\
 curl -sL -A "Mozilla/5.0" \\
  "https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap" \\
  -o css.txt && i=0 && \\
 for u in $(grep -o 'https://fonts.gstatic.com/[^)]*' css.txt); do \\
- i=$((i+1)); curl -sL "$u" -o ~/.fonts/noto$i.ttf; done && fc-cache -f >/dev/null 2>&1
-（確認: `fc-list :lang=ja family | grep Noto` に "Noto Sans JP Black" が出ること）
-
-書き出しスクリプト /home/user/s.js を作る:
+ i=$((i+1)); curl -sL "$u" -o ~/.fonts/noto$i.ttf; done && fc-cache -f >/dev/null 2>&1 && \\
+cat > s.js <<'JS'
 const { chromium } = require('playwright');
 (async () => {
   const [html, out, w, h, scale] = process.argv.slice(2);
@@ -3756,13 +3779,31 @@ const { chromium } = require('playwright');
   await p.goto('file://'+html);
   await p.evaluate(() => document.fonts.ready);
   await p.waitForTimeout(300);
+  const bad = await p.evaluate(({vw, vh}) => {
+    const d = document.documentElement, out = [];
+    if (d.scrollWidth > vw + 2) out.push('横に' + (d.scrollWidth - vw) + 'pxはみ出し');
+    if (d.scrollHeight > vh + 2) out.push('縦に' + (d.scrollHeight - vh) + 'pxはみ出し');
+    for (const el of document.querySelectorAll('body *')) {
+      const r = el.getBoundingClientRect();
+      if (r.width && (r.right > vw + 2 || r.bottom > vh + 2 || r.left < -2 || r.top < -2))
+        out.push('はみ出し: ' + el.tagName + '.' + (el.className || ''));
+    }
+    return out.slice(0, 5);
+  }, {vw: +w, vh: +h});
   await p.screenshot({ path: out });
   await b.close();
+  console.log(bad.length ? 'LAYOUT_NG: ' + bad.join(' / ') : 'LAYOUT_OK');
 })();
-
-高解像度で描いたあと、狙いのサイズへ高品質縮小する:
+JS
+cat > d.html <<'HTML'
+（ここに自己完結のHTMLを書く。font-family に 'Noto Sans JP' を指定する）
+HTML
+export NODE_PATH=$(npm root -g) && \\
+node s.js /home/user/d.html /home/user/out.png WIDTH HEIGHT SCALE && \\
 python3 -c "from PIL import Image; im=Image.open('/home/user/out.png'); \\
-im.resize((WIDTH,HEIGHT), Image.LANCZOS).save('/home/user/out.png')"
+im.resize((WIDTH,HEIGHT), Image.LANCZOS).save('/home/user/out.png')" && \\
+curl -sS -X PUT --upload-file /home/user/out.png 'UPLOAD_URL' -w 'upload=%{http_code}\\n' && \\
+echo DONE
 """
 
 # 仕上がりの質を決める作法。これが無いと「情報は合っているが素人っぽい」絵になる。
@@ -3806,26 +3847,23 @@ async def _run_design(message, request):
            "凡例を隅に置く。箱は重ねない・線は交差を最小にする。"
            "事実関係は史実・公開情報に基づき、確実でないことは書かない。\n"
            if _DIAGRAM_RE.search(request or "") else "")
-        + "手順（Higgsfield の MCP ツール sandbox_exec を使う）:\n"
-        "1) 下の【環境準備】をそのまま実行する（日本語フォントの導入と"
-        "書き出しスクリプトの作成。実測済みの手順なので変更しないこと）\n"
-        f"2) /home/user/d.html に自己完結のHTMLを書く。"
-        f"body と .canvas を {w}x{h}px 固定、margin:0、overflow:hidden。"
-        "外部CDN・外部画像は使わない（フォントは導入済みのものを使う）\n"
-        f"3) 書き出し: `cd /home/user && export NODE_PATH=$(npm root -g) && "
-        f"node s.js /home/user/d.html /home/user/out.png {w} {h} {DESIGN_SCALE}`\n"
-        f"   （{DESIGN_SCALE}倍で描画してから {w}x{h} に高品質縮小するので、"
-        "文字の輪郭がなめらかになる）\n"
-        "4) 出来上がった /home/user/out.png を Read ツールで【必ず自分の目で確認】する。"
-        "文字のはみ出し・重なり・豆腐（□）・余白の偏り・線の交差が無いか見て、"
-        "問題があればHTMLを直して3からやり直す（最大3回）\n"
-        "5) media_upload で署名付きURLを取得し "
-        "curl -X PUT --upload-file /home/user/out.png '<upload_url>' でアップロード\n"
-        "6) media_confirm で確定して公開URLを得る\n"
-        "※サンドボックスは呼び出し間で消えるので、1〜3は && でつないで"
-        "1回のコマンドにまとめること。\n\n"
+        + "【最重要】サンドボックスは呼び出しごとに消えるうえ、1回の呼び出しが重い。"
+        "so 準備・HTML作成・書き出し・アップロードを【1回の sandbox_exec に"
+        "全部まとめる】こと。分けると毎回フォント導入からやり直しになり、"
+        "何分も余計にかかる（実際に7分かかっても終わらない事故が起きた）。\n"
+        "手順:\n"
+        "1) 先に media_upload を呼んで、アップロード用の署名付きURLを取得しておく\n"
+        f"2) sandbox_exec を【1回だけ】呼び、下の【一括スクリプト】を実行する。"
+        f"HTMLの中身だけを依頼に合わせて差し替えること\n"
+        "3) 出力の LAYOUT_OK / LAYOUT_NG を見る。NG ならはみ出している要素が"
+        "書かれているので、HTMLを直してもう一度2を実行する（最大2回）\n"
+        "4) media_confirm で確定して公開URLを得る\n"
+        "※HTMLは自己完結（外部CDN・外部画像を使わない）。"
+        f"body と .canvas は {w}x{h}px 固定、margin:0、overflow:hidden。\n"
+        "※やり直しが必要なときも、1回の sandbox_exec にまとめ直すこと。\n\n"
         # JSの波括弧があるので format ではなく置換で埋める
         + DESIGN_SETUP_SNIPPET.replace("WIDTH", str(w)).replace("HEIGHT", str(h))
+                              .replace("SCALE", str(DESIGN_SCALE))
         + "\n最終行に『URL: <公開URL>』だけを出力。失敗なら『ERROR: 理由』。"
     )
     out = await _run_claude_exec(task, timeout=900)
@@ -4467,7 +4505,7 @@ async def _report_gen_status(channel, cid, author_name=None, said=None):
     if busy and not job:
         if said and author_name:
             add_history(cid, author_name, said)
-        detail = "／".join(f"「{n}」({sec}秒経過)" for n, sec in busy[:3])
+        detail = "／".join(f"「{n}」({_eta_text(n, sec)})" for n, sec in busy[:3])
         await channel.send(
             f"⏳ いま {detail} を実行中です。終わったらこのチャンネルに結果を出します。"
         )

@@ -360,6 +360,28 @@ def run():
           bot._clean_reply("直したよ。再起動してください。", "コード直して"),
           "直したよ。再起動してください。")
 
+    print("■ 残り時間の目安 _eta_text")
+    check("目安が出る", "あと" in bot._eta_text("デザイン制作", 60), True)
+    check("残りが縮む",
+          bot._eta_text("デザイン制作", 150) != bot._eta_text("デザイン制作", 60), True)
+    check("1分未満は秒で出す", "あと50秒ほど" in bot._eta_text("画像生成", 10), True)
+    check("超過したら正直に言う",
+          "超えています" in bot._eta_text("デザイン制作", 999), True)
+    check("中止の方法も案内", "やめて" in bot._eta_text("デザイン制作", 999), True)
+    check("目安が無い作業は経過だけ", bot._eta_text("謎の作業", 77), "77秒経過")
+
+    print("■ デザイン制作を1回のサンドボックス呼び出しにまとめる")
+    # 実際に起きた事故：呼び出しを分けたため毎回フォント導入からやり直しになり、
+    # 7分経っても終わらなかった
+    _sn = bot.DESIGN_SETUP_SNIPPET
+    check("1つのスクリプトにまとまっている", "一括スクリプト" in _sn, True)
+    check("アップロードまで同じスクリプトで行う", "upload-file" in _sn, True)
+    check("HTMLの差し替え位置が示されている", "<<'HTML'" in _sn, True)
+    check("完了の目印がある", "echo DONE" in _sn, True)
+    check("はみ出しを自動検査する", "LAYOUT_NG" in _sn, True)
+    check("検査は同じ実行の中で行う（往復を増やさない）",
+          _sn.index("LAYOUT_NG") < _sn.index("echo DONE"), True)
+
     print("■ 確認画面に『何で作るか』が出ること")
     import asyncio as _aio6
     import types as _ty
