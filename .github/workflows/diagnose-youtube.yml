@@ -1,0 +1,44 @@
+name: (temp) Diagnose YouTube reachability
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe endpoints
+        run: |
+          CH=UCK-RAb4PrWVN4EXXPnbJ67w
+          UA='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+
+          probe() {
+            printf '%-58s -> %s\n' "$2" "$(curl -sS --max-time 25 -A "$UA" -o /tmp/out.bin -w '%{http_code} (%{size_download}B)' "$1" || echo 'CURL-FAIL')"
+          }
+
+          echo "=== RSS feed (3回リトライ) ==="
+          for i in 1 2 3; do probe "https://www.youtube.com/feeds/videos.xml?channel_id=$CH" "rss attempt $i"; sleep 3; done
+
+          echo
+          echo "=== RSS feed / UA なし ==="
+          printf '%-58s -> %s\n' "rss no-UA" "$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "https://www.youtube.com/feeds/videos.xml?channel_id=$CH")"
+
+          echo
+          echo "=== チャンネルページ (スクレイピング可否) ==="
+          probe "https://www.youtube.com/channel/$CH" "channel page"
+          probe "https://www.youtube.com/@hzrinrng" "handle page"
+          probe "https://www.youtube.com/channel/$CH/videos" "videos tab"
+          echo "--- videoId が取れるか ---"
+          curl -sS --max-time 25 -A "$UA" "https://www.youtube.com/channel/$CH/videos" -o /tmp/ch.html || true
+          echo "unique videoId count: $(grep -o '"videoId":"[A-Za-z0-9_-]\{11\}"' /tmp/ch.html | sort -u | wc -l)"
+          echo "lockupViewModel hits: $(grep -o 'lockupViewModel' /tmp/ch.html | wc -l)"
+          echo "videoRenderer hits  : $(grep -o 'videoRenderer' /tmp/ch.html | wc -l)"
+
+          echo
+          echo "=== YouTube Data API v3 (キー無し: 403なら到達OK) ==="
+          probe "https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id=$CH" "googleapis"
+
+          echo
+          echo "=== 参考: 通常のHTTP疎通 ==="
+          probe "https://www.youtube.com/" "youtube root"
+          probe "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" "thumbnail cdn"
