@@ -4549,6 +4549,50 @@ def _strip_media_context(text):
     return t.replace("（ファイル共有）", "").strip()
 
 
+# 返事の精査をGeminiに任せるか。クロードが書いた下書きを、Geminiが
+# 事実の食い違い・冗長・答え漏れの観点で締める＝二人で1つの返事を作る。
+# 短い雑談まで通すと遅くなるので、ある程度の長さの返事だけを対象にする。
+REVIEW_REPLIES = os.getenv("REVIEW_REPLIES", "1") not in ("0", "false", "False")
+REVIEW_MIN_CHARS = int(os.getenv("REVIEW_MIN_CHARS", "120"))
+
+_REVIEW_PROMPT = (
+    "あなたは編集者。下の【下書き】は、この会話への回答案です。"
+    "内容の担当者が書いたものを、あなたが最終確認します。\n"
+    "見るところ:\n"
+    "・質問に答えていない箇所、答え漏れ\n"
+    "・事実の食い違い、根拠のない断定\n"
+    "・冗長な言い回し、同じことの繰り返し\n"
+    "【厳守】新しい事実・数字・固有名詞を足さない。"
+    "分からないことは分からないままにする。"
+    "直すところが無ければ、下書きをそのまま返す。"
+    "説明・前置き・『修正しました』等は書かず、"
+    "最終的な回答本文だけを出力する。\n\n"
+)
+
+
+async def _review_reply(draft, history):
+    """クロードの下書きをGeminiが精査して締める（返すのは最終本文だけ）。
+    失敗・枠切れ・怪しい結果のときは下書きをそのまま使う（劣化させない）。"""
+    if not (REVIEW_REPLIES and draft) or len(draft) < REVIEW_MIN_CHARS:
+        return draft, False
+    if _gemini_all_cooling():
+        return draft, False
+    try:
+        out = await _gemini_call(
+            _REVIEW_PROMPT + transcript_block(history)
+            + f"\n\n【下書き】\n{draft}\n\n最終的な回答本文:",
+            "review",
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[review] 精査に失敗（下書きを使用）: {str(e)[:120]}")
+        return draft, False
+    out = _clean_reply((out or "").strip(), _latest_user_msg(history))
+    # 空・極端に短い・逆に長くなった場合は、精査が失敗したとみなして下書きを使う
+    if not out or len(out) < len(draft) * 0.4 or len(out) > len(draft) * 1.5:
+        return draft, False
+    return out, True
+
+
 async def ask_orchestrator(history):
     _, mode, lead, search, recall, reply = await _plan(history)
     return reply or await _orchestrate(mode, lead, search, history, recall)
@@ -4762,6 +4806,9 @@ async def _handle_orchestrator(message, cid):
     # 分類＋処理方針＋（雑談ならその返事まで）を1回のAI呼び出しで得る
     async with message.channel.typing():
         kind, mode, lead, search, recall, reply = await _plan(history)
+        # どのエンジンが書いたかは【この時点で】控える。あとで読むと、
+        # 裏で動くGeminiの処理に _last_engine を書き換えられている
+        plan_engine = _last_engine.get("name") or "クロード"
     # 保険：質問や相談っぽい発言が作業系に誤分類されたらchatに戻す。
     # video/image も対象（「veo3の料金いくら？」で生成が始まる事故があった）。
     if kind in ("selffix", "exec", "video", "image") and _looks_like_question(latest):
@@ -4783,7 +4830,7 @@ async def _handle_orchestrator(message, cid):
             _spawn(_do_retry(), cid, "クレジット確認")
             return
         add_history(cid, "Orchestrator", reply)
-        await send_as(orch, cid, _with_speaker(reply))
+        await send_as(orch, cid, _with_speaker(reply, plan_engine))
         return
     if kind == "video":
         # 単発の動画生成は、最適モデルを自動選定して直接生成（滑らかで確実）。
@@ -4863,8 +4910,12 @@ async def _handle_orchestrator(message, cid):
                     _gemini_watch["outage_cid"] = cid
                 answer = f"⚠️ 応答に失敗: {str(e)[:300]}"
     answer = _clean_reply(answer, latest)
+    # クロードの下書きをGeminiが精査して締める（＝二人で1つの返事にする）。
+    # 出す声はオーケストレーターひとつなので、誰が書いたかで混乱しない。
+    answer, reviewed = await _review_reply(answer, history)
     add_history(cid, "Orchestrator", answer)
-    await send_as(orch, cid, _with_speaker(answer))
+    await send_as(orch, cid, _with_speaker(
+        answer, "オーケストレーター（クロード＋Gemini精査）" if reviewed else "クロード"))
 
 
 # ---------- 送信・進行 ----------
@@ -4952,10 +5003,13 @@ def _clean_reply(text, user_said=""):
     return rest or t          # 全部消える場合は元のまま（無言にしない）
 
 
-def _with_speaker(text):
+def _with_speaker(text, who=None):
     """返事の先頭に「誰が答えたか」を付ける（表示用。履歴には入れない）。
-    AIの自称ではなく、実際に呼ばれたエンジンを記録した値を使うので必ず正しい。"""
-    who = _last_engine.get("name")
+
+    who を渡すこと。渡さないと _last_engine（全体で1つ）を見るが、これは
+    裏で動くGeminiの処理（要約・検品・解析）でも書き換わるため、
+    クロードが書いた返事に「Gemini」と付く事故が起きた。"""
+    who = who or _last_engine.get("name")
     return f"**{who}**: {text}" if who and text else text
 
 

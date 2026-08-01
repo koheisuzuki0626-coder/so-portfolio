@@ -370,6 +370,54 @@ def run():
     check("内部の状態を作らせない指示がある",
           "リセット時刻" in bot.OPS_RULES, True)
 
+    print("■ 話者ラベルが裏のGeminiに汚染されないこと")
+    # 実際に起きた事故：クロードが書いた返事に「Gemini」と付いた。
+    # 裏で動くGeminiの処理（要約・検品・解析）が _last_engine を
+    # 書き換えるため、あとから読むと誰が書いたか分からなくなる
+    bot._last_engine["name"] = "Gemini"
+    check("明示した話者が優先される",
+          bot._with_speaker("本文", "クロード"), "**クロード**: 本文")
+    check("明示しなければ従来どおり",
+          bot._with_speaker("本文"), "**Gemini**: 本文")
+    bot._last_engine["name"] = "クロード"
+
+    print("■ 返事の精査（クロードが書き、Geminiが締める）")
+    import asyncio as _aio7
+    _orig_g, _orig_cool = bot._gemini_call, bot._gemini_all_cooling
+
+    async def _fake_g(prompt, tag="gemini"):
+        bot._last_engine["name"] = "Gemini"     # 裏で汚染される状況も再現
+        return "精査後の回答本文です。" + "x" * 110
+
+    try:
+        bot._gemini_call, bot._gemini_all_cooling = _fake_g, (lambda: False)
+        _h = [("kohei", "これどう思う？")]
+        _draft = "クロードの下書き。" + "y" * 130
+        _out, _rev = _aio7.run(bot._review_reply(_draft, _h))
+        check("長い返事は精査する", _rev, True)
+        check("精査後の本文になる", _out.startswith("精査後"), True)
+        check("短い返事は精査しない（速度優先）",
+              _aio7.run(bot._review_reply("短い返事", _h))[1], False)
+        bot._gemini_all_cooling = lambda: True
+        check("枠切れなら下書きをそのまま使う",
+              _aio7.run(bot._review_reply(_draft, _h)), (_draft, False))
+
+        # 精査が壊れた結果を返したら採用しない（劣化させない）
+        async def _bad_short(prompt, tag="gemini"):
+            return "あ"
+
+        async def _bad_long(prompt, tag="gemini"):
+            return "あ" * 500
+        bot._gemini_all_cooling = lambda: False
+        bot._gemini_call = _bad_short
+        check("短くなりすぎたら下書きを使う",
+              _aio7.run(bot._review_reply(_draft, _h))[1], False)
+        bot._gemini_call = _bad_long
+        check("長くなりすぎたら下書きを使う",
+              _aio7.run(bot._review_reply(_draft, _h))[1], False)
+    finally:
+        bot._gemini_call, bot._gemini_all_cooling = _orig_g, _orig_cool
+
     print("■ Geminiとクロードの役割分担（声はひとつ、頭は複数）")
     check("Geminiの視点担当の人格がある",
           "違う切り口" in bot.GEMINI_VIEW_PERSONA, True)
