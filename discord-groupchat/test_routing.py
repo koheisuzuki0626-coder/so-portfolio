@@ -381,12 +381,16 @@ def run():
     try:
         bot.gemini_bot.user, bot.claude_bot.user, bot.orch.user = _gu, _cu, _ou
         _msg = _ty2.SimpleNamespace(mentions=[_gu])
+        # 自動でGeminiが割り込むのは止めるが、名指しされた時だけは本人が答える
         bot.gen_settings["casual_lead"] = ""
-        check("@Geminiでもオーケストレーターが答える",
-              [n for n, _, _ in bot.decide_targets(_msg, "やあ")], ["Orchestrator"])
-        bot.gen_settings["casual_lead"] = "gemini"
-        check("許可すれば@Geminiは本人が答える",
+        check("@Geminiと名指しすればGeminiが答える",
               [n for n, _, _ in bot.decide_targets(_msg, "やあ")], ["Gemini"])
+        check("名指しが無ければオーケストレーター",
+              [n for n, _, _ in bot.decide_targets(
+                  _ty2.SimpleNamespace(mentions=[]), "やあ")], ["Orchestrator"])
+        check("@クロードならクロード",
+              [n for n, _, _ in bot.decide_targets(
+                  _ty2.SimpleNamespace(mentions=[_cu]), "やあ")], ["Claude"])
     finally:
         bot.gemini_bot.user, bot.claude_bot.user, bot.orch.user = _keep_users
         bot.gen_settings["casual_lead"] = _keep_lead2

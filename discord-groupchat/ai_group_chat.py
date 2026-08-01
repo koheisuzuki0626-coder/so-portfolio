@@ -5042,11 +5042,10 @@ def decide_targets(message, content):
         if m_claude:
             targets.append(("Claude", claude_bot, ask_claude))
         if m_gemini:
-            # Geminiの返信を止めている間は、名指しされてもオーケストレーターが答える
-            # （Geminiは裏方に徹する。返事の声をひとつに保つため）
-            targets.append(("Gemini", gemini_bot, ask_gemini)
-                           if _gemini_replies_on()
-                           else ("Orchestrator", orch, ask_orchestrator))
+            # 名指しされた時だけはGemini本人が答える。
+            # 自動でGeminiが割り込むのは止めているが、こちらから呼んだ場合は別
+            # （誰が答えるかを決めたのは本人なので、声が混ざる混乱は起きない）。
+            targets.append(("Gemini", gemini_bot, ask_gemini))
         return targets
     # @メンションなし → 常にオーケストレーター宛て
     return [("Orchestrator", orch, ask_orchestrator)]
