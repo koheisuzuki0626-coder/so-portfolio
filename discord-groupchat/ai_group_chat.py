@@ -6004,7 +6004,13 @@ async def on_ready():
             RESTART_MARKER.unlink()
             note = d.get("note") or ""
             warn = "" if routing_ok else "\n⚠️ 起動時セルフテストで異常検知。『システムチェック』推奨。"
-            await send_as(orch, int(d["cid"]), f"✅ 再起動完了！{note}{warn}".strip())
+            _cid = int(d["cid"])
+            await send_as(orch, _cid, f"✅ 再起動完了！{note}{warn}".strip())
+            # 再起動のたびに会話ログを共有しておく。ユーザーが覚えることを
+            # 増やさずに、開発側が最新の状況を読めるようにするため
+            # （「再起動して」はもともと日常的に使っている操作）。
+            _last_autolog.pop(_cid, None)      # 起動時は間隔制限を無視する
+            _track(asyncio.create_task(_autoshare_log(_cid, "起動時")))
         except Exception as e:  # noqa: BLE001
             print(f"[restart] 復帰通知失敗: {e}")
     if not _trend_task_started:
