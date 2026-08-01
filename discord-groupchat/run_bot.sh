@@ -23,6 +23,25 @@ cd "$(dirname "$0")" || exit 1
 BRANCH="${BOT_BRANCH:-claude/line-webhook-claude-integration-l3hff3}"
 LOG="bot.log"
 STOP_FILE="STOP"
+PID_FILE="run_bot.pid"
+
+# --- 二重起動の防止 -------------------------------------------------------
+# 見張り役が2つ動くと、ボットを止めてもそれぞれが起動し直すので必ず2体に戻る。
+# 実際に「pkill しても2つ動く」状態になった。先着1つだけを通す。
+if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; then
+    echo "すでに見張り役が動いています（PID $(cat "$PID_FILE")）。二重起動はしません。"
+    echo "止めたい場合: touch $STOP_FILE"
+    exit 0
+fi
+echo $$ > "$PID_FILE"
+trap 'rm -f "$PID_FILE"' EXIT
+
+# 取り残されたボットがいたら片付けてから始める（ここを通れる見張り役は1つだけ）
+if pgrep -f "ai_group_chat.py" > /dev/null 2>&1; then
+    echo "$(date '+%F %T') 既存のボットを停止します（重複防止）" | tee -a "$LOG"
+    pkill -f "ai_group_chat.py"
+    sleep 2
+fi
 
 # gitを非対話にする（認証情報が無い時に入力待ちで固まらせない）
 export GIT_TERMINAL_PROMPT=0

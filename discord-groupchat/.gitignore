@@ -6,3 +6,6 @@ history/
 *.py.bak
 insights/
 .selffix_backup/
+run_bot.pid
+bot.log
+STOP
