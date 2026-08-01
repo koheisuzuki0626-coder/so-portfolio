@@ -370,6 +370,22 @@ def run():
     check("内部の状態を作らせない指示がある",
           "リセット時刻" in bot.OPS_RULES, True)
 
+    print("■ お礼・報告・否定を指示と取り違えない")
+    # 実際に起きた事故：
+    #  ・「できた！ありがとー」に対して直近のデザインを貼り直した
+    #  ・「デザインの話はしてないよ」を手直しの指示と読んで制作を始めた
+    _LGD2 = {"has_last_gen": True, "last_was_design": True}
+    for _t in ("できた！ありがとーこれでショート動画が投稿できる",
+               "デザインの話はしてないよ", "ありがとう助かった",
+               "うまくいった！", "できました", "やった！"):
+        check(f"報告/お礼/否定 {_t!r} は作業にしない",
+              bot.classify_route(_t, **_LGD2) or "plan", "plan")
+    # 質問としての「できた？」は今までどおり状態確認
+    for _t, _w in (("できた？", "status"), ("まだ？", "status"),
+                   ("進捗どう", "status"), ("背景を暗くして", "design"),
+                   ("作り直して", "design")):
+        check(f"{_t!r} は従来どおり", bot.classify_route(_t, **_LGD2), _w)
+
     print("■ 匿名の人格を残さない（誰が担当かが分かること）")
     _src = open("ai_group_chat.py", encoding="utf-8").read()
     check("ショート企画はクロード3が名乗る",

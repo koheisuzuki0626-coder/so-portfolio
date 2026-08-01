@@ -2679,6 +2679,16 @@ _STATUS_KW_RE = re.compile(
     "url|ＵＲＬ|どこ|ある\\?|ある？|ちょうだい|ください|"
     "あとどれ|どれくらい|どのくらい|どれぐらい|どのぐらい|何分|確認して", re.I
 )
+# ユーザー自身が「できた／うまくいった」と報告・お礼を言っている発言。
+# 進捗の質問ではないので、完成物を出し直してはいけない。
+# 実際に「できた！ありがとー」に対して直近のデザインを貼り直す事故が起きた。
+_USER_REPORT_RE = re.compile(
+    "ありがと|あんがと|助かった|たすかった|嬉しい|うれしい|よかった|良かった|"
+    "できた[！!♪〜ー。]|できたよ|できたわ|できました|うまくいった|うまく行った|"
+    "いけた|やった[！!]|完成した[！!]|投稿できる|使えそう"
+)
+# 否定の言い回し。「〜してないよ」を指示と読まないための共通ガード。
+_NEGATION_RE = re.compile("してない|してません|じゃな|ではな|違う|ちがう|ないよ|ないです")
 _STATUS_CTX_RE = re.compile(
     "動画|画像|モーション|生成|デザイン|サムネ|バナー|相関図|関係図|家系図|"
     "系図|組織図|構成図|年表|チャート|フローチャート|図解|チラシ|ポスター|スライド")
@@ -2807,6 +2817,8 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         (has_job or has_last_gen or has_running) and status_kw
     )
     if (not has_attachments and status_kw and status_ctx
+            # 「できた！ありがとー」のような報告・お礼は進捗の質問ではない
+            and not _USER_REPORT_RE.search(content)
             and not re.search("作って|作りたい|つくって|生成して|作成して|描いて|アニメ化", content)
             and not _CONTENT_Q_RE.search(content)   # 中身への質問は会話へ
             and not _looks_revise(content)):
@@ -2845,6 +2857,9 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     # 「しろ」を手直し指示と読んでデザイン制作を始める事故が起きた。
     if (last_was_design and not has_attachments
             and not _looks_like_question(content)
+            # 「デザインの話はしてないよ」を手直しの指示と読まない
+            and not _NEGATION_RE.search(content)
+            and not _USER_REPORT_RE.search(content)
             and len(content) <= 40
             and _CHANGE_VERB_RE.search(content)
             and _DESIGN_TWEAK_RE.search(content)):
