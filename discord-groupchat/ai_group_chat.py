@@ -884,7 +884,7 @@ async def _claude_cli_run(prompt):
             proc.kill()
             await _reap(proc)   # 待たないとゾンビが残り続ける（常駐プロセスのため）
             raise RuntimeError(f"claude CLI がタイムアウトしました（{CLAUDE_TIMEOUT}秒）")
-    _last_engine["name"] = "クロード"
+    _last_engine["name"] = CLAUDE2_NAME
     out_s = out.decode(errors="replace").strip()
     err_s = err.decode(errors="replace").strip()
     if proc.returncode != 0:
@@ -1047,15 +1047,20 @@ async def ask_claude(history):
 # Discordのアカウントは増やさず、同じClaudeを別の役割で呼び分ける。
 # アカウントを増やすとトークン発行など手作業が要るうえ、
 # 実体は同じClaudeなので、役割（プロンプト）を変えるだけで目的は達せられる。
+# 表に出る話者の名前。1=調べる人、2=進める人、3=別の見方を出す人。
+CLAUDE1_NAME = "クロード1（リサーチャー）"
+CLAUDE2_NAME = "クロード2（PM）"
+CLAUDE3_NAME = "クロード3（アドバイザー）"
+
 CLAUDE_PERSONAS = {
     "claude1": (
-        "クロード1（リサーチャー）",
+        CLAUDE1_NAME,
         "あなたはリサーチャー。事実・数字・出典・前提条件を集めて整理することに徹する。"
         "推測と事実を必ず区別し、分からないことは『不明』と書く。"
         "意見や評価は述べず、判断材料だけを箇条書きで簡潔に並べる。",
     ),
     "claude3": (
-        "クロード3（アドバイザー）",
+        CLAUDE3_NAME,
         "あなたはアドバイザー。ひとつの結論に飛びつかず、"
         "賛成・反対・第三の見方を並べ、見落とされがちな観点やリスクを指摘する。"
         "『こう見ることもできる』という角度を最低3つ挙げ、最後に一番妥当だと思う見方を1行で示す。",
@@ -2572,7 +2577,11 @@ async def _daily_trend_loop():
 # 以前は engine 名（"Claude" / "Gemini"）をそのまま人格として渡していたため、
 # 「俺はGeminiじゃなくてクロード」と正体の訂正を始める事故が起きた。
 # どのエンジンを使うかは内部の都合であって、ユーザーには関係がない。
-ORCH_PERSONA = "koheiの相棒AI（オーケストレーター）"
+# 普段の返事を書く担当。クロード1（調べる）・クロード3（別の見方）に対して、
+# クロード2は「話を受けて、決めて、進める人」＝PM。表に出る顔でもある。
+ORCH_PERSONA = (
+    f"{CLAUDE2_NAME}。koheiの相棒で、依頼を受けて段取りを決め、進める担当"
+)
 
 
 def _answer_prompt(who, history, extra=""):
@@ -2641,7 +2650,8 @@ def _match_casual_lead(text):
     if not m:
         return None
     who = m.group(1).lower()
-    return ("claude", "クロード") if who in ("クロード", "claude") else ("gemini", "Gemini")
+    return (("claude", CLAUDE2_NAME) if who in ("クロード", "claude")
+            else ("gemini", "Gemini"))
 
 # AI判定が必要そうなキーワード（作業指示・生成依頼・検索・過去記憶）。
 # これに全く該当しない短い発言は、AIを呼ばず雑談として即処理（Gemini無料枠の節約）。
@@ -4811,7 +4821,7 @@ async def _handle_orchestrator(message, cid):
         kind, mode, lead, search, recall, reply = await _plan(history)
         # どのエンジンが書いたかは【この時点で】控える。あとで読むと、
         # 裏で動くGeminiの処理に _last_engine を書き換えられている
-        plan_engine = _last_engine.get("name") or "クロード"
+        plan_engine = _last_engine.get("name") or CLAUDE2_NAME
     # 保険：質問や相談っぽい発言が作業系に誤分類されたらchatに戻す。
     # video/image も対象（「veo3の料金いくら？」で生成が始まる事故があった）。
     if kind in ("selffix", "exec", "video", "image") and _looks_like_question(latest):
@@ -4918,7 +4928,7 @@ async def _handle_orchestrator(message, cid):
     answer, reviewed = await _review_reply(answer, history)
     add_history(cid, "Orchestrator", answer)
     await send_as(orch, cid, _with_speaker(
-        answer, "オーケストレーター" if reviewed else "クロード"))
+        answer, CLAUDE2_NAME))
 
 
 # ---------- 送信・進行 ----------
@@ -4939,8 +4949,8 @@ async def send_as(bot, channel_id, text, view=None):
 # 役割（リサーチャー等）を増やしてから特に出やすくなったため、送信前に必ず落とす。
 _SPEAKER_PREFIX_RE = re.compile(
     r"^\s*(?:オーケストレーター|Orchestrator|"
-    r"クロード\s*[13]?\s*(?:（[^）]*）)?|Claude\s*[13]?|"
-    r"Gemini|ジェミニ|リサーチャー|アドバイザー)\s*[:：]\s*", re.I
+    r"クロード\s*[123]?\s*(?:（[^）]*）)?|Claude\s*[123]?|"
+    r"Gemini|ジェミニ|リサーチャー|アドバイザー|PM|ＰＭ)\s*[:：]\s*", re.I
 )
 
 

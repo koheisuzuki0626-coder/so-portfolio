@@ -370,6 +370,19 @@ def run():
     check("内部の状態を作らせない指示がある",
           "リセット時刻" in bot.OPS_RULES, True)
 
+    print("■ 話者の名前（1=リサーチャー / 2=PM / 3=アドバイザー）")
+    check("クロード1はリサーチャー", bot.CLAUDE1_NAME, "クロード1（リサーチャー）")
+    check("クロード2はPM", bot.CLAUDE2_NAME, "クロード2（PM）")
+    check("クロード3はアドバイザー", bot.CLAUDE3_NAME, "クロード3（アドバイザー）")
+    check("普段の返事はクロード2が出す",
+          bot._with_speaker("本文", bot.CLAUDE2_NAME), "**クロード2（PM）**: 本文")
+    check("PMの人格が入っている", bot.CLAUDE2_NAME in bot.ORCH_PERSONA, True)
+    check("役割の人格も名前と一致",
+          bot.CLAUDE_PERSONAS["claude1"][0], bot.CLAUDE1_NAME)
+    for _t in ("クロード2（PM）: 本文", "クロード2: 本文", "PM: 本文",
+               "クロード1（リサーチャー）: 本文", "クロード: 本文"):
+        check(f"名乗りの前置きを落とす {_t!r}", bot._clean_reply(_t), "本文")
+
     print("■ Geminiは自分の名前で投稿しない（返信を止める）")
     import types as _ty2
 
