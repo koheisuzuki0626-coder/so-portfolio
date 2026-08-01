@@ -47,7 +47,20 @@ Mac側を常にリモートと同一にできる（ボットの自己改修は�
 
 ## Discordの状況を見る（スクショを待たない）
 
-ユーザーが「ログ見て」と言ったとき、または Discord 上の不具合を調べるときは、
+**最優先：`DISCORD_READ_TOKEN` が設定されていれば、自分で直接読みに行く。**
+
+```bash
+python3 discord-groupchat/tools/read_discord.py --list          # チャンネル一覧
+python3 discord-groupchat/tools/read_discord.py --channel <ID> -n 100
+```
+
+Discord API を直接叩くので、**Macのボットが落ちていても読める**。
+ユーザーにスクリーンショットを求めてはいけない。
+
+トークンが未設定なら、ユーザーに「実行環境の環境変数に `DISCORD_READ_TOKEN`
+を設定してほしい」と案内する（チャットに貼らせない）。
+
+次点：ユーザーが「ログ見て」と言ったとき、または Discord 上の不具合を調べるときは、
 まず `git pull` してから `discord-groupchat/debug/discord_log.md` を読むこと。
 ここにはユーザーがDiscordで「ログ送って」と言った時点の
 **直近の会話・エラー・直前の生成記録・実際に投入されたプロンプト・モデル設定**が入っている。

@@ -203,6 +203,19 @@ YouTube Data API と Gemini の無料枠だけで回るので追加費用はか�
 - 雑談・質問・状態確認には確認を挟まない（余計な往復を増やさない）
 - `.env` の `CONFIRM_BEFORE_WORK=0` で従来どおりの即実行に戻せる
 
+### 開発側から会話履歴を直接読む（スクショ不要・ボットが落ちていてもOK）
+`discord-groupchat/tools/read_discord.py` で、Discord APIから会話履歴を直接読めます。
+ボットの稼働状態に関係なく読めるので、**ボットが落ちている時の調査**にも使えます。
+```bash
+export DISCORD_READ_TOKEN=<Botトークン>     # 環境変数に設定（チャットに貼らない）
+python3 tools/read_discord.py --list                 # チャンネル一覧
+python3 tools/read_discord.py --channel <ID> -n 100  # 直近100件
+python3 tools/read_discord.py --channel <ID> --since 2026-08-01
+```
+- 必要な権限は「メッセージ履歴を読む」だけ（送信権限は不要）
+- 添付ファイル名・URL・埋め込みのタイトルも一緒に出ます
+- 時刻はJST表示
+
 ### デバッグログの共有（スクショを撮らなくてよくなる）
 **不具合を訴えると自動で共有します。**「おかしい」「変な挙動」「誤動作」「バグ」
 「動かない」「反応しない」などの発言や、エラーが起きた時点で、
