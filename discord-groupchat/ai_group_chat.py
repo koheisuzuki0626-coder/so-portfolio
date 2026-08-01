@@ -5879,9 +5879,15 @@ def _git_fail_hint(msg):
     """gitの失敗理由を、次にやることが分かる言葉にする。"""
     low = (msg or "").lower()
     if ("could not read username" in low or "authentication failed" in low
-            or "terminal prompts disabled" in low or "invalid username" in low):
-        return ("GitHubのログイン情報がMac側にありません"
-                "（リモートがHTTPSで、認証情報が保存されていない状態）。")
+            or "terminal prompts disabled" in low or "invalid username" in low
+            or "password authentication is not supported" in low):
+        # ここだけはDiscord内で直せない（Mac側の一度きりの設定）。
+        # 行き止まりにしないため、直す手順を具体的に添える。
+        return ("GitHubのログイン情報がMac側にありません。"
+                "GitHubはパスワード認証を廃止したので、一度だけ登録が必要です。\n"
+                "Macのターミナルで次を実行してください（ブラウザが開いて完了します）:\n"
+                "`gh auth login`  ※未インストールなら先に `brew install gh`\n"
+                "これが済めば、以後このエラーは出ません。")
     if "permission denied" in low or "publickey" in low:
         return "SSH鍵でGitHubに接続できていません。"
     if "could not resolve" in low or "connection" in low or "timed out" in low:
