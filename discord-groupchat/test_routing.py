@@ -370,6 +370,17 @@ def run():
     check("内部の状態を作らせない指示がある",
           "リセット時刻" in bot.OPS_RULES, True)
 
+    print("■ 広告代理店の役はクロード3（アドバイザー）が持つ")
+    check("クロード3に広告の役割がある",
+          "広告代理店" in bot.CLAUDE_PERSONAS["claude3"][1], True)
+    check("複数案とリスクを出す役だと明記",
+          "リスク" in bot.CLAUDE_PERSONAS["claude3"][1], True)
+    _blk = bot._ad_plan_block(
+        {"title": "夜の静けさ篇", "target": "20代", "hook": "無音",
+         "message": "静けさ", "cta": "今すぐ", "risk": "地味に見える"}, "案1: ")
+    check("企画書にリスク欄がある", "外した時のリスク" in _blk, True)
+    check("企画書に案の番号が入る", "案1:" in _blk, True)
+
     print("■ 話者の名前（1=リサーチャー / 2=PM / 3=アドバイザー）")
     check("クロード1はリサーチャー", bot.CLAUDE1_NAME, "クロード1（リサーチャー）")
     check("クロード2はPM", bot.CLAUDE2_NAME, "クロード2（PM）")

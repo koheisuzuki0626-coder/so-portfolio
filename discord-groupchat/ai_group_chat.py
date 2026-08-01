@@ -1063,7 +1063,11 @@ CLAUDE_PERSONAS = {
         CLAUDE3_NAME,
         "あなたはアドバイザー。ひとつの結論に飛びつかず、"
         "賛成・反対・第三の見方を並べ、見落とされがちな観点やリスクを指摘する。"
-        "『こう見ることもできる』という角度を最低3つ挙げ、最後に一番妥当だと思う見方を1行で示す。",
+        "『こう見ることもできる』という角度を最低3つ挙げ、最後に一番妥当だと思う見方を1行で示す。"
+        "広告・企画・打ち出し方の相談では、一流広告代理店の"
+        "クリエイティブディレクターとして振る舞う。"
+        "誰に何を言うかを定め、切り口を複数出し、"
+        "外した時のリスクまで示したうえで推しを1つ選ぶ。",
     ),
 }
 
@@ -4170,43 +4174,71 @@ async def _run_style_learn(message):
 # 「物理エンジン」相当 = Higgsfield virality_predictor。広告費をかける前に
 # 仮想的に効果（フック強度・離脱リスク等）を予測し、勝てる広告だけ世に出す。
 
-async def _run_ad_make(message, brief):
-    """ブリーフ（商品/サービス/ターゲット）から広告企画書＋縦型CM動画を制作。"""
-    cid = message.channel.id
-    await send_as(orch, cid, "📣 広告プランを作成します（広告代理店モード）…")
-    sp = _style_snippet()
-    ask = (
-        "あなたは一流広告代理店のクリエイティブディレクター。"
-        "次のブリーフから縦型ショートCM(9:16, 5〜15秒)の企画をJSONだけで返す。\n"
-        '形式: {"title":"案件名","target":"ターゲット層","hook":"冒頭2秒のフック",'
-        '"message":"伝えるコアメッセージ1つ",'
-        '"video_prompt":"英語の映像生成プロンプト。商品/雰囲気を具体的に。'
-        '人物の顔のクローズアップは避ける","cta":"行動喚起（文言）",'
-        '"tips":"配信時のポイント(1〜2行)"}\n'
-        + (f"参考スタイル（ユーザーが学習させた勝ちパターン。企画とvideo_promptに反映）:\n"
-           f"{sp}\n" if sp else "")
-        + f"ブリーフ: {brief}\nJSON:"
-    )
-    try:
-        raw = await _ai_text_bg(ask, "ad_plan")
-        m = re.search(r"\{.*\}", raw or "", re.S)
-        p = json.loads(m.group(0)) if m else {}
-    except Exception as e:  # noqa: BLE001
-        await send_as(orch, cid, f"⚠️ 広告プラン作成に失敗: {str(e)[:200]}")
-        return
-    p.setdefault("title", brief[:30])
-    p.setdefault("video_prompt", brief)
-    plan_msg = (
-        f"📋 **広告企画書：{p['title']}**\n"
+def _ad_plan_block(p, mark=""):
+    """1案ぶんの企画書テキスト。"""
+    return (
+        f"**{mark}{p.get('title', '案')}**\n"
         f"🎯 ターゲット: {p.get('target', '-')}\n"
         f"🎣 フック(冒頭2秒): {p.get('hook', '-')}\n"
         f"💬 コアメッセージ: {p.get('message', '-')}\n"
         f"👉 CTA: {p.get('cta', '-')}\n"
-        f"📌 配信Tips: {p.get('tips', '-')}\n\n"
-        "🎬 このプランでCM動画を生成します。完成したら「**バズ度分析して**」で"
-        "広告効果を事前シミュレーションできます。"
+        f"⚠️ 外した時のリスク: {p.get('risk', '-')}\n"
     )
-    await send_as(orch, cid, plan_msg[:1900])
+
+
+async def _run_ad_make(message, brief):
+    """ブリーフから広告企画＋縦型CM動画を制作する。担当はクロード3（アドバイザー）。
+    アドバイザーの役どころに合わせ、切り口を2案出して推しを1つ選ばせる
+    （1案だけ出されるより、選べる方が広告は決まりやすい）。"""
+    cid = message.channel.id
+    await send_as(orch, cid,
+                  f"📣 **{CLAUDE3_NAME}** が広告プランを作ります（切り口を2案出します）…")
+    sp = _style_snippet()
+    _, persona = CLAUDE_PERSONAS["claude3"]
+    ask = (
+        f"あなたは{CLAUDE3_NAME}。{persona}\n"
+        "次のブリーフから、縦型ショートCM(9:16, 5〜15秒)の企画を"
+        "【切り口の違う2案】作り、どちらを推すか選んでJSONだけで返す。\n"
+        '形式: {"concepts":[{"title":"案の名前","target":"ターゲット層",'
+        '"hook":"冒頭2秒のフック","message":"伝えるコアメッセージ1つ",'
+        '"cta":"行動喚起（文言）","risk":"この案が外す時の理由",'
+        '"video_prompt":"英語の映像生成プロンプト。商品/雰囲気を具体的に。'
+        '人物の顔のクローズアップは避ける"},{...2案目...}],'
+        '"recommend":0,"why":"推す理由を1〜2行","tips":"配信時のポイント(1〜2行)"}\n'
+        "2案は【本当に違う切り口】にすること（同じ訴求の言い換えは不可）。\n"
+        + (f"参考スタイル（ユーザーが学習させた勝ちパターン。企画と映像に反映）:\n"
+           f"{sp}\n" if sp else "")
+        + f"ブリーフ: {brief}\nJSON:"
+    )
+    try:
+        raw = await run_claude_cli(ask, background=True)
+        m = re.search(r"\{.*\}", raw or "", re.S)
+        d = json.loads(m.group(0)) if m else {}
+    except Exception as e:  # noqa: BLE001
+        await send_as(orch, cid, f"⚠️ 広告プラン作成に失敗: {str(e)[:200]}")
+        return
+    cons = [c for c in (d.get("concepts") or []) if isinstance(c, dict)]
+    if not cons:                       # 形式が崩れた時も止めない
+        cons = [{"title": brief[:30], "video_prompt": brief}]
+    pick = d.get("recommend")
+    pick = pick if isinstance(pick, int) and 0 <= pick < len(cons) else 0
+    p = cons[pick]
+    p.setdefault("title", brief[:30])
+    p.setdefault("video_prompt", brief)
+
+    body = "\n".join(
+        _ad_plan_block(c, f"{'◎推し ' if i == pick else ''}案{i + 1}: ")
+        for i, c in enumerate(cons[:2])
+    )
+    await send_as(claude_bot, cid, (
+        f"📋 **広告企画（{CLAUDE3_NAME}）**\n\n{body}\n"
+        f"🧭 推す理由: {d.get('why', '-')}\n"
+        f"📌 配信Tips: {d.get('tips', '-')}\n\n"
+        f"🎬 このあと**案{pick + 1}**でCM動画を作ります"
+        f"（別の案がよければ「**案{2 if pick == 0 else 1}で作って**」と言ってください）。\n"
+        "完成したら「**バズ度分析して**」で広告効果を事前シミュレーションできます。"
+    )[:1900])
+    add_history(cid, CLAUDE3_NAME, f"（広告企画を2案提示し、案{pick + 1}を推した）")
     full_prompt = (
         f"{p['video_prompt']}, premium commercial aesthetic, high production value, "
         "advertising quality, vertical 9:16"
