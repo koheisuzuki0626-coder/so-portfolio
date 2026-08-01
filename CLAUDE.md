@@ -29,7 +29,14 @@
 > Discordで「**再起動して**」と送ってください（自動で最新コードを取得して再起動されます）
 
 **例外（ボットが動いていない時だけ）**：ボットのプロセスが落ちている・起動して
-いない場合はDiscordからの再起動は届かないので、その時に限りMac用の起動コマンドを添える：
+いない場合はDiscordからの再起動は届かないので、その時に限りMac用の起動コマンドを添える。
+**その際は `run_bot.sh`（落ちても自動復活）での起動を勧めること**：
+
+```bash
+cd ~/so-portfolio/discord-groupchat && chmod +x run_bot.sh && nohup ./run_bot.sh > /dev/null 2>&1 &
+```
+
+単発で起動するだけなら：
 
 ```bash
 pkill -f ai_group_chat.py; cd ~/so-portfolio && git fetch origin && git reset --hard origin/claude/line-webhook-claude-integration-l3hff3 && cd discord-groupchat && source venv/bin/activate && python ai_group_chat.py
