@@ -2681,6 +2681,16 @@ _DESIGN_NOUN_RE = re.compile(
 )
 # 絵そのものの依頼。デザインではなく画像生成に回す。
 _IMAGE_NOUN_RE = re.compile("ロゴ|イラスト|絵|写真|アイコン")
+# デザインの手直しで実際に触る「部位・見た目」の語。
+# これが無い発言を手直しとみなすと、「親が入院しろって言ってくる」の
+# 「しろ」まで変更指示に見えてしまう（実際に制作が始まる事故が起きた）。
+_DESIGN_TWEAK_RE = re.compile(
+    "文字|フォント|書体|字|色|カラー|背景|レイアウト|余白|間隔|行間|字間|"
+    "サイズ|大きく|小さく|太く|細く|明るく|暗く|濃く|薄く|派手|地味|"
+    "位置|配置|中央|真ん中|左|右|上|下|寄せ|揃え|"
+    "線|枠|箱|矢印|囲み|影|グラデ|タイトル|見出し|ラベル|凡例|"
+    "全体|バランス|雰囲気|トーン|デザイン|画像|図"
+)
 # 「クロードでサムネ作って」「geminiでサムネ作って」のように作り手を名指しする言い方。
 # クロード＝HTMLで組む（文字が正確）／Gemini＝画像生成（絵が得意）。
 # 同じ「サムネ」でも、どちらに投げたいかは本人にしか決められないので明示を優先する。
@@ -2813,9 +2823,14 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
         return "revise"
     # 直前がデザインなら、短い手直し（「背景を暗くして」等）も作り直しとして扱う。
     # 動画/画像と違い、デザインは細かい調整を重ねる使い方が普通のため。
+    # ただし【デザインの部位・見た目の語がある時だけ】に限る。
+    # 変更動詞だけを条件にしていたため、「親が入院しろって言ってくる」の
+    # 「しろ」を手直し指示と読んでデザイン制作を始める事故が起きた。
     if (last_was_design and not has_attachments
             and not _looks_like_question(content)
-            and len(content) <= 40 and _CHANGE_VERB_RE.search(content)):
+            and len(content) <= 40
+            and _CHANGE_VERB_RE.search(content)
+            and _DESIGN_TWEAK_RE.search(content)):
         return "design"
     # ①.5 ショート量産（「ショート作って」「今日のショート」等）
     if re.search("ショート|shorts?|ショート動画", content, re.I) and (
@@ -6052,8 +6067,13 @@ async def _dispatch_message(message):
         # 料金照会の直後（10分以内）は、続きの質問も権限のある経路で答える
         after_credits=time.time() - _last_credits.get(cid, 0) < 600,
         has_running=bool(_busy_tasks(cid)),
-        # 直前がデザインなら「作り直して」も同じ作り方（HTML）で行う
-        last_was_design=str((_lg_rec or {}).get("label", "")).startswith("デザイン"),
+        # 直前がデザインなら「作り直して」も同じ作り方（HTML）で行う。
+        # ただし直近30分だけ。何時間も「デザインの続き」と解釈し続けると、
+        # 無関係な雑談まで手直し扱いになる。
+        last_was_design=(
+            str((_lg_rec or {}).get("label", "")).startswith("デザイン")
+            and time.time() - (_lg_rec or {}).get("t", 0) < 1800
+        ),
     )
     # 依頼待ち中に動画が添付された（キーワード無し）ケースもモーション実行に接続
     pm = _pending_motion.get(cid)
