@@ -574,7 +574,9 @@ async def _push_paths(paths, msg, tries=3):
     branch = branch.strip()
     last = ""
     for _ in range(tries):
-        rc, out = await _git_self(["push", "origin", "HEAD"])
+        # 通信が遅いだけの場合に備えて、pushは長めに待つ（認証待ちで固まる問題は
+        # _git_env() の非対話設定で数秒で失敗するようにしてある）
+        rc, out = await _git_self(["push", "origin", "HEAD"], timeout=180)
         if rc == 0:
             return True, ""
         last = out
@@ -588,7 +590,12 @@ async def _push_paths(paths, msg, tries=3):
         if rc_r != 0:
             await _git_self(["rebase", "--abort"])
             return False, f"リモートの変更に追いつけませんでした: {out_r[:200]}"
-    return False, f"プッシュに失敗: {last[:200]}"
+    hint = _git_fail_hint(last)
+    # 何が起きているか分かるように、繋がるかどうかも一度だけ確かめる
+    rc_ls, out_ls = await _git_self(["ls-remote", "--heads", "origin"], timeout=30)
+    if rc_ls != 0 and not hint:
+        hint = _git_fail_hint(out_ls) or f"GitHubに接続できません: {out_ls[:120]}"
+    return False, f"プッシュに失敗: {last[:200]}" + (f"\n→ {hint}" if hint else "")
 
 
 # 不具合を訴えている発言。これを見たら、頼まれる前にログを共有しておく
@@ -5843,6 +5850,47 @@ async def _selfcheck():
     return True, ""
 
 
+_GIT_ENV = None
+
+
+def _git_env():
+    """gitを完全に非対話で動かすための環境変数。
+
+    認証情報が無いと git は「Username:」の入力待ちで止まる。TTYが無いので
+    誰も入力できず、そのまま90秒のタイムアウトになっていた
+    （実際に「git push origin がタイムアウトしました（90秒）」が出た）。
+    入力を求めない設定にすると、数秒で理由付きのエラーが返る。"""
+    global _GIT_ENV
+    if _GIT_ENV is None:
+        e = dict(os.environ)
+        e.update({
+            "GIT_TERMINAL_PROMPT": "0",          # ユーザー名/パスワードを聞かない
+            "GIT_ASKPASS": "echo",               # GUIの入力ダイアログも出さない
+            "SSH_ASKPASS": "echo",
+            "GCM_INTERACTIVE": "never",          # Git Credential Manager
+            "GIT_HTTP_LOW_SPEED_LIMIT": "1000",  # 1KB/s を
+            "GIT_HTTP_LOW_SPEED_TIME": "20",     # 20秒下回ったら諦める
+        })
+        _GIT_ENV = e
+    return _GIT_ENV
+
+
+def _git_fail_hint(msg):
+    """gitの失敗理由を、次にやることが分かる言葉にする。"""
+    low = (msg or "").lower()
+    if ("could not read username" in low or "authentication failed" in low
+            or "terminal prompts disabled" in low or "invalid username" in low):
+        return ("GitHubのログイン情報がMac側にありません"
+                "（リモートがHTTPSで、認証情報が保存されていない状態）。")
+    if "permission denied" in low or "publickey" in low:
+        return "SSH鍵でGitHubに接続できていません。"
+    if "could not resolve" in low or "connection" in low or "timed out" in low:
+        return "ネットワークがGitHubに届いていません。"
+    if "non-fast-forward" in low or "rejected" in low:
+        return "リモートが先に進んでいます（取り込み直しが必要）。"
+    return ""
+
+
 async def _git_self(args, timeout=90):
     """自己改修のgit操作（ベストエフォート）。(returncode, 出力) を返す。
     通信不良の push/fetch で永久に固まらないよう必ずタイムアウトする。"""
@@ -5851,6 +5899,7 @@ async def _git_self(args, timeout=90):
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=BASE_DIR,
+        env=_git_env(),
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)

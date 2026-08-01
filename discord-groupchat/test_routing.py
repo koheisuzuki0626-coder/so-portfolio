@@ -370,6 +370,22 @@ def run():
     check("内部の状態を作らせない指示がある",
           "リセット時刻" in bot.OPS_RULES, True)
 
+    print("■ gitを非対話にする（認証待ちで固まらせない）")
+    # 実際に起きた事故：認証情報が無く git push が入力待ちになり、
+    # 90秒のタイムアウトで「ログを共有できませんでした」になっていた
+    _ge = bot._git_env()
+    check("ユーザー名を聞かない", _ge.get("GIT_TERMINAL_PROMPT"), "0")
+    check("GUIの入力も出さない", bool(_ge.get("GIT_ASKPASS")), True)
+    check("遅い転送は諦める", bool(_ge.get("GIT_HTTP_LOW_SPEED_TIME")), True)
+    for _m, _want in (
+        ("fatal: could not read Username for https://github.com", "ログイン情報"),
+        ("Permission denied (publickey).", "SSH鍵"),
+        ("Could not resolve host: github.com", "ネットワーク"),
+        ("! [rejected] main -> main (non-fast-forward)", "先に進んでいます"),
+    ):
+        check(f"失敗理由を言い当てる {_m[:28]!r}", _want in bot._git_fail_hint(_m), True)
+    check("分からない失敗は決めつけない", bot._git_fail_hint("something else"), "")
+
     print("■ お礼・報告・否定を指示と取り違えない")
     # 実際に起きた事故：
     #  ・「できた！ありがとー」に対して直近のデザインを貼り直した
