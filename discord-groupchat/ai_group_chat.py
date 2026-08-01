@@ -4306,8 +4306,10 @@ def _log_short(entry):
 async def _make_short_concept(theme):
     """スタイリッシュ系ショートの企画を作る。JSONで
     {title, hook, prompt(英語), description, tags} を返す。"""
+    _, _p3 = CLAUDE_PERSONAS["claude3"]
     base = (
-        "あなたはバズるYouTube Shortsのアートディレクター。"
+        f"あなたは{CLAUDE3_NAME}。{_p3}\n"
+        "いまはバズるYouTube Shortsのアートディレクターとして企画する。"
         "スタイリッシュ/アート系の縦型ショート動画の企画をJSONだけで返す。\n"
         '形式: {"title":"日本語の惹かれるタイトル(30字以内)",'
         '"hook":"最初の2秒で掴む見せ方の説明",'
@@ -4321,7 +4323,7 @@ async def _make_short_concept(theme):
     if sp:
         base += f"参考スタイル（ユーザーが学習させた勝ちパターン。企画とpromptに反映）:\n{sp}\n"
     theme_line = f"テーマ/お題: {theme}\n" if theme else "テーマは自由（今映える洗練された題材を選ぶ）。\n"
-    raw = await _ai_text_bg(base + theme_line + "\nJSON:", "short_concept")
+    raw = await run_claude_cli(base + theme_line + "\nJSON:", background=True)
     m = re.search(r"\{.*\}", raw or "", re.S)
     d = json.loads(m.group(0)) if m else {}
     # 保険：最低限のフィールドを埋める
@@ -4336,7 +4338,9 @@ async def _make_short_concept(theme):
 async def _run_short(message, theme=None):
     """1本のショートを企画→縦型動画生成→投稿パック提示まで自動で行う。"""
     cid = message.channel.id
-    await send_as(orch, cid, "🎬 今日のショートを企画します（スタイリッシュ/アート系）…")
+    await send_as(orch, cid,
+                  f"🎬 **{CLAUDE3_NAME}** が今日のショートを企画します"
+                  "（スタイリッシュ/アート系）…")
     try:
         c = await _make_short_concept(theme)
     except Exception as e:  # noqa: BLE001
@@ -5189,10 +5193,14 @@ class ApprovalView(discord.ui.View):
 async def _pipeline_plan(cid, feedback=""):
     p = projects[cid]
     prompt = (
-        f"あなたは映像ディレクター。お題「{p['topic']}」で短い映像の構成案を作る。"
+        f"あなたは{CLAUDE2_NAME}。映像ディレクターはkohei本人で、"
+        "あなたはその【アシスタント】。決めるのはkoheiなので、"
+        "こちらで決めきらず、判断できる材料として構成案を用意する。\n"
+        f"お題「{p['topic']}」で短い映像の構成案を作る。"
         "日本語で簡潔に、次を必ず含める："
         "タイトル / コンセプト(1〜2文) / "
-        f"シーン一覧({NUM_SCENES}個・各シーンは1行で情景を描写) / 尺の目安。"
+        f"シーン一覧({NUM_SCENES}個・各シーンは1行で情景を描写) / 尺の目安 / "
+        "迷った点（koheiに決めてほしいことを1〜2個）。"
     )
     if feedback:
         prompt += (
@@ -5208,8 +5216,10 @@ async def _pipeline_plan(cid, feedback=""):
         return
     await send_as(
         orch, cid,
-        f"📝 【構成案】\n{p['plan']}\n\n———\n"
-        "下のボタン、または「OK」で承認。直したい所はテキストで指示してください。",
+        f"📝 【構成案】（{CLAUDE2_NAME}がディレクターのkohei向けに用意）\n"
+        f"{p['plan']}\n\n———\n"
+        "**決めるのはkohei**です。下のボタン、または「OK」で承認。"
+        "直したい所はテキストで指示してください。",
         view=ApprovalView(cid),
     )
 

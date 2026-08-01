@@ -370,6 +370,17 @@ def run():
     check("内部の状態を作らせない指示がある",
           "リセット時刻" in bot.OPS_RULES, True)
 
+    print("■ 匿名の人格を残さない（誰が担当かが分かること）")
+    _src = open("ai_group_chat.py", encoding="utf-8").read()
+    check("ショート企画はクロード3が名乗る",
+          "いまはバズるYouTube Shortsのアートディレクターとして企画する" in _src, True)
+    check("映像ディレクターはkohei本人",
+          "映像ディレクターはkohei本人" in _src, True)
+    check("映像制作でクロード2はアシスタント",
+          "あなたはその【アシスタント】" in _src, True)
+    check("『あなたは映像ディレクター』という名乗りは残っていない",
+          "あなたは映像ディレクター。" in _src, False)
+
     print("■ 広告代理店の役はクロード3（アドバイザー）が持つ")
     check("クロード3に広告の役割がある",
           "広告代理店" in bot.CLAUDE_PERSONAS["claude3"][1], True)
