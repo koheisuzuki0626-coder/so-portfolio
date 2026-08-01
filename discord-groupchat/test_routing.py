@@ -370,6 +370,27 @@ def run():
     check("内部の状態を作らせない指示がある",
           "リセット時刻" in bot.OPS_RULES, True)
 
+    print("■ Geminiは自分の名前で投稿しない（返信を止める）")
+    import types as _ty2
+
+    class _U:
+        pass
+    _gu, _cu, _ou = _U(), _U(), _U()
+    _keep_users = (bot.gemini_bot.user, bot.claude_bot.user, bot.orch.user)
+    _keep_lead2 = bot.gen_settings.get("casual_lead")
+    try:
+        bot.gemini_bot.user, bot.claude_bot.user, bot.orch.user = _gu, _cu, _ou
+        _msg = _ty2.SimpleNamespace(mentions=[_gu])
+        bot.gen_settings["casual_lead"] = ""
+        check("@Geminiでもオーケストレーターが答える",
+              [n for n, _, _ in bot.decide_targets(_msg, "やあ")], ["Orchestrator"])
+        bot.gen_settings["casual_lead"] = "gemini"
+        check("許可すれば@Geminiは本人が答える",
+              [n for n, _, _ in bot.decide_targets(_msg, "やあ")], ["Gemini"])
+    finally:
+        bot.gemini_bot.user, bot.claude_bot.user, bot.orch.user = _keep_users
+        bot.gen_settings["casual_lead"] = _keep_lead2
+
     print("■ 話者ラベルが裏のGeminiに汚染されないこと")
     # 実際に起きた事故：クロードが書いた返事に「Gemini」と付いた。
     # 裏で動くGeminiの処理（要約・検品・解析）が _last_engine を

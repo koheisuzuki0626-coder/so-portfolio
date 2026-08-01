@@ -1121,7 +1121,10 @@ async def _run_multi_view(message, content, roles=None):
         if not text:
             continue
         ok.append((name, text))
-        speaker = gemini_bot if name.startswith("Gemini") else claude_bot
+        # Geminiの視点も、投稿するのはクロード側のアカウント。
+        # Gemini自身に喋らせない（返信の声をひとつに保つ）。
+        speaker = claude_bot if _gemini_replies_on() is False else (
+            gemini_bot if name.startswith("Gemini") else claude_bot)
         await send_as(speaker, cid, f"**{name}**\n{text}")
         add_history(cid, name, text)
     if len(ok) < 2:
@@ -4915,7 +4918,7 @@ async def _handle_orchestrator(message, cid):
     answer, reviewed = await _review_reply(answer, history)
     add_history(cid, "Orchestrator", answer)
     await send_as(orch, cid, _with_speaker(
-        answer, "オーケストレーター（クロード＋Gemini精査）" if reviewed else "クロード"))
+        answer, "オーケストレーター" if reviewed else "クロード"))
 
 
 # ---------- 送信・進行 ----------
@@ -5039,7 +5042,11 @@ def decide_targets(message, content):
         if m_claude:
             targets.append(("Claude", claude_bot, ask_claude))
         if m_gemini:
-            targets.append(("Gemini", gemini_bot, ask_gemini))
+            # Geminiの返信を止めている間は、名指しされてもオーケストレーターが答える
+            # （Geminiは裏方に徹する。返事の声をひとつに保つため）
+            targets.append(("Gemini", gemini_bot, ask_gemini)
+                           if _gemini_replies_on()
+                           else ("Orchestrator", orch, ask_orchestrator))
         return targets
     # @メンションなし → 常にオーケストレーター宛て
     return [("Orchestrator", orch, ask_orchestrator)]
@@ -5048,12 +5055,15 @@ def decide_targets(message, content):
 async def run_auto(cid, topic):
     """Claude と Gemini だけで自動的に会話（!talk 用）。"""
     state["running"], state["stop"] = True, False
-    speakers = [("Claude", claude_bot, ask_claude), ("Gemini", gemini_bot, ask_gemini)]
+    # Geminiの返信を止めている間は、!talk でもGeminiに喋らせない
+    speakers = ([("Claude", claude_bot, ask_claude),
+                 ("Gemini", gemini_bot, ask_gemini)] if _gemini_replies_on()
+                else [("Claude", claude_bot, ask_claude)])
     try:
         for i in range(MAX_TURNS):
             if state["stop"]:
                 break
-            name, bot, ask = speakers[i % 2]
+            name, bot, ask = speakers[i % len(speakers)]
             try:
                 await respond(cid, name, bot, ask)
             except Exception as e:
