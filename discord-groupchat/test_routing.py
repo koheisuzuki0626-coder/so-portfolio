@@ -687,10 +687,16 @@ def run():
               bot._busy_tasks(4242) and bot._busy_tasks(4242)[0][0], "デザイン制作")
         bot._running[4242] = {"完了監視": _tm.time()}
         check("監視だけなら実行中扱いにしない", bot._busy_tasks(4242), [])
-        check("監視だけなら注意書きも出さない", bot._running_note(4242), "")
+        # 完了監視はユーザーが待つ作業ではないので「何も動いていない」扱い
+        check("監視だけなら実行中とは言わない",
+              "無し（何も動いていない）" in bot._running_note(4242), True)
     finally:
         bot._running.pop(4242, None)
-    check("何も走っていなければ空", bot._running_note(999999), "")
+    # 空にすると「いま作業中」と作り話をするので、無いことも明示する
+    _empty = bot._running_note(999999)
+    check("何も走っていないことを伝える", "無し（何も動いていない）" in _empty, True)
+    check("進行中だと言わせない", "言ってはいけない" in _empty, True)
+    check("正直に言う言い方も示す", "まだ手をつけていない" in _empty, True)
 
     print("■ デザインの画質設定（サンドボックスで実測した手順を保つ）")
     check("2倍で描いてから縮小する", bot.DESIGN_SCALE >= 2, True)
