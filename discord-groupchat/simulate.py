@@ -406,6 +406,25 @@ async def run():
     finally:
         bot._running.pop(1234, None)
 
+    # 不具合を訴えたら、頼まれる前にログを自動共有すること
+    install_stubs()
+    bot._last_autolog.clear()
+    r = await drive("挙動がおかしい")
+    await asyncio.sleep(0)
+    check("不具合の訴えでログを自動共有", "sharelog" in r["fired"], f"実際={r['fired']}")
+    # 連投では送り直さない
+    install_stubs()
+    r = await drive("まだおかしい")
+    await asyncio.sleep(0)
+    check("短時間の連投では送り直さない",
+          "sharelog" not in r["fired"], f"実際={r['fired']}")
+    install_stubs()
+    bot._last_autolog.clear()
+    r = await drive("おはよう")
+    await asyncio.sleep(0)
+    check("普通の発言では共有しない", "sharelog" not in r["fired"], f"実際={r['fired']}")
+    bot._last_autolog.clear()
+
     # 既定ではGeminiが返事を書かないこと
     install_stubs()
     _kl2 = bot.gen_settings.get("casual_lead")

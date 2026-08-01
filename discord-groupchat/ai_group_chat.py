@@ -493,6 +493,8 @@ def _spawn(coro, cid, context):
                 await send_as(orch, cid, f"⚠️ {context} でエラー（記録済み）: {summary}")
             except Exception:  # noqa: BLE001
                 pass
+            # 聞かれる前に状況を共有しておく（スクショ待ちをなくす）
+            _track(asyncio.create_task(_autoshare_log(cid, f"bg:{context}")))
         finally:
             d = _running.get(cid) or {}
             if d.get(context) == started:   # 同名の新しい作業を消さない
@@ -587,6 +589,39 @@ async def _push_paths(paths, msg, tries=3):
             await _git_self(["rebase", "--abort"])
             return False, f"リモートの変更に追いつけませんでした: {out_r[:200]}"
     return False, f"プッシュに失敗: {last[:200]}"
+
+
+# 不具合を訴えている発言。これを見たら、頼まれる前にログを共有しておく
+# （スクショを撮って送ってもらう手間をなくすため）。
+_TROUBLE_RE = re.compile(
+    "おかしい|変な挙動|変な動き|誤動作|バグ|不具合|動かない|動作しない|"
+    "うまくいかない|うまく行かない|失敗してる|直ってない|直って無い|なおってない|"
+    "反応しない|返事がない|止まってる|固まってる|勝手に|意味不明|なんで.*なる"
+)
+AUTOLOG_MIN_GAP = int(os.getenv("AUTOLOG_MIN_GAP", "600"))  # 連投を防ぐ間隔（秒）
+_last_autolog = {}
+
+
+async def _autoshare_log(cid, why=""):
+    """不具合の訴えやエラーを検知したら、聞かれる前にログを共有する。
+    開発側（Claude Codeのチャット）が中身を直接読めるようになるので、
+    スクリーンショットのやり取りが要らなくなる。"""
+    now = time.time()
+    if now - _last_autolog.get(cid, 0) < AUTOLOG_MIN_GAP:
+        return                       # 短時間の連投では送り直さない
+    _last_autolog[cid] = now
+    try:
+        res = await _share_debug_log(cid)
+    except Exception as e:  # noqa: BLE001
+        print(f"[autolog] 共有に失敗: {str(e)[:150]}")
+        return
+    try:
+        await send_as(orch, cid, (
+            "🗂 状況を自動で共有しました（スクショなしで開発側から直接見られます）"
+            if res.startswith("✅") else res
+        ))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def _share_debug_log(cid, limit=80):
@@ -6003,6 +6038,7 @@ async def on_message(message):
             )
         except Exception:  # noqa: BLE001
             pass
+        _track(asyncio.create_task(_autoshare_log(message.channel.id, "on_message")))
 
 
 # ---------- !コマンド（表引き。各実装は (message, cid, 引数) を受ける）----------
@@ -6108,6 +6144,11 @@ async def _dispatch_message(message):
     # 初回のみ：導入前の過去ログをDiscordから取り込む（バックグラウンド）
     if cid not in _import_started:
         _track(asyncio.create_task(_backfill_channel_history(message.channel)))
+
+    # 不具合の訴えを検知したら、頼まれる前にログを共有しておく。
+    # 返事はそのまま普通に続ける（ここでは止めない）。
+    if _TROUBLE_RE.search(content):
+        _track(asyncio.create_task(_autoshare_log(cid, content[:60])))
 
     # 会話モデルの切替・確認（AI判定より前に拾う。AIに任せると
     # 「コードを直さないと変えられない」と答えてしまい、実際そうなった）
