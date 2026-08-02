@@ -657,6 +657,13 @@ def run():
     check("デザイン機能を明記", "HTMLで組んでPNG" in _g, True)
     check("機能の否定を禁じる", "実装されていない" in _g, True)
     check("過去の誤りを繰り返さないと明記", "繰り返さない" in _g, True)
+    # 実際に起きた事故：「ヒッグスフィールドってなんですか」と聞き返してきた
+    check("道具の名前の意味を渡す",
+          "ヒッグスフィールド）＝動画・画像を生成" in _g, True)
+    check("クレジットの意味も渡す", "クレジット＝Higgsfieldの利用単位" in _g, True)
+    check("聞き返しを禁止する", "聞き返してはいけない" in _g, True)
+    check("雑談には用語集を渡さない",
+          bot.BOT_GLOSSARY in bot.ops_guide([("kohei", "合谷が痛い")]), False)
     check("雑談には機能一覧を渡さない",
           bot.CAPABILITY_RULES in bot.ops_guide([("kohei", "合谷が痛い")]), False)
 
