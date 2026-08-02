@@ -551,20 +551,71 @@ def run():
     check("デザインに速さの指示を入れる場所がある", isinstance(_dt, str), True)
     check("デザインは会話用と別モデルにできる",
           isinstance(bot.DESIGN_MODEL, str), True)
-    check("長い作業だけ途中経過を流す",
-          bot.TASK_ETA.get("デザイン制作", 0) >= bot.HEARTBEAT_SEC, True)
-    check("短い作業では途中経過を流さない",
-          bot.TASK_ETA.get("ログ共有", 0) < bot.HEARTBEAT_SEC, True)
 
-    print("■ 残り時間の目安 _eta_text")
-    check("目安が出る", "あと" in bot._eta_text("デザイン制作", 60), True)
-    check("残りが縮む",
-          bot._eta_text("デザイン制作", 150) != bot._eta_text("デザイン制作", 60), True)
-    check("1分未満は秒で出す", "あと50秒ほど" in bot._eta_text("画像生成", 10), True)
-    check("超過したら正直に言う",
-          "超えています" in bot._eta_text("デザイン制作", 999), True)
-    check("中止の方法も案内", "やめて" in bot._eta_text("デザイン制作", 999), True)
-    check("目安が無い作業は経過だけ", bot._eta_text("謎の作業", 77), "77秒経過")
+    print("■ 所要時間は実測だけで答える（推測で短く言わない）")
+    # 以前は手書きの目安表（デザイン3分、動画12分…）を持っていた。根拠が無く、
+    # 実際より短く出て何度も待たせたので、実測が無いときは「不明」と言う。
+    check("手書きの目安表は持たない", hasattr(bot, "TASK_ETA"), False)
+    _keep_times = bot._task_times
+    try:
+        bot._task_times = {}
+        check("未計測なら分からないと言う", "不明" in bot._eta_text("デザイン制作", 30), True)
+        check("未計測なら数字を作らない",
+              "分" in bot._eta_text("デザイン制作", 30).split("／")[1], False)
+        check("未計測は開始時にもそう言う", "実測がない" in bot._eta_hint("デザイン制作"), True)
+        check("未計測なら途中経過は流す（黙り込ませない）",
+              bot._wants_heartbeat("デザイン制作"), True)
+
+        # 実測（120秒が3回、300秒が1回）を入れると、その範囲で答える
+        bot._task_times = {"デザイン制作": [120, 120, 120, 300]}
+        _t = bot._eta_text("デザイン制作", 30)
+        check("実測の件数を出す", "実測4回" in _t, True)
+        check("最長も必ず見せる（短く盛らない）", "5分" in _t, True)
+        check("残りは幅で答える", "残りおよそ" in _t, True)
+        check("最長を超えたら正直に言う",
+              "過去最長を超えています" in bot._eta_text("デザイン制作", 999), True)
+        check("中止の方法も案内", "やめて" in bot._eta_text("デザイン制作", 999), True)
+        check("開始時の一言も実測から", "2分〜5分" in bot._eta_hint("デザイン制作"), True)
+
+        # 実測で「必ず速い」と分かっている作業だけ途中経過を省く
+        bot._task_times = {"ログ共有": [8, 12, 9]}
+        check("速いと実測された作業は途中経過を流さない",
+              bot._wants_heartbeat("ログ共有"), False)
+        # 端数は切り上げ（短く見せない）
+        check("端数は切り上げる", bot._fmt_dur(91), "1分31秒")
+        check("90秒未満は秒のまま", bot._fmt_dur(59.2), "60秒")
+    finally:
+        bot._task_times = _keep_times
+
+    print("■ 実測の記録")
+    import tempfile as _tf, pathlib as _pl
+    _keep_file, _keep2 = bot.TASK_TIMES_FILE, bot._task_times
+    try:
+        with _tf.TemporaryDirectory() as _d:
+            bot.TASK_TIMES_FILE = _pl.Path(_d) / "task_times.json"
+            bot._task_times = {}
+            bot._record_task_time("デザイン制作", 200)
+            check("実測が残る", bot._task_stats("デザイン制作"), (1, 200.0, 200.0))
+            check("ファイルに書く", bot.TASK_TIMES_FILE.exists(), True)
+            bot._record_task_time("デザイン制作", 0.4)   # 一瞬で終わった＝計測ミス
+            check("短すぎる値は捨てる", bot._task_stats("デザイン制作")[0], 1)
+            for _ in range(bot.TASK_TIMES_KEEP + 5):
+                bot._record_task_time("デザイン制作", 100)
+            check("古い実測は捨てて直近だけ持つ",
+                  bot._task_stats("デザイン制作")[0], bot.TASK_TIMES_KEEP)
+            # 表示名がぶれても同じ実測を引く
+            bot._task_times = {"動画生成": [400, 500]}
+            check("別名でも実測を引く", bot._task_stats("動画/画像生成")[0], 2)
+            bot._record_task_time("動画/画像生成", 600)
+            check("別名で記録しても1か所に貯まる",
+                  bot._task_stats("動画生成"), (3, 500.0, 600.0))
+        check("生成の種類ごとに分けて記録",
+              (bot._gen_task_name({"media_type": "video", "model": "veo3"}),
+               bot._gen_task_name({"media_type": "image", "model": "x"}),
+               bot._gen_task_name({"model": "kling3_0_motion_control"})),
+              ("動画生成", "画像生成", "モーション生成"))
+    finally:
+        bot.TASK_TIMES_FILE, bot._task_times = _keep_file, _keep2
 
     print("■ デザイン制作を1回のサンドボックス呼び出しにまとめる")
     # 実際に起きた事故：呼び出しを分けたため毎回フォント導入からやり直しになり、

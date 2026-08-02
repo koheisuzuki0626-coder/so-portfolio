@@ -17,8 +17,10 @@ MESSAGE CONTENT INTENT はオーケストレーター用にだけONにすれば�
 """
 
 import asyncio
+import contextvars
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -406,26 +408,103 @@ def _busy_tasks(cid):
     return [(n, sec) for n, sec in _running_for(cid) if "監視" not in n]
 
 
-# 作業ごとの目安時間（秒）。「あとどのくらい？」に答えるために使う。
-TASK_ETA = {
-    "デザイン制作": 180, "動画生成": 300, "動画/画像生成": 300, "画像生成": 60,
-    "ショート量産": 600, "広告制作": 600, "モーション生成": 420, "動画編集": 300,
-    "クレジット確認": 60, "ログ共有": 30, "実績分析": 120, "スタイル学習": 120,
-    "YouTubeリサーチ": 180, "自己改修": 300, "複数視点": 120, "エージェント実行": 300,
-}
+# ---- 所要時間は「推測」ではなく「実測」で答える -------------------------
+# 以前はここに手書きの目安表（デザイン3分、動画5分…）を置いていたが、
+# あれは根拠のない当てずっぱうで、実際より短く出て「まだ終わらない」と
+# 何度も待たせた。作業が終わるたびに実時間を記録し、その記録だけを根拠に
+# 答える。記録が無い作業は「分からない」と正直に言う（短めに盛らない）。
+TASK_TIMES_FILE = HISTORY_DIR / "task_times.json"
+TASK_TIMES_KEEP = 30        # 作業ごとに残す実測の件数（直近ほど今の実力に近い）
+_task_times = None          # {作業名: [秒, ...]} 遅延読み込み
+
+
+def _load_task_times():
+    global _task_times
+    if _task_times is None:
+        try:
+            data = json.loads(TASK_TIMES_FILE.read_text(encoding="utf-8"))
+            _task_times = {
+                str(k): [float(x) for x in v if isinstance(x, (int, float))]
+                for k, v in (data or {}).items() if isinstance(v, list)
+            }
+        except Exception:  # noqa: BLE001
+            _task_times = {}
+    return _task_times
+
+
+def _record_task_time(name, sec):
+    """作業1回分の実時間を残す。次からの見積もりの唯一の根拠になる。"""
+    if not name or sec is None or sec < 1 or sec > 24 * 3600:
+        return
+    name = TASK_ALIASES.get(name, name)   # 表示名がぶれても実測は1か所に貯める
+    times = _load_task_times()
+    times.setdefault(name, []).append(round(float(sec), 1))
+    times[name] = times[name][-TASK_TIMES_KEEP:]
+    try:
+        TASK_TIMES_FILE.write_text(
+            json.dumps(times, ensure_ascii=False), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass        # 記録に失敗しても本体は止めない
+
+
+# 表示名と実測を記録する名前の名寄せ。同じ作業を別名で呼んでいる箇所があり、
+# そのままだと実測があるのに「不明」と答えてしまう。
+TASK_ALIASES = {"動画/画像生成": "動画生成"}
+
+
+def _task_stats(name):
+    """(件数, 中央値秒, 最長秒)。実測が無ければ None（＝分からない）。"""
+    times = _load_task_times()
+    vals = sorted(times.get(name) or times.get(TASK_ALIASES.get(name, ""), []) or [])
+    if not vals:
+        return None
+    mid = len(vals) // 2
+    med = vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
+    return len(vals), med, vals[-1]
+
+
+def _fmt_dur(sec):
+    """秒を人が読む形に。端数を丸めて短く見せない（切り上げ寄り）。"""
+    sec = int(math.ceil(float(sec)))
+    if sec < 90:
+        return f"{sec}秒"
+    m, s = divmod(sec, 60)
+    return f"{m}分" if s < 10 else f"{m}分{s}秒"
+
+
+def _eta_hint(name):
+    """作業を始めるときに出す所要時間の一言。実測が無ければそう言う。"""
+    st = _task_stats(name)
+    if not st:
+        return "所要時間はまだ実測がないので不明です（今回の時間を記録します）"
+    n, med, mx = st
+    if med >= mx:
+        return f"過去{n}回の実測では{_fmt_dur(mx)}ほど"
+    return f"過去{n}回の実測では{_fmt_dur(med)}〜{_fmt_dur(mx)}"
 
 
 def _eta_text(name, sec):
-    """『あと何分か』の目安。長引いているときは正直にそう言う。"""
-    eta = TASK_ETA.get(name)
-    if not eta:
-        return f"{sec}秒経過"
-    left = eta - sec
-    if left > 60:
-        return f"{sec}秒経過／目安あと{round(left / 60)}分ほど"
-    if left > 0:
-        return f"{sec}秒経過／目安あと{left}秒ほど"
-    return f"{sec}秒経過／目安({round(eta / 60)}分)を超えています。もう少し待つか「やめて」で中止できます"
+    """『あとどのくらい？』への答え。実測が無いときは推測で埋めない。"""
+    st = _task_stats(name)
+    if not st:
+        return f"{sec}秒経過／残り時間は実測がないため不明"
+    n, med, mx = st
+    base = f"{sec}秒経過／実測{n}回では{_fmt_dur(med)}〜{_fmt_dur(mx)}"
+    if sec >= mx:
+        return (f"{base}。過去最長を超えています。"
+                "もう少し待つか「やめて」で中止できます")
+    if sec < med:
+        return f"{base}（残りおよそ{_fmt_dur(med - sec)}〜{_fmt_dur(mx - sec)}）"
+    return f"{base}（長めの回に入っています。残り最大{_fmt_dur(mx - sec)}）"
+
+
+def _wants_heartbeat(name):
+    """途中経過を流すか。実測で『最長でも短い』と分かっている作業だけ省く。
+    未計測なら流す（黙り込ませるより、うるさい方がまし）。"""
+    if not HEARTBEAT_SEC:
+        return False
+    st = _task_stats(name)
+    return not (st and st[2] < HEARTBEAT_SEC)
 
 
 def _running_note(cid):
@@ -453,10 +532,55 @@ def _running_note(cid):
     )
 
 
+class _Clock:
+    """作業の開始時刻を持つ札。承認待ちを挟む作業では、承認が下りた時点で
+    打ち直す（人が返事をするまでの時間を作業時間に混ぜると実測が狂うため）。"""
+    __slots__ = ("t", "measurable")
+
+    def __init__(self, t, measurable=True):
+        self.t = t
+        self.measurable = measurable    # 実測として記録してよいか
+
+
+def _clock_start(v):
+    """_running の値から開始時刻を取り出す（テストが素の数値を入れても動く）。"""
+    return v.t if isinstance(v, _Clock) else v
+
+
+# いま実行中の作業の札。作業の途中から「この時間は実測に入れない」と
+# 言えるようにするため、呼び出しの深さに関係なく届く形で持つ。
+_current_clock = contextvars.ContextVar("current_clock", default=None)
+
+
+def _defer_measure():
+    """『ここで終わりではなく、別の見張りが続きを引き継ぐ』という合図。
+    生成は投入(数十秒)と完成待ち(数分〜十数分)に分かれていて、投入までを
+    所要時間として記録すると実態より何倍も短い見積もりになる。"""
+    c = _current_clock.get()
+    if isinstance(c, _Clock):
+        c.measurable = False
+
+
+def _gen_task_name(job):
+    """生成ジョブを、実測を貯める名前に振り分ける（種類ごとに時間が違う）。"""
+    if "motion" in (job.get("model") or ""):
+        return "モーション生成"
+    return "動画生成" if job.get("media_type") == "video" else "画像生成"
+
+
+def _start_work(cid, context):
+    """承認待ちが終わり、実作業が始まった合図。ここから計り直す。"""
+    v = (_running.get(cid) or {}).get(context)
+    if isinstance(v, _Clock):
+        v.t = time.time()
+        v.measurable = True
+
+
 def _running_for(cid):
     """このチャンネルで実行中の作業を [(名前, 経過秒)] で返す。"""
     now = time.time()
-    return [(name, int(now - t)) for name, t in (_running.get(cid) or {}).items()]
+    return [(name, int(now - _clock_start(v)))
+            for name, v in (_running.get(cid) or {}).items()]
 
 
 async def _heartbeat(cid, context, every=90):
@@ -477,23 +601,28 @@ async def _heartbeat(cid, context, every=90):
         return
 
 
-def _spawn(coro, cid, context):
+def _spawn(coro, cid, context, gated=False):
     """背景タスクを、例外が沈黙しないラッパーで起動する。
     on_message のガードは create_task した処理には効かないため、ここで捕捉して
     errors.log 記録＋チャンネル通知する（裏側の静かな失敗を防ぐ）。
-    実行中は _running に登録し、進捗を聞かれたら答えられるようにする。"""
+    実行中は _running に登録し、進捗を聞かれたら答えられるようにする。
+    gated=True は「先に確認を取る作業」。承認が下りるまでは時間を測らない
+    （人が返事をするまでの数分が『所要時間』に化けるのを防ぐ）。"""
     # 登録は「起動した瞬間」に行う。タスクが動き出すのを待つと、
     # 直後に「まだ？」と聞かれたときに実行中だと分からない。
-    started = time.time()
-    _running.setdefault(cid, {})[context] = started
+    token = _Clock(time.time(), measurable=not gated)
+    _running.setdefault(cid, {})[context] = token
 
     async def _wrapped():
-        # 目安の長い作業だけ、途中経過を自動で流す（短い作業では邪魔になる）
+        _current_clock.set(token)   # 途中で「まだ終わりではない」と言えるように
+        # 実測で「速い」と分かっている作業以外は途中経過を流す
         hb = None
-        if HEARTBEAT_SEC and TASK_ETA.get(context, 0) >= HEARTBEAT_SEC:
+        if _wants_heartbeat(context):
             hb = asyncio.create_task(_heartbeat(cid, context, HEARTBEAT_SEC))
+        ok = False
         try:
             await coro
+            ok = True
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
@@ -505,8 +634,11 @@ def _spawn(coro, cid, context):
             # 聞かれる前に状況を共有しておく（スクショ待ちをなくす）
             _track(asyncio.create_task(_autoshare_log(cid, f"bg:{context}")))
         finally:
+            # 最後まで終わった回だけを実測に足す（失敗や中止の時間は混ぜない）
+            if ok and token.measurable:
+                _record_task_time(context, time.time() - token.t)
             d = _running.get(cid) or {}
-            if d.get(context) == started:   # 同名の新しい作業を消さない
+            if d.get(context) is token:   # 同名の新しい作業を消さない
                 d.pop(context, None)
             if hb:
                 hb.cancel()
@@ -1009,6 +1141,10 @@ OPS_RULES = (
     "実際に確認していない枠の残量・リセット時刻・完了時刻を作ってはいけない。"
     "進捗は上に書かれた実行中の情報だけを使い、書かれていなければ"
     "『分からない』と言う。"
+    "所要時間も同じで、上に書かれた実測の数字だけを使う。"
+    "『3分ほどで終わります』『すぐできます』のように自分で時間を作らない"
+    "（実際より短く言われて待たされるのが一番困る、と本人から指摘されている）。"
+    "実測が書かれていなければ『まだ実測がないので分からない』と正直に言う。"
     "生成物が意図と違ったとき、ユーザーの指示の書き方のせいにするのは禁止"
     "（『具体的すぎる』『曖昧すぎる』『うまく汲み取れなかった』等と言わない）。"
     "どんな自然な言い方でも適切なプロンプトに翻訳するのはこちらの責任。"
@@ -3248,23 +3384,32 @@ def _clear_motion_job():
 
 
 def _pending_eta_msg(job):
-    """まだ生成中のとき、投入からの経過時間と完成目安を返す。"""
+    """まだ生成中のとき、投入からの経過時間と、実測にもとづく残り時間を返す。
+    以前は『画像3分・動画12分』と決め打ちだったが、これは根拠のない数字で、
+    実際より短く出て何度も待たせた。過去に完成した回の実測だけを使う。"""
     if not job or not job.get("submitted_at"):
-        return "⏳ まだ生成中のようです。数分後にもう一度「できた？」と送ってください。"
-    elapsed = int((time.time() - job["submitted_at"]) / 60)  # 分
+        return "⏳ まだ生成中のようです。少し待って、もう一度「できた？」と送ってください。"
+    elapsed = int(time.time() - job["submitted_at"])
     label = job.get("label", "生成")
-    # モーション/動画は概ね5〜12分、画像は1〜3分が目安
-    typical = 3 if job.get("media_type") == "image" else 12
-    remain = max(typical - elapsed, 0)
-    if remain <= 0:
+    st = _task_stats(_gen_task_name(job))
+    head = f"⏳ {label}は投入から{_fmt_dur(elapsed)}経過。"
+    if not st:
         return (
-            f"⏳ {label}は投入から約{elapsed}分経過。目安を過ぎていますが"
-            "Higgsfield側でまだ生成中のようです（混雑時は時間がかかります）。"
+            head + "この種類の生成はまだ実測がないので、残り時間は分かりません"
+            "（今回の時間を記録します）。完成したら自動で投稿します。"
+        )
+    n, med, mx = st
+    body = f"過去{n}回の実測は{_fmt_dur(med)}〜{_fmt_dur(mx)}。"
+    if elapsed >= mx:
+        return (
+            head + body + "過去最長を超えています"
+            "（Higgsfield側が混んでいる可能性があります）。"
             "もう少し待って「できた？」と送ってください。"
         )
+    remain = f"{_fmt_dur(max(med - elapsed, 0))}〜{_fmt_dur(mx - elapsed)}" \
+        if elapsed < med else f"最大{_fmt_dur(mx - elapsed)}"
     return (
-        f"⏳ {label}は投入から約{elapsed}分経過。通常{typical}分ほどなので、"
-        f"あと目安 約{remain}分です。完成したら自動で投稿します"
+        head + body + f"残りおよそ{remain}です。完成したら自動で投稿します"
         "（「できた？」でいつでも確認できます）。"
     )
 
@@ -3634,8 +3779,10 @@ async def _run_hf_generate(message, request, model, media_type, label,
     await send_as(
         orch, cid,
         f"⏳ {disp} で生成ジョブを投入しました。完成したらURLを自動投稿します"
-        "（「できた？」でいつでも確認可）。"
+        f"（{_eta_hint(_gen_task_name({'model': chosen, 'media_type': media_type}))}"
+        "／「できた？」でいつでも確認可）。"
     )
+    _defer_measure()   # 完成までの時間は見張り側で測る（投入までは所要時間ではない）
     _spawn(_watch_motion_job(cid), cid, "生成の完了監視")
 
 
@@ -4059,7 +4206,7 @@ async def _run_design(message, request):
     await send_as(
         orch, cid,
         f"🎨 デザインを作ります（{label} {w}×{h}）。HTMLで組んで画像に書き出します"
-        f"（目安{round(TASK_ETA.get('デザイン制作', 180) / 60)}分）…"
+        f"（{_eta_hint('デザイン制作')}）…"
     )
     style = _style_snippet()
     task = (
@@ -4534,6 +4681,10 @@ async def _watch_motion_job(cid):
             await send_as(orch, cid, f"⚠️ 生成が失敗しました: {str(e)[:250]}")
             return
         if vurl:
+            # 投入から完成までが本当の所要時間。ここで測ったものだけを
+            # 次回以降の見積もりに使う（投入だけの数十秒を使うと嘘になる）
+            if token:
+                _record_task_time(_gen_task_name(job0), time.time() - token)
             _clear_motion_job()
             _update_last_gen_url(cid, vurl)
             add_history(cid, "Orchestrator", f"（{label}が完成: {vurl}）")
@@ -4602,8 +4753,9 @@ async def _run_motion_control(message, request, ref_att):
         await send_as(
             orch, cid,
             "⏳ 生成ジョブを投入しました。完成したらこのチャンネルに動画URLを自動投稿します"
-            "（数分〜十数分／「動画できた？」でいつでも確認可）。"
+            f"（{_eta_hint('モーション生成')}／「動画できた？」でいつでも確認可）。"
         )
+        _defer_measure()   # 完成までの時間は見張り側で測る
         _spawn(_watch_motion_job(cid), cid, "生成の完了監視")
         return
     except Exception as e:  # noqa: BLE001
@@ -5609,7 +5761,7 @@ async def _claude_exec_run(task, timeout, model=None):
     return out.decode().strip() or "(完了・出力なし)"
 
 
-async def _confirm(message, cid, summary, plan, cost="", engine=""):
+async def _confirm(message, cid, summary, plan, cost="", engine="", eta=""):
     """作業に入る前に『こう理解した／これをやる』を提示して同意を得る（反復確認）。
     [✅許可] ボタン、または「OK」「はい」などの返信で開始。
     「やめて」や5分の無反応で中止する。CONFIRM_BEFORE_WORK=0 で無効化できる。
@@ -5631,6 +5783,7 @@ async def _confirm(message, cid, summary, plan, cost="", engine=""):
         f"・ご依頼の理解: {summary}\n"
         + (f"・**何で作るか**: {engine}\n" if engine else "")
         + f"・これからやること: {plan}\n"
+        + (f"・かかる時間: {eta}\n" if eta else "")
         + (f"・コスト: {cost}\n" if cost else "")
         + "これで進めていいですか？ [✅許可] か「**OK**」で開始します"
         "（[❌拒否]・「やめて」で中止／5分で自動中止）"
@@ -5650,17 +5803,26 @@ async def _confirm(message, cid, summary, plan, cost="", engine=""):
     return approved
 
 
-async def _confirm_then(message, cid, summary, plan, factory, cost="", engine=""):
+async def _confirm_then(message, cid, summary, plan, factory, cost="", engine="",
+                        eta=""):
     """確認を取ってから実際の作業を始める。factory は承認後にコルーチンを作る関数
     （先に作ると中止時に未実行のまま警告が出るため、必ず遅延生成する）。"""
-    if await _confirm(message, cid, summary, plan, cost, engine):
+    if await _confirm(message, cid, summary, plan, cost, engine, eta):
         await factory()
 
 
 def _gate(message, cid, summary, plan, factory, label, cost="", engine=""):
     """確認つきで作業を起動する（呼び出し側は1行で済む）。"""
+    async def _go():
+        # 承認が下りた瞬間から計り直す。ここを分けないと「本人が返事をするまでの
+        # 時間」が所要時間として記録され、見積もりが実態とかけ離れる。
+        _start_work(cid, label)
+        await factory()
+
     return _spawn(
-        _confirm_then(message, cid, summary, plan, factory, cost, engine), cid, label
+        _confirm_then(message, cid, summary, plan, _go, cost, engine,
+                      _eta_hint(label)),
+        cid, label, gated=True,
     )
 
 
