@@ -3,16 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>so. — Film Studio</title>
+    <title>so. — AI Film Studio</title>
+    <meta name="description" content="so. は AI を使った映像制作スタジオ。撮影を伴わないワークフローで、企画からビジュアル生成、編集までを一貫して手がけます。">
+    <meta property="og:title" content="so. — AI Film Studio">
+    <meta property="og:description" content="カメラを持たずに、映像をつくる。AI 主導の映像制作スタジオ so. のポートフォリオ。">
+    <meta property="og:type" content="website">
     <style>
         :root {
             --bg: #ffffff;
             --bg-soft: #f6f6f4;
             --fg: #16161a;
+            --fg-dim: #52525a;
             --muted: #8c8c92;
             --line: rgba(0, 0, 0, 0.10);
             --accent: #b08733;
-            --max: 1080px;
+            --max: 1140px;
+            --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
         }
 
         * { box-sizing: border-box; }
@@ -28,10 +34,33 @@
             line-height: 1.75;
             -webkit-font-smoothing: antialiased;
             letter-spacing: 0.01em;
+            overflow-x: hidden;
         }
 
         a { color: inherit; text-decoration: none; }
         .container { max-width: var(--max); margin: auto; padding: 0 32px; }
+
+        /* 全面に薄いグレインを敷いて紙のような質感を出す */
+        body::after {
+            content: "";
+            position: fixed;
+            inset: 0;
+            z-index: 300;
+            pointer-events: none;
+            opacity: 0.028;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+        }
+
+        /* ---------- Scroll progress ---------- */
+        .progress {
+            position: fixed;
+            top: 0; left: 0;
+            height: 2px;
+            width: 0%;
+            z-index: 150;
+            background: linear-gradient(90deg, var(--accent), #d9b45f);
+            transition: width 0.1s linear;
+        }
 
         /* ---------- Nav ---------- */
         nav {
@@ -47,7 +76,7 @@
             border-bottom: 1px solid transparent;
         }
         nav.scrolled {
-            background: rgba(255, 255, 255, 0.85);
+            background: rgba(255, 255, 255, 0.82);
             backdrop-filter: blur(14px);
             -webkit-backdrop-filter: blur(14px);
             padding: 15px 32px;
@@ -64,23 +93,100 @@
             letter-spacing: 0.16em;
             text-transform: uppercase;
         }
-        nav ul a { color: var(--muted); transition: color 0.25s ease; }
+        nav ul a {
+            position: relative;
+            color: var(--muted);
+            transition: color 0.25s ease;
+        }
+        nav ul a::after {
+            content: "";
+            position: absolute;
+            left: 0; bottom: -5px;
+            width: 100%; height: 1px;
+            background: var(--accent);
+            transform: scaleX(0);
+            transform-origin: left;
+            transition: transform 0.35s var(--ease);
+        }
         nav ul a:hover { color: var(--fg); }
+        nav ul a.active { color: var(--fg); }
+        nav ul a.active::after { transform: scaleX(1); }
 
         /* ---------- Hero ---------- */
         header {
             position: relative;
-            height: 100vh;
-            min-height: 560px;
+            min-height: 100svh;
             display: flex;
             align-items: center;
             justify-content: center;
             text-align: center;
             overflow: hidden;
-            background:
-                radial-gradient(60% 55% at 50% 42%, #ffffff, #f2f1ee 85%);
+            background: radial-gradient(62% 58% at 50% 42%, #ffffff, #f1f0ed 88%);
         }
+        /* 実際の作品サムネイルをゆっくり流して背景にする */
+        .hero-mosaic {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 16px;
+            opacity: 0.2;
+            filter: saturate(0.65) contrast(0.95);
+            pointer-events: none;
+            -webkit-mask-image: radial-gradient(ellipse 62% 58% at 50% 50%, transparent 26%, #000 78%);
+            mask-image: radial-gradient(ellipse 62% 58% at 50% 50%, transparent 26%, #000 78%);
+        }
+        .mosaic-row {
+            display: flex;
+            gap: 16px;
+            width: max-content;
+            animation: drift 70s linear infinite;
+        }
+        .mosaic-row:nth-child(2) { animation-duration: 92s; animation-direction: reverse; }
+        .mosaic-row:nth-child(3) { animation-duration: 80s; }
+        .mosaic-row img {
+            width: 230px;
+            aspect-ratio: 16 / 9;
+            object-fit: cover;
+            border-radius: 7px;
+            display: block;
+        }
+        @keyframes drift {
+            from { transform: translateX(0); }
+            to   { transform: translateX(-50%); }
+        }
+
+        .hero-glow {
+            position: absolute;
+            width: 46vw; height: 46vw;
+            border-radius: 50%;
+            filter: blur(90px);
+            opacity: 0.5;
+            pointer-events: none;
+            background: radial-gradient(circle, rgba(176,135,51,0.20), transparent 70%);
+            animation: float 18s ease-in-out infinite;
+        }
+        .hero-glow.two {
+            background: radial-gradient(circle, rgba(90,120,200,0.16), transparent 70%);
+            animation-duration: 24s;
+            animation-direction: reverse;
+        }
+        @keyframes float {
+            0%, 100% { transform: translate(-22%, -14%); }
+            50%      { transform: translate(18%, 12%); }
+        }
+
         .hero-inner { position: relative; z-index: 2; padding: 0 20px; }
+        .hero-eyebrow {
+            font-size: 0.7rem;
+            letter-spacing: 0.42em;
+            text-transform: uppercase;
+            color: var(--accent);
+            margin: 0 0 18px;
+            opacity: 0;
+            animation: rise 1s var(--ease) 0.1s forwards;
+        }
         .hero-inner h1 {
             font-size: clamp(4rem, 16vw, 11rem);
             margin: 0;
@@ -89,7 +195,7 @@
             line-height: 0.9;
             color: var(--fg);
             opacity: 0;
-            animation: rise 1.1s cubic-bezier(0.2, 0.7, 0.2, 1) 0.15s forwards;
+            animation: rise 1.1s var(--ease) 0.25s forwards;
         }
         .hero-inner h1 span { color: var(--accent); }
         .hero-inner .tagline {
@@ -99,7 +205,15 @@
             text-transform: uppercase;
             color: var(--muted);
             opacity: 0;
-            animation: rise 1.1s cubic-bezier(0.2, 0.7, 0.2, 1) 0.5s forwards;
+            animation: rise 1.1s var(--ease) 0.55s forwards;
+        }
+        .hero-lead {
+            margin: 26px auto 0;
+            max-width: 520px;
+            font-size: 0.98rem;
+            color: var(--fg-dim);
+            opacity: 0;
+            animation: rise 1.1s var(--ease) 0.8s forwards;
         }
         @keyframes rise {
             from { opacity: 0; transform: translateY(28px); }
@@ -115,7 +229,7 @@
             text-transform: uppercase;
             color: var(--muted);
             opacity: 0;
-            animation: fadeCue 1.2s ease 1.2s forwards;
+            animation: fadeCue 1.2s ease 1.4s forwards;
         }
         .scroll-cue::after {
             content: "";
@@ -128,8 +242,37 @@
         @keyframes fadeCue { to { opacity: 1; } }
         @keyframes cuePulse { 0%,100% { opacity: 0.25; transform: scaleY(0.7); } 50% { opacity: 0.9; transform: scaleY(1); } }
 
+        /* ---------- Stats ---------- */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            border-top: 1px solid var(--line);
+            border-bottom: 1px solid var(--line);
+        }
+        .stat {
+            padding: 46px 20px;
+            text-align: center;
+            border-left: 1px solid var(--line);
+        }
+        .stat:first-child { border-left: 0; }
+        .stat .num {
+            font-size: clamp(1.9rem, 5vw, 2.9rem);
+            font-weight: 800;
+            line-height: 1.1;
+            letter-spacing: -0.01em;
+        }
+        .stat .num small { font-size: 0.42em; font-weight: 600; color: var(--accent); margin-left: 4px; }
+        .stat .label {
+            margin-top: 10px;
+            font-size: 0.66rem;
+            letter-spacing: 0.28em;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
         /* ---------- Sections ---------- */
-        section { padding: 120px 0; border-top: 1px solid var(--line); }
+        section { padding: 128px 0; border-top: 1px solid var(--line); }
+        section:first-of-type { border-top: 0; }
         .section-label {
             font-size: 0.7rem;
             letter-spacing: 0.35em;
@@ -138,24 +281,66 @@
             margin-bottom: 20px;
         }
         h2 {
-            font-size: clamp(1.8rem, 5vw, 2.9rem);
+            font-size: clamp(1.8rem, 5vw, 3rem);
             margin: 0 0 28px;
             font-weight: 700;
             letter-spacing: 0.005em;
             line-height: 1.25;
         }
-        #about p {
-            max-width: 660px;
-            font-size: 1.08rem;
-            color: #52525a;
+        .lead {
+            max-width: 680px;
+            font-size: 1.06rem;
+            color: var(--fg-dim);
         }
+        .lead + .lead { margin-top: 20px; }
+
+        /* ---------- Approach ---------- */
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 28px;
+            margin-top: 52px;
+        }
+        .step {
+            position: relative;
+            padding: 34px 30px 36px;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background: linear-gradient(180deg, #fff, var(--bg-soft));
+            overflow: hidden;
+            transition: transform 0.5s var(--ease), box-shadow 0.5s ease, border-color 0.4s ease;
+        }
+        .step::before {
+            content: "";
+            position: absolute;
+            left: 0; top: 0;
+            width: 100%; height: 2px;
+            background: linear-gradient(90deg, var(--accent), transparent);
+            transform: scaleX(0);
+            transform-origin: left;
+            transition: transform 0.6s var(--ease);
+        }
+        .step:hover {
+            transform: translateY(-6px);
+            box-shadow: 0 24px 50px -28px rgba(0,0,0,0.3);
+            border-color: rgba(176,135,51,0.35);
+        }
+        .step:hover::before { transform: scaleX(1); }
+        .step .no {
+            font-size: 0.72rem;
+            letter-spacing: 0.3em;
+            color: var(--accent);
+            font-weight: 700;
+        }
+        .step h3 { margin: 14px 0 10px; font-size: 1.2rem; font-weight: 700; }
+        .step p { margin: 0; color: var(--muted); font-size: 0.94rem; }
 
         /* ---------- Works ---------- */
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
             gap: 30px;
-            margin-top: 44px;
+            margin-top: 48px;
         }
         .card {
             position: relative;
@@ -163,20 +348,51 @@
             overflow: hidden;
             background: var(--bg-soft);
             border: 1px solid var(--line);
-            transition: transform 0.5s cubic-bezier(0.2, 0.7, 0.2, 1), box-shadow 0.5s ease;
+            transition: transform 0.5s var(--ease), box-shadow 0.5s ease, border-color 0.4s ease;
         }
-        .card:hover { transform: translateY(-6px); box-shadow: 0 22px 50px -24px rgba(0,0,0,0.28); }
+        .card:hover {
+            transform: translateY(-6px);
+            box-shadow: 0 22px 50px -24px rgba(0,0,0,0.28);
+            border-color: rgba(176,135,51,0.3);
+        }
+        /* 追加読み込みされたカードもふわっと出す */
+        .card.enter { animation: cardIn 0.7s var(--ease) both; }
+        @keyframes cardIn {
+            from { opacity: 0; transform: translateY(22px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
         .thumb {
             position: relative;
             aspect-ratio: 16 / 9;
             overflow: hidden;
+            background: #e9e8e4;
         }
         .thumb .art {
             position: absolute;
             inset: 0;
-            transition: transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+            transition: transform 0.6s var(--ease);
         }
         .card:hover .thumb .art { transform: scale(1.08); }
+        .thumb img {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+            background: var(--bg-soft);
+            transition: transform 0.6s var(--ease);
+        }
+        .card:hover .thumb img { transform: scale(1.08); }
+        .thumb::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(180deg, transparent 55%, rgba(0,0,0,0.28));
+            opacity: 0;
+            transition: opacity 0.45s ease;
+        }
+        .card:hover .thumb::after { opacity: 1; }
         .play {
             position: absolute;
             z-index: 3;
@@ -191,7 +407,7 @@
             background: rgba(0,0,0,0.18);
             backdrop-filter: blur(2px);
             opacity: 0;
-            transition: opacity 0.35s ease, transform 0.35s ease;
+            transition: opacity 0.35s ease, transform 0.35s var(--ease);
         }
         .play::before {
             content: "";
@@ -202,17 +418,6 @@
             border-bottom: 8px solid transparent;
         }
         .card:hover .play { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-        .thumb img {
-            position: absolute;
-            inset: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            display: block;
-            background: var(--bg-soft);
-            transition: transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
-        }
-        .card:hover .thumb img { transform: scale(1.08); }
         .card-link {
             position: absolute;
             inset: 0;
@@ -229,7 +434,7 @@
             text-transform: uppercase;
             color: var(--accent);
         }
-        .card-body h3 { margin: 9px 0 6px; font-size: 1.15rem; font-weight: 600; }
+        .card-body h3 { margin: 9px 0 6px; font-size: 1.12rem; font-weight: 600; line-height: 1.5; }
         .card-body p {
             margin: 0;
             color: var(--muted);
@@ -241,8 +446,28 @@
             overflow: hidden;
         }
 
+        /* 読み込み中のスケルトン */
+        .skeleton .thumb,
+        .skeleton .bar {
+            background: linear-gradient(100deg, #efeeea 30%, #f8f7f5 50%, #efeeea 70%);
+            background-size: 220% 100%;
+            animation: shimmer 1.5s ease-in-out infinite;
+        }
+        .skeleton .bar { height: 12px; border-radius: 4px; }
+        .skeleton .bar.short { width: 40%; margin-bottom: 12px; }
+        .skeleton .bar.long { width: 78%; }
+        @keyframes shimmer { from { background-position: 180% 0; } to { background-position: -40% 0; } }
+
+        .works-note {
+            grid-column: 1 / -1;
+            padding: 40px 0;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.94rem;
+        }
+
         .works-actions {
-            margin-top: 40px;
+            margin-top: 44px;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -301,7 +526,7 @@
             border-radius: 10px;
             overflow: hidden;
             transform: scale(0.97);
-            transition: transform 0.35s cubic-bezier(0.2, 0.7, 0.2, 1);
+            transition: transform 0.35s var(--ease);
         }
         .lightbox.open .lightbox-frame { transform: scale(1); }
         .lightbox-frame iframe { width: 100%; height: 100%; border: 0; display: block; }
@@ -323,21 +548,24 @@
 
         /* ---------- Contact ---------- */
         #contact { text-align: center; }
+        #contact .lead { margin-left: auto; margin-right: auto; }
         #contact .big-mail {
             display: inline-block;
-            font-size: clamp(1.4rem, 5vw, 2.6rem);
+            font-size: clamp(1.2rem, 4.4vw, 2.3rem);
             font-weight: 700;
-            margin-top: 12px;
+            margin-top: 26px;
             border-bottom: 1px solid var(--line);
             padding-bottom: 6px;
+            word-break: break-all;
             transition: border-color 0.3s ease, color 0.3s ease;
         }
         #contact .big-mail:hover { border-color: var(--accent); color: var(--accent); }
         .socials {
-            margin-top: 36px;
+            margin-top: 38px;
             display: flex;
             gap: 28px;
             justify-content: center;
+            flex-wrap: wrap;
             font-size: 0.78rem;
             letter-spacing: 0.18em;
             text-transform: uppercase;
@@ -360,106 +588,133 @@
         .reveal {
             opacity: 0;
             transform: translateY(34px);
-            transition: opacity 0.9s cubic-bezier(0.2, 0.7, 0.2, 1), transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1);
+            transition: opacity 0.9s var(--ease), transform 0.9s var(--ease);
         }
         .reveal.in { opacity: 1; transform: translateY(0); }
 
-        @media (max-width: 640px) {
+        @media (max-width: 760px) {
             nav ul { display: none; }
-            section { padding: 84px 0; }
+            section { padding: 88px 0; }
+            .stats { grid-template-columns: 1fr; }
+            .stat { border-left: 0; border-top: 1px solid var(--line); padding: 34px 20px; }
+            .stat:first-child { border-top: 0; }
+            .mosaic-row img { width: 150px; }
         }
         @media (prefers-reduced-motion: reduce) {
-            .scroll-cue::after { animation: none; }
-            .hero-inner h1, .hero-inner .tagline, .scroll-cue { animation: none; opacity: 1; }
+            html { scroll-behavior: auto; }
+            .scroll-cue::after, .mosaic-row, .hero-glow, .skeleton .thumb, .skeleton .bar { animation: none; }
+            .hero-eyebrow, .hero-inner h1, .hero-inner .tagline, .hero-lead, .scroll-cue { animation: none; opacity: 1; }
             .reveal { transition: none; }
+            .card.enter { animation: none; }
         }
     </style>
 </head>
 <body>
+    <div class="progress" id="progress"></div>
+
     <nav id="nav">
         <a href="#top" class="logo">so<span>.</span></a>
         <ul>
             <li><a href="#about">About</a></li>
+            <li><a href="#approach">Approach</a></li>
             <li><a href="#works">Works</a></li>
             <li><a href="#contact">Contact</a></li>
         </ul>
     </nav>
 
     <header id="top">
+        <div class="hero-mosaic" id="hero-mosaic" aria-hidden="true"></div>
+        <div class="hero-glow" style="top: 8%; left: 6%;" aria-hidden="true"></div>
+        <div class="hero-glow two" style="bottom: 6%; right: 4%;" aria-hidden="true"></div>
         <div class="hero-inner">
+            <p class="hero-eyebrow">AI Film Studio</p>
             <h1>so<span>.</span></h1>
-            <p class="tagline">Film&nbsp;/&nbsp;Motion&nbsp;/&nbsp;Story</p>
+            <p class="tagline">Prompt&nbsp;/&nbsp;Motion&nbsp;/&nbsp;Story</p>
+            <p class="hero-lead">カメラを持たずに、映像をつくる。</p>
         </div>
         <div class="scroll-cue">Scroll</div>
     </header>
 
+    <div class="stats" id="stats">
+        <div class="stat">
+            <div class="num" id="stat-works">—</div>
+            <div class="label">Works</div>
+        </div>
+        <div class="stat">
+            <div class="num" id="stat-channel">—</div>
+            <div class="label">Channel</div>
+        </div>
+        <div class="stat">
+            <div class="num" id="stat-updated">—</div>
+            <div class="label">Last Updated</div>
+        </div>
+    </div>
+
     <div class="container">
         <section id="about" class="reveal">
             <div class="section-label">01 — About</div>
-            <h2>映像で、記憶に残る一瞬をつくる。</h2>
-            <p>ここにプロフィールや経歴を入力してください。so. は映像作品・モーション・ストーリーテリングを軸にした制作スタジオです。企画から撮影・編集まで一貫して手がけます。</p>
+            <h2>カメラを持たずに、<br>映像をつくる。</h2>
+            <p class="lead">so. は AI を軸にした映像制作スタジオです。撮影を伴わない作品が大半で、企画からビジュアルの生成、編集、仕上げまでをひと続きのワークフローで組み立てています。</p>
+            <p class="lead">機材やロケーションという前提を外すと、これまで「撮れなかった画」が現実的な選択肢になります。頭の中にある一場面を、そのまま形にすること。それが so. のつくり方です。</p>
+            <p class="lead">制作した作品は YouTube チャンネル「ふぞろいの林檎たち」で公開しています。</p>
+        </section>
+
+        <section id="approach" class="reveal">
+            <div class="section-label">02 — Approach</div>
+            <h2>チャットから、作品へ。</h2>
+            <p class="lead">やっていることは、驚くほどシンプルです。</p>
+            <div class="steps">
+                <article class="step">
+                    <div class="no">01</div>
+                    <h3>企画</h3>
+                    <p>つくりたい画を言葉に落とし込みます。設定・空気感・カメラワークまで、テキストで詰めていく工程です。</p>
+                </article>
+                <article class="step">
+                    <div class="no">02</div>
+                    <h3>生成</h3>
+                    <p>言葉をビジュアルに変換します。理想の一枚が出るまで、プロンプトを書き換えながら反復します。</p>
+                </article>
+                <article class="step">
+                    <div class="no">03</div>
+                    <h3>編集</h3>
+                    <p>生成した素材を束ね、間と音を整えて一本の作品にします。ここで初めて「映像」になります。</p>
+                </article>
+            </div>
         </section>
 
         <section id="works" class="reveal">
-            <div class="section-label">02 — Works</div>
+            <div class="section-label">03 — Works</div>
             <h2>Selected Works</h2>
-            <!-- YouTube の新着は data/videos.json から自動描画される。
-                 取得前・取得失敗時は以下のプレースホルダーがそのまま残る。 -->
+            <p class="lead">YouTube の新着が自動で並びます。クリックするとその場で再生します。</p>
+            <!-- 読み込み前はスケルトン。成功すれば実データに、失敗すればメッセージに置き換わる -->
             <div class="grid" id="works-grid">
-                <article class="card">
-                    <div class="thumb">
-                        <div class="art" style="background:
-                            radial-gradient(60% 80% at 30% 25%, rgba(176,135,51,0.28), transparent 62%),
-                            linear-gradient(135deg, #e9e6df, #cfc9bd);"></div>
-                        <div class="play" aria-hidden="true"></div>
-                    </div>
-                    <div class="card-body">
-                        <div class="meta">Music Video · 2025</div>
-                        <h3>Project 01</h3>
-                        <p>作品の説明をここに記載します。</p>
-                    </div>
+                <article class="card skeleton" aria-hidden="true">
+                    <div class="thumb"></div>
+                    <div class="card-body"><div class="bar short"></div><div class="bar long"></div></div>
                 </article>
-                <article class="card">
-                    <div class="thumb">
-                        <div class="art" style="background:
-                            radial-gradient(60% 80% at 70% 30%, rgba(90,120,200,0.26), transparent 62%),
-                            linear-gradient(135deg, #e4e8ef, #c6cdda);"></div>
-                        <div class="play" aria-hidden="true"></div>
-                    </div>
-                    <div class="card-body">
-                        <div class="meta">Commercial · 2025</div>
-                        <h3>Project 02</h3>
-                        <p>作品の説明をここに記載します。</p>
-                    </div>
+                <article class="card skeleton" aria-hidden="true">
+                    <div class="thumb"></div>
+                    <div class="card-body"><div class="bar short"></div><div class="bar long"></div></div>
                 </article>
-                <article class="card">
-                    <div class="thumb">
-                        <div class="art" style="background:
-                            radial-gradient(60% 80% at 50% 72%, rgba(200,90,120,0.24), transparent 62%),
-                            linear-gradient(135deg, #f0e6e9, #d9c7cd);"></div>
-                        <div class="play" aria-hidden="true"></div>
-                    </div>
-                    <div class="card-body">
-                        <div class="meta">Short Film · 2024</div>
-                        <h3>Project 03</h3>
-                        <p>作品の説明をここに記載します。</p>
-                    </div>
+                <article class="card skeleton" aria-hidden="true">
+                    <div class="thumb"></div>
+                    <div class="card-body"><div class="bar short"></div><div class="bar long"></div></div>
                 </article>
             </div>
             <div class="works-actions">
                 <button type="button" class="more-btn" id="more-btn" hidden>More</button>
-                <a class="channel-link" id="channel-link" href="#" hidden>YouTube チャンネルを見る →</a>
+                <a class="channel-link" id="channel-link" href="https://www.youtube.com/@hzrinrng" target="_blank" rel="noopener">YouTube チャンネルを見る →</a>
             </div>
         </section>
 
         <section id="contact" class="reveal">
-            <div class="section-label">03 — Contact</div>
+            <div class="section-label">04 — Contact</div>
             <h2>一緒に、映像をつくりませんか。</h2>
-            <a class="big-mail" href="mailto:hello@so-film.example">hello@so-film.example</a>
+            <p class="lead">制作のご相談、お仕事のご依頼はメールでお気軽にどうぞ。</p>
+            <a class="big-mail" href="mailto:bonvoyage.ti@icloud.com">bonvoyage.ti@icloud.com</a>
             <div class="socials">
-                <a href="#">Instagram</a>
-                <a href="#">YouTube</a>
-                <a href="#">Vimeo</a>
+                <a href="https://www.youtube.com/@hzrinrng" target="_blank" rel="noopener">YouTube</a>
+                <a href="mailto:bonvoyage.ti@icloud.com">Email</a>
             </div>
         </section>
     </div>
@@ -469,11 +724,18 @@
         <div class="lightbox-frame" id="lightbox-player"></div>
     </div>
 
-    <footer>© so. All Rights Reserved.</footer>
+    <footer>© <span id="year">2026</span> so. All Rights Reserved.</footer>
 
     <script>
+        /* ---------- Nav / progress / reveal ---------- */
         const nav = document.getElementById('nav');
-        const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 40);
+        const progress = document.getElementById('progress');
+
+        function onScroll() {
+            nav.classList.toggle('scrolled', window.scrollY > 40);
+            const max = document.documentElement.scrollHeight - window.innerHeight;
+            progress.style.width = max > 0 ? `${(window.scrollY / max) * 100}%` : '0%';
+        }
         onScroll();
         window.addEventListener('scroll', onScroll, { passive: true });
 
@@ -484,7 +746,23 @@
         }, { threshold: 0.15 });
         document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
 
-        /* ---------- YouTube Works ---------- */
+        // 現在地のナビを光らせる
+        const navLinks = [...document.querySelectorAll('nav ul a')];
+        const sectionIds = navLinks.map((a) => a.getAttribute('href').slice(1));
+        const spy = new IntersectionObserver((entries) => {
+            entries.forEach((e) => {
+                if (!e.isIntersecting) return;
+                navLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === `#${e.target.id}`));
+            });
+        }, { rootMargin: '-45% 0px -50% 0px' });
+        sectionIds.forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) spy.observe(el);
+        });
+
+        document.getElementById('year').textContent = new Date().getFullYear();
+
+        /* ---------- Lightbox ---------- */
         const grid = document.getElementById('works-grid');
         const channelLink = document.getElementById('channel-link');
         const moreBtn = document.getElementById('more-btn');
@@ -497,7 +775,7 @@
             const iframe = document.createElement('iframe');
             iframe.src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1&rel=0`;
             iframe.title = title || 'YouTube video player';
-            iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+            iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
             iframe.allowFullscreen = true;
             player.replaceChildren(iframe);
 
@@ -522,9 +800,10 @@
             if (e.key === 'Escape' && !lightbox.hidden) closeVideo();
         });
 
+        /* ---------- Works ---------- */
         function buildCard(video) {
             const card = document.createElement('article');
-            card.className = 'card';
+            card.className = 'card enter';
 
             const thumb = document.createElement('div');
             thumb.className = 'thumb';
@@ -578,12 +857,92 @@
             return card;
         }
 
+        function showWorksNote(message) {
+            const note = document.createElement('p');
+            note.className = 'works-note';
+            note.textContent = message;
+            grid.replaceChildren(note);
+        }
+
+        /* ---------- Stats ---------- */
+        function countUp(el, target) {
+            const duration = 1100;
+            const start = performance.now();
+            function tick(now) {
+                const t = Math.min((now - start) / duration, 1);
+                const eased = 1 - Math.pow(1 - t, 3);
+                el.textContent = Math.round(target * eased);
+                if (t < 1) requestAnimationFrame(tick);
+            }
+            requestAnimationFrame(tick);
+        }
+
+        function fillStats(data, count) {
+            const worksEl = document.getElementById('stat-works');
+            const channelEl = document.getElementById('stat-channel');
+            const updatedEl = document.getElementById('stat-updated');
+
+            channelEl.style.fontSize = 'clamp(1rem, 2.6vw, 1.5rem)';
+            channelEl.textContent = data.channelTitle || 'YouTube';
+
+            updatedEl.style.fontSize = 'clamp(1rem, 2.6vw, 1.5rem)';
+            updatedEl.textContent = data.updatedAt
+                ? new Date(data.updatedAt).toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' })
+                : '—';
+
+            // 数字は画面に入ってからカウントアップさせる
+            const statsIo = new IntersectionObserver((entries, obs) => {
+                entries.forEach((e) => {
+                    if (!e.isIntersecting) return;
+                    countUp(worksEl, count);
+                    obs.disconnect();
+                });
+            }, { threshold: 0.4 });
+            statsIo.observe(document.getElementById('stats'));
+        }
+
+        /* ---------- Hero mosaic ---------- */
+        function buildMosaic(videos) {
+            const host = document.getElementById('hero-mosaic');
+            if (videos.length === 0) return;
+
+            const ROWS = 3;
+            const perRow = Math.max(6, Math.ceil(videos.length / ROWS));
+
+            for (let r = 0; r < ROWS; r++) {
+                const row = document.createElement('div');
+                row.className = 'mosaic-row';
+
+                // 行ごとに開始位置をずらして、同じ並びに見えないようにする
+                const slice = [];
+                for (let i = 0; i < perRow; i++) {
+                    slice.push(videos[(r * perRow + i) % videos.length]);
+                }
+                // シームレスにループさせるため2周分並べる
+                [...slice, ...slice].forEach((v) => {
+                    const img = document.createElement('img');
+                    img.src = `https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`;
+                    img.alt = '';
+                    img.loading = 'lazy';
+                    img.addEventListener('error', () => img.remove(), { once: true });
+                    row.append(img);
+                });
+                host.append(row);
+            }
+        }
+
+        /* ---------- Load ---------- */
         fetch('data/videos.json', { cache: 'no-cache' })
             .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
             .then((data) => {
                 const videos = Array.isArray(data.videos) ? data.videos.filter((v) => v && v.id) : [];
-                // 未設定・取得失敗時はプレースホルダーを残す
-                if (videos.length === 0) return;
+                if (videos.length === 0) {
+                    showWorksNote('作品を準備中です。YouTube チャンネルをご覧ください。');
+                    return;
+                }
+
+                buildMosaic(videos);
+                fillStats(data, videos.length);
 
                 const INITIAL = 6;
                 const STEP = 6;
@@ -614,12 +973,12 @@
 
                 if (data.channelId) {
                     channelLink.href = `https://www.youtube.com/channel/${data.channelId}`;
-                    channelLink.target = '_blank';
-                    channelLink.rel = 'noopener';
-                    channelLink.hidden = false;
                 }
             })
-            .catch((err) => console.warn('[works] YouTube データを読み込めませんでした:', err.message));
+            .catch((err) => {
+                console.warn('[works] YouTube データを読み込めませんでした:', err.message);
+                showWorksNote('作品を読み込めませんでした。YouTube チャンネルをご覧ください。');
+            });
     </script>
 </body>
 </html>
