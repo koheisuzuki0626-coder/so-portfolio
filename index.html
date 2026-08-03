@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>so. — AI Film Studio</title>
-    <meta name="description" content="so. は AI を使った映像制作スタジオ。撮影を伴わないワークフローで、企画からビジュアル生成、編集までを一貫して手がけます。">
-    <meta property="og:title" content="so. — AI Film Studio">
-    <meta property="og:description" content="カメラを持たずに、映像をつくる。AI 主導の映像制作スタジオ so. のポートフォリオ。">
+    <title>so. — AI動画制作 | 撮影なし・出演者なしで映像をつくる</title>
+    <meta name="description" content="so. は AI で動画を制作します。撮影日の調整も、社員の顔出しも不要。ヒアリングと AI への指示出しだけで、企画から編集までを完結させて納品します。">
+    <meta property="og:title" content="so. — AI動画制作">
+    <meta property="og:description" content="撮影しない、映像制作。出演者の手配も撮影日の調整も不要です。">
     <meta property="og:type" content="website">
     <style>
         :root {
@@ -31,7 +31,7 @@
             margin: 0;
             background: var(--bg);
             color: var(--fg);
-            line-height: 1.75;
+            line-height: 1.8;
             -webkit-font-smoothing: antialiased;
             letter-spacing: 0.01em;
             overflow-x: hidden;
@@ -70,7 +70,7 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 22px 32px;
+            padding: 20px 32px;
             background: rgba(255, 255, 255, 0);
             transition: background 0.4s ease, padding 0.4s ease, border-color 0.4s ease;
             border-bottom: 1px solid transparent;
@@ -79,17 +79,18 @@
             background: rgba(255, 255, 255, 0.82);
             backdrop-filter: blur(14px);
             -webkit-backdrop-filter: blur(14px);
-            padding: 15px 32px;
+            padding: 13px 32px;
             border-bottom: 1px solid var(--line);
         }
         nav .logo { font-size: 1.35rem; font-weight: 700; letter-spacing: 0.5px; }
         nav .logo span { color: var(--accent); }
+        .nav-right { display: flex; align-items: center; gap: 30px; }
         nav ul {
             display: flex;
-            gap: 34px;
+            gap: 30px;
             list-style: none;
             margin: 0; padding: 0;
-            font-size: 0.78rem;
+            font-size: 0.74rem;
             letter-spacing: 0.16em;
             text-transform: uppercase;
         }
@@ -108,9 +109,17 @@
             transform-origin: left;
             transition: transform 0.35s var(--ease);
         }
-        nav ul a:hover { color: var(--fg); }
-        nav ul a.active { color: var(--fg); }
+        nav ul a:hover, nav ul a.active { color: var(--fg); }
         nav ul a.active::after { transform: scaleX(1); }
+        .nav-cta {
+            font-size: 0.75rem;
+            letter-spacing: 0.1em;
+            border: 1px solid var(--fg);
+            border-radius: 999px;
+            padding: 9px 20px;
+            transition: background 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+        }
+        .nav-cta:hover { background: var(--fg); color: #fff; }
 
         /* ---------- Hero ---------- */
         header {
@@ -121,9 +130,10 @@
             justify-content: center;
             text-align: center;
             overflow: hidden;
+            padding: 120px 0 90px;
             background: radial-gradient(62% 58% at 50% 42%, #ffffff, #f1f0ed 88%);
         }
-        /* 実際の作品サムネイルをゆっくり流して背景にする */
+        /* 実際の制作物のサムネイルをゆっくり流して背景にする */
         .hero-mosaic {
             position: absolute;
             inset: 0;
@@ -131,11 +141,11 @@
             flex-direction: column;
             justify-content: center;
             gap: 16px;
-            opacity: 0.2;
+            opacity: 0.17;
             filter: saturate(0.65) contrast(0.95);
             pointer-events: none;
-            -webkit-mask-image: radial-gradient(ellipse 62% 58% at 50% 50%, transparent 26%, #000 78%);
-            mask-image: radial-gradient(ellipse 62% 58% at 50% 50%, transparent 26%, #000 78%);
+            -webkit-mask-image: radial-gradient(ellipse 66% 62% at 50% 50%, transparent 24%, #000 80%);
+            mask-image: radial-gradient(ellipse 66% 62% at 50% 50%, transparent 24%, #000 80%);
         }
         .mosaic-row {
             display: flex;
@@ -177,112 +187,158 @@
             50%      { transform: translate(18%, 12%); }
         }
 
-        .hero-inner { position: relative; z-index: 2; padding: 0 20px; }
+        .hero-inner { position: relative; z-index: 2; padding: 0 24px; max-width: 900px; }
         .hero-eyebrow {
-            font-size: 0.7rem;
-            letter-spacing: 0.42em;
+            display: inline-block;
+            font-size: 0.68rem;
+            letter-spacing: 0.32em;
             text-transform: uppercase;
             color: var(--accent);
-            margin: 0 0 18px;
+            border: 1px solid rgba(176,135,51,0.4);
+            border-radius: 999px;
+            padding: 7px 18px;
+            margin: 0 0 30px;
+            background: rgba(255,255,255,0.6);
             opacity: 0;
             animation: rise 1s var(--ease) 0.1s forwards;
         }
         .hero-inner h1 {
-            font-size: clamp(4rem, 16vw, 11rem);
+            font-size: clamp(2.3rem, 7vw, 4.6rem);
             margin: 0;
             font-weight: 800;
-            letter-spacing: 0.01em;
-            line-height: 0.9;
-            color: var(--fg);
+            letter-spacing: 0.005em;
+            line-height: 1.28;
             opacity: 0;
             animation: rise 1.1s var(--ease) 0.25s forwards;
         }
-        .hero-inner h1 span { color: var(--accent); }
-        .hero-inner .tagline {
-            margin-top: 22px;
-            font-size: clamp(0.82rem, 2.5vw, 1rem);
-            letter-spacing: 0.44em;
-            text-transform: uppercase;
-            color: var(--muted);
-            opacity: 0;
-            animation: rise 1.1s var(--ease) 0.55s forwards;
+        .hero-inner h1 em {
+            font-style: normal;
+            color: var(--accent);
         }
         .hero-lead {
-            margin: 26px auto 0;
-            max-width: 520px;
-            font-size: 0.98rem;
+            margin: 30px auto 0;
+            max-width: 640px;
+            font-size: clamp(0.95rem, 2.2vw, 1.1rem);
             color: var(--fg-dim);
             opacity: 0;
-            animation: rise 1.1s var(--ease) 0.8s forwards;
+            animation: rise 1.1s var(--ease) 0.5s forwards;
         }
+        .hero-points {
+            list-style: none;
+            margin: 34px 0 0;
+            padding: 0;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 12px;
+            opacity: 0;
+            animation: rise 1.1s var(--ease) 0.7s forwards;
+        }
+        .hero-points li {
+            font-size: 0.82rem;
+            letter-spacing: 0.04em;
+            color: var(--fg);
+            background: rgba(255,255,255,0.75);
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 9px 18px;
+            backdrop-filter: blur(4px);
+        }
+        .hero-points li::before {
+            content: "✓";
+            color: var(--accent);
+            margin-right: 8px;
+            font-weight: 700;
+        }
+        .hero-actions {
+            margin-top: 40px;
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+            opacity: 0;
+            animation: rise 1.1s var(--ease) 0.9s forwards;
+        }
+        .btn {
+            display: inline-block;
+            font-size: 0.85rem;
+            letter-spacing: 0.1em;
+            border-radius: 999px;
+            padding: 16px 38px;
+            border: 1px solid var(--fg);
+            transition: transform 0.3s var(--ease), background 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+        .btn.primary { background: var(--fg); color: #fff; }
+        .btn.primary:hover {
+            background: var(--accent);
+            border-color: var(--accent);
+            transform: translateY(-2px);
+            box-shadow: 0 16px 32px -18px rgba(176,135,51,0.9);
+        }
+        .btn.ghost { background: transparent; border-color: var(--line); color: var(--fg); }
+        .btn.ghost:hover { border-color: var(--fg); transform: translateY(-2px); }
+
         @keyframes rise {
             from { opacity: 0; transform: translateY(28px); }
             to   { opacity: 1; transform: translateY(0); }
         }
-        .scroll-cue {
-            position: absolute;
-            bottom: 36px; left: 50%;
-            transform: translateX(-50%);
-            z-index: 2;
-            font-size: 0.66rem;
-            letter-spacing: 0.32em;
-            text-transform: uppercase;
-            color: var(--muted);
-            opacity: 0;
-            animation: fadeCue 1.2s ease 1.4s forwards;
-        }
-        .scroll-cue::after {
-            content: "";
-            display: block;
-            width: 1px; height: 44px;
-            margin: 12px auto 0;
-            background: linear-gradient(var(--muted), transparent);
-            animation: cuePulse 2.2s ease-in-out infinite;
-        }
-        @keyframes fadeCue { to { opacity: 1; } }
-        @keyframes cuePulse { 0%,100% { opacity: 0.25; transform: scaleY(0.7); } 50% { opacity: 0.9; transform: scaleY(1); } }
 
         /* ---------- Sections ---------- */
-        section { padding: 128px 0; border-top: 1px solid var(--line); }
-        section:first-of-type { border-top: 0; }
+        section { padding: 124px 0; border-top: 1px solid var(--line); }
         .section-label {
             font-size: 0.7rem;
             letter-spacing: 0.35em;
             text-transform: uppercase;
             color: var(--accent);
-            margin-bottom: 20px;
+            margin-bottom: 18px;
         }
         h2 {
-            font-size: clamp(1.8rem, 5vw, 3rem);
-            margin: 0 0 28px;
+            font-size: clamp(1.7rem, 4.6vw, 2.8rem);
+            margin: 0 0 26px;
             font-weight: 700;
-            letter-spacing: 0.005em;
-            line-height: 1.25;
+            line-height: 1.35;
         }
         .lead {
-            max-width: 680px;
-            font-size: 1.06rem;
+            max-width: 700px;
+            font-size: 1.04rem;
             color: var(--fg-dim);
         }
-        .lead + .lead { margin-top: 20px; }
+        .lead + .lead { margin-top: 18px; }
 
-        /* ---------- Approach ---------- */
-        .steps {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-            gap: 28px;
-            margin-top: 52px;
+        .tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 34px;
+            padding: 0;
+            list-style: none;
         }
-        .step {
-            position: relative;
-            padding: 34px 30px 36px;
+        .tags li {
+            font-size: 0.8rem;
+            color: var(--fg-dim);
             border: 1px solid var(--line);
-            border-radius: 12px;
+            border-radius: 6px;
+            padding: 7px 15px;
+            background: var(--bg-soft);
+        }
+
+        /* ---------- Benefits ---------- */
+        .benefits {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 28px;
+            margin-top: 54px;
+        }
+        .benefit {
+            position: relative;
+            padding: 40px 34px 38px;
+            border: 1px solid var(--line);
+            border-radius: 14px;
             background: linear-gradient(180deg, #fff, var(--bg-soft));
             overflow: hidden;
             transition: transform 0.5s var(--ease), box-shadow 0.5s ease, border-color 0.4s ease;
         }
-        .step::before {
+        .benefit::before {
             content: "";
             position: absolute;
             left: 0; top: 0;
@@ -292,20 +348,130 @@
             transform-origin: left;
             transition: transform 0.6s var(--ease);
         }
-        .step:hover {
+        .benefit:hover {
             transform: translateY(-6px);
-            box-shadow: 0 24px 50px -28px rgba(0,0,0,0.3);
+            box-shadow: 0 26px 54px -30px rgba(0,0,0,0.32);
             border-color: rgba(176,135,51,0.35);
         }
-        .step:hover::before { transform: scaleX(1); }
-        .step .no {
-            font-size: 0.72rem;
-            letter-spacing: 0.3em;
+        .benefit:hover::before { transform: scaleX(1); }
+        .benefit .icon {
+            width: 52px; height: 52px;
             color: var(--accent);
-            font-weight: 700;
+            margin-bottom: 22px;
         }
-        .step h3 { margin: 14px 0 10px; font-size: 1.2rem; font-weight: 700; }
-        .step p { margin: 0; color: var(--muted); font-size: 0.94rem; }
+        .benefit .icon svg { width: 100%; height: 100%; display: block; }
+        .benefit h3 { margin: 0 0 14px; font-size: 1.32rem; font-weight: 700; line-height: 1.5; }
+        .benefit > p { margin: 0 0 20px; color: var(--fg-dim); font-size: 0.97rem; }
+        .benefit ul { margin: 0; padding: 0; list-style: none; }
+        .benefit ul li {
+            position: relative;
+            padding-left: 22px;
+            margin-bottom: 9px;
+            font-size: 0.93rem;
+            color: var(--muted);
+        }
+        .benefit ul li::before {
+            content: "";
+            position: absolute;
+            left: 2px; top: 0.72em;
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            border: 1.5px solid var(--accent);
+        }
+
+        /* ---------- Comparison ---------- */
+        .compare-wrap {
+            margin-top: 56px;
+            overflow-x: auto;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+        }
+        table.compare {
+            width: 100%;
+            min-width: 620px;
+            border-collapse: collapse;
+            font-size: 0.94rem;
+        }
+        table.compare th, table.compare td {
+            padding: 20px 22px;
+            text-align: left;
+            border-bottom: 1px solid var(--line);
+            vertical-align: top;
+        }
+        table.compare thead th {
+            font-size: 0.75rem;
+            letter-spacing: 0.14em;
+            color: var(--muted);
+            font-weight: 600;
+            background: var(--bg-soft);
+        }
+        table.compare thead th:last-child { color: var(--accent); }
+        table.compare tbody th {
+            font-weight: 600;
+            width: 26%;
+            color: var(--fg);
+        }
+        table.compare td.old { color: var(--muted); }
+        table.compare td.new { color: var(--fg); font-weight: 600; background: rgba(176,135,51,0.045); }
+        table.compare tr:last-child th, table.compare tr:last-child td { border-bottom: 0; }
+
+        /* ---------- Process ---------- */
+        .flow { margin-top: 56px; position: relative; }
+        .flow::before {
+            content: "";
+            position: absolute;
+            left: 27px; top: 12px; bottom: 12px;
+            width: 1px;
+            background: linear-gradient(180deg, var(--accent), var(--line));
+        }
+        .flow-step {
+            position: relative;
+            display: grid;
+            grid-template-columns: 56px 1fr;
+            gap: 26px;
+            padding-bottom: 42px;
+        }
+        .flow-step:last-child { padding-bottom: 0; }
+        .flow-step .dot {
+            position: relative;
+            z-index: 1;
+            width: 56px; height: 56px;
+            border-radius: 50%;
+            border: 1px solid var(--line);
+            background: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.82rem;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            color: var(--accent);
+            transition: border-color 0.4s ease, transform 0.4s var(--ease);
+        }
+        .flow-step:hover .dot { border-color: var(--accent); transform: scale(1.06); }
+        .flow-step h3 { margin: 12px 0 8px; font-size: 1.16rem; font-weight: 700; }
+        .flow-step p { margin: 0; color: var(--fg-dim); font-size: 0.96rem; max-width: 640px; }
+        .flow-step .who {
+            display: inline-block;
+            margin-top: 12px;
+            font-size: 0.72rem;
+            letter-spacing: 0.1em;
+            border-radius: 999px;
+            padding: 5px 13px;
+            border: 1px solid var(--line);
+            color: var(--muted);
+        }
+        .flow-step .who.human { color: var(--accent); border-color: rgba(176,135,51,0.4); }
+
+        .flow-note {
+            margin-top: 44px;
+            padding: 26px 28px;
+            border-left: 2px solid var(--accent);
+            background: var(--bg-soft);
+            border-radius: 0 10px 10px 0;
+            color: var(--fg-dim);
+            font-size: 0.97rem;
+        }
 
         /* ---------- Works ---------- */
         .grid {
@@ -339,12 +505,6 @@
             overflow: hidden;
             background: #e9e8e4;
         }
-        .thumb .art {
-            position: absolute;
-            inset: 0;
-            transition: transform 0.6s var(--ease);
-        }
-        .card:hover .thumb .art { transform: scale(1.08); }
         .thumb img {
             position: absolute;
             inset: 0;
@@ -390,15 +550,8 @@
             border-bottom: 8px solid transparent;
         }
         .card:hover .play { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-        .card-link {
-            position: absolute;
-            inset: 0;
-            z-index: 4;
-        }
-        .card-link:focus-visible {
-            outline: 2px solid var(--accent);
-            outline-offset: -3px;
-        }
+        .card-link { position: absolute; inset: 0; z-index: 4; }
+        .card-link:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
         .card-body { padding: 20px 22px 24px; }
         .card-body .meta {
             font-size: 0.68rem;
@@ -443,7 +596,7 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            gap: 26px;
+            gap: 24px;
         }
         .more-btn {
             font: inherit;
@@ -456,7 +609,7 @@
             border-radius: 999px;
             padding: 14px 40px;
             cursor: pointer;
-            transition: border-color 0.3s ease, color 0.3s ease, background 0.3s ease;
+            transition: border-color 0.3s ease, color 0.3s ease;
         }
         .more-btn:hover { border-color: var(--accent); color: var(--accent); }
         .more-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
@@ -523,17 +676,23 @@
         #contact .lead { margin-left: auto; margin-right: auto; }
         #contact .big-mail {
             display: inline-block;
-            font-size: clamp(1.2rem, 4.4vw, 2.3rem);
+            font-size: clamp(1.15rem, 4.2vw, 2.1rem);
             font-weight: 700;
-            margin-top: 26px;
+            margin-top: 28px;
             border-bottom: 1px solid var(--line);
             padding-bottom: 6px;
             word-break: break-all;
             transition: border-color 0.3s ease, color 0.3s ease;
         }
         #contact .big-mail:hover { border-color: var(--accent); color: var(--accent); }
+        .contact-hint {
+            margin: 34px auto 0;
+            max-width: 560px;
+            font-size: 0.9rem;
+            color: var(--muted);
+        }
         .socials {
-            margin-top: 38px;
+            margin-top: 34px;
             display: flex;
             gap: 28px;
             justify-content: center;
@@ -564,15 +723,20 @@
         }
         .reveal.in { opacity: 1; transform: translateY(0); }
 
-        @media (max-width: 760px) {
+        @media (max-width: 860px) {
             nav ul { display: none; }
-            section { padding: 88px 0; }
+            .nav-right { gap: 0; }
+            section { padding: 86px 0; }
+            .container { padding: 0 22px; }
             .mosaic-row img { width: 150px; }
+            .flow::before { left: 21px; }
+            .flow-step { grid-template-columns: 44px 1fr; gap: 18px; }
+            .flow-step .dot { width: 44px; height: 44px; font-size: 0.74rem; }
         }
         @media (prefers-reduced-motion: reduce) {
             html { scroll-behavior: auto; }
-            .scroll-cue::after, .mosaic-row, .hero-glow, .skeleton .thumb, .skeleton .bar { animation: none; }
-            .hero-eyebrow, .hero-inner h1, .hero-inner .tagline, .hero-lead, .scroll-cue { animation: none; opacity: 1; }
+            .mosaic-row, .hero-glow, .skeleton .thumb, .skeleton .bar { animation: none; }
+            .hero-eyebrow, .hero-inner h1, .hero-lead, .hero-points, .hero-actions { animation: none; opacity: 1; }
             .reveal { transition: none; }
             .card.enter { animation: none; }
         }
@@ -583,12 +747,15 @@
 
     <nav id="nav">
         <a href="#top" class="logo">so<span>.</span></a>
-        <ul>
-            <li><a href="#about">About</a></li>
-            <li><a href="#approach">Approach</a></li>
-            <li><a href="#works">Works</a></li>
-            <li><a href="#contact">Contact</a></li>
-        </ul>
+        <div class="nav-right">
+            <ul>
+                <li><a href="#service">Service</a></li>
+                <li><a href="#why">Why AI</a></li>
+                <li><a href="#process">Process</a></li>
+                <li><a href="#works">Works</a></li>
+            </ul>
+            <a href="#contact" class="nav-cta">相談する</a>
+        </div>
     </nav>
 
     <header id="top">
@@ -596,50 +763,183 @@
         <div class="hero-glow" style="top: 8%; left: 6%;" aria-hidden="true"></div>
         <div class="hero-glow two" style="bottom: 6%; right: 4%;" aria-hidden="true"></div>
         <div class="hero-inner">
-            <p class="hero-eyebrow">AI Film Studio</p>
-            <h1>so<span>.</span></h1>
-            <p class="tagline">Prompt&nbsp;/&nbsp;Motion&nbsp;/&nbsp;Story</p>
-            <p class="hero-lead">カメラを持たずに、映像をつくる。</p>
+            <p class="hero-eyebrow">AI Video Production</p>
+            <h1>撮影しない、<br><em>映像制作</em>。</h1>
+            <p class="hero-lead">so. は AI で動画をつくる会社です。カメラも、スタジオも、出演者も使いません。必要なのは、つくりたい映像についてお話しいただく時間だけです。</p>
+            <ul class="hero-points">
+                <li>社員の顔出し不要</li>
+                <li>撮影日の調整不要</li>
+                <li>ロケ・機材の手配不要</li>
+            </ul>
+            <div class="hero-actions">
+                <a href="#contact" class="btn primary">相談してみる</a>
+                <a href="#works" class="btn ghost">制作実績を見る</a>
+            </div>
         </div>
-        <div class="scroll-cue">Scroll</div>
     </header>
 
     <div class="container">
-        <section id="about" class="reveal">
-            <div class="section-label">01 — About</div>
-            <h2>カメラを持たずに、<br>映像をつくる。</h2>
-            <p class="lead">so. は AI を軸にした映像制作スタジオです。撮影を伴わない作品が大半で、企画からビジュアルの生成、編集、仕上げまでをひと続きのワークフローで組み立てています。</p>
-            <p class="lead">機材やロケーションという前提を外すと、これまで「撮れなかった画」が現実的な選択肢になります。頭の中にある一場面を、そのまま形にすること。それが so. のつくり方です。</p>
-            <p class="lead">制作した作品は YouTube チャンネル「ふぞろいの林檎たち」で公開しています。</p>
+        <section id="service" class="reveal">
+            <div class="section-label">01 — Service</div>
+            <h2>ヒアリングと、AIへの指示出し。<br>私たちの仕事はその2つだけです。</h2>
+            <p class="lead">つくりたい映像の目的、届けたい相手、使う場面、トーン。必要な要件をお客様から伺い、整理します。あとはその内容を AI への指示に落とし込むだけです。</p>
+            <p class="lead">映像の生成も、カット・テロップ・音の編集も、AI が行います。私たちは出てきたものを見て、指示と映像を調整し、納得のいく状態まで詰めてから納品します。撮影という工程そのものが存在しないので、そこにかかっていた時間・人・お金がまるごと不要になります。</p>
+            <ul class="tags">
+                <li>会社紹介</li>
+                <li>サービス紹介</li>
+                <li>採用</li>
+                <li>広告・CM</li>
+                <li>SNS 用ショート</li>
+                <li>展示会・イベント</li>
+                <li>社内向け</li>
+            </ul>
         </section>
 
-        <section id="approach" class="reveal">
-            <div class="section-label">02 — Approach</div>
-            <h2>チャットから、作品へ。</h2>
-            <p class="lead">やっていることは、驚くほどシンプルです。</p>
-            <div class="steps">
-                <article class="step">
-                    <div class="no">01</div>
-                    <h3>企画</h3>
-                    <p>つくりたい画を言葉に落とし込みます。設定・空気感・カメラワークまで、テキストで詰めていく工程です。</p>
+        <section id="why" class="reveal">
+            <div class="section-label">02 — Why AI</div>
+            <h2>「人を出す」「日を押さえる」を<br>やめると、こうなります。</h2>
+            <p class="lead">映像制作がなかなか進まない理由の多くは、企画そのものではなく、その周りの調整にあります。AI での制作は、その調整ごと省きます。</p>
+
+            <div class="benefits">
+                <article class="benefit">
+                    <div class="icon" aria-hidden="true">
+                        <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="24" cy="17" r="8"/>
+                            <path d="M10 40c0-7.2 6.3-12 14-12s14 4.8 14 12"/>
+                            <path d="M7 7l34 34"/>
+                        </svg>
+                    </div>
+                    <h3>社員の顔を映さなくていい</h3>
+                    <p>登場人物はすべて AI が生成します。誰かに出演をお願いする必要がありません。</p>
+                    <ul>
+                        <li>出演依頼や社内調整をしなくていい</li>
+                        <li>顔出しに抵抗のある方に無理をさせない</li>
+                        <li>肖像権・二次利用の許諾を取り付ける手間がない</li>
+                        <li>退職・異動があっても映像はそのまま使い続けられる</li>
+                        <li>「あの人が辞めたから撮り直し」が起きない</li>
+                    </ul>
                 </article>
-                <article class="step">
-                    <div class="no">02</div>
-                    <h3>生成</h3>
-                    <p>言葉をビジュアルに変換します。理想の一枚が出るまで、プロンプトを書き換えながら反復します。</p>
+
+                <article class="benefit">
+                    <div class="icon" aria-hidden="true">
+                        <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="7" y="11" width="34" height="30" rx="4"/>
+                            <path d="M7 20h34M16 7v8M32 7v8"/>
+                            <path d="M7 7l34 34"/>
+                        </svg>
+                    </div>
+                    <h3>撮影日を決めなくていい</h3>
+                    <p>撮影という工程がないので、日程を押さえるところから始める必要がありません。</p>
+                    <ul>
+                        <li>関係者全員のスケジュールを合わせなくていい</li>
+                        <li>スタジオ・ロケ地・機材の手配が発生しない</li>
+                        <li>天候や現場の都合で計画が崩れない</li>
+                        <li>業務を止めて現場を空ける必要がない</li>
+                        <li>直したいときも、再撮影ではなく指示の書き換えで済む</li>
+                    </ul>
                 </article>
-                <article class="step">
-                    <div class="no">03</div>
-                    <h3>編集</h3>
-                    <p>生成した素材を束ね、間と音を整えて一本の作品にします。ここで初めて「映像」になります。</p>
-                </article>
+            </div>
+
+            <div class="compare-wrap">
+                <table class="compare">
+                    <thead>
+                        <tr>
+                            <th scope="col">項目</th>
+                            <th scope="col">これまでの映像制作</th>
+                            <th scope="col">so. の AI 制作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row">出演者</th>
+                            <td class="old">社員やキャストの手配・調整が必要</td>
+                            <td class="new">不要（AI が生成）</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">撮影日</th>
+                            <td class="old">関係者全員の日程を押さえる必要がある</td>
+                            <td class="new">不要（撮影工程そのものがない）</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">場所・機材</th>
+                            <td class="old">スタジオ、ロケ地、カメラ、照明の準備</td>
+                            <td class="new">不要</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">修正したいとき</th>
+                            <td class="old">内容によっては再撮影が必要</td>
+                            <td class="new">指示を書き換えて生成し直すだけ</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">人の入れ替わり</th>
+                            <td class="old">出演者の退職・異動で使えなくなる</td>
+                            <td class="new">影響を受けない</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">お客様の作業</th>
+                            <td class="old">立ち会い、出演、現場対応</td>
+                            <td class="new">ヒアリングと確認のみ</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </section>
 
+        <section id="process" class="reveal">
+            <div class="section-label">03 — Process</div>
+            <h2>ご依頼から納品まで</h2>
+            <p class="lead">お客様にお願いするのは、最初のヒアリングと、途中の確認だけです。</p>
+
+            <div class="flow">
+                <div class="flow-step">
+                    <div class="dot">01</div>
+                    <div>
+                        <h3>ヒアリング</h3>
+                        <p>どんな映像をつくりたいのか、何のために使うのか、誰に届けたいのかを伺います。イメージが固まっていない段階でも構いません。</p>
+                        <span class="who human">so. ／ お客様</span>
+                    </div>
+                </div>
+                <div class="flow-step">
+                    <div class="dot">02</div>
+                    <div>
+                        <h3>要件整理</h3>
+                        <p>伺った内容を、構成・尺・トーン・画づくりの方針として整理します。ここで完成イメージをすり合わせます。</p>
+                        <span class="who human">so.</span>
+                    </div>
+                </div>
+                <div class="flow-step">
+                    <div class="dot">03</div>
+                    <div>
+                        <h3>AIへの指示出し・生成</h3>
+                        <p>整理した要件を AI への指示に変換し、映像を生成します。カットの構成やテロップ、音の編集まで AI の工程で完結します。</p>
+                        <span class="who">AI ／ so. が指示</span>
+                    </div>
+                </div>
+                <div class="flow-step">
+                    <div class="dot">04</div>
+                    <div>
+                        <h3>調整</h3>
+                        <p>出てきた映像を確認し、指示を書き換えて生成し直したり、映像そのものに手を入れたりして精度を上げます。撮り直しは発生しません。</p>
+                        <span class="who">AI ／ so. が指示</span>
+                    </div>
+                </div>
+                <div class="flow-step">
+                    <div class="dot">05</div>
+                    <div>
+                        <h3>納品</h3>
+                        <p>ご確認いただき、完成した映像データをお渡しします。</p>
+                        <span class="who human">so. ／ お客様</span>
+                    </div>
+                </div>
+            </div>
+
+            <p class="flow-note">お客様にご対応いただくのは <strong>01 のヒアリング</strong> と、途中の <strong>確認</strong> だけです。撮影の立ち会いも、出演も、現場対応もありません。</p>
+        </section>
+
         <section id="works" class="reveal">
-            <div class="section-label">03 — Works</div>
-            <h2>Selected Works</h2>
-            <p class="lead">YouTube の新着が自動で並びます。クリックするとその場で再生します。</p>
+            <div class="section-label">04 — Works</div>
+            <h2>制作実績</h2>
+            <p class="lead">実際に AI で制作した映像です。すべて撮影を行わずにつくっています。クリックするとその場で再生します。</p>
             <!-- 読み込み前はスケルトン。成功すれば実データに、失敗すればメッセージに置き換わる -->
             <div class="grid" id="works-grid">
                 <article class="card skeleton" aria-hidden="true">
@@ -662,10 +962,11 @@
         </section>
 
         <section id="contact" class="reveal">
-            <div class="section-label">04 — Contact</div>
-            <h2>一緒に、映像をつくりませんか。</h2>
-            <p class="lead">制作のご相談、お仕事のご依頼はメールでお気軽にどうぞ。</p>
+            <div class="section-label">05 — Contact</div>
+            <h2>まずは、つくりたい映像の話から。</h2>
+            <p class="lead">「こういうものをつくりたい」だけでも大丈夫です。実現できるかどうか、どんな進め方になるかをお返しします。</p>
             <a class="big-mail" href="mailto:bonvoyage.ti@icloud.com">bonvoyage.ti@icloud.com</a>
+            <p class="contact-hint">ご用途・イメージされている尺・希望時期などを添えていただけると、より具体的にご提案できます。</p>
             <div class="socials">
                 <a href="https://www.youtube.com/@hzrinrng" target="_blank" rel="noopener">YouTube</a>
                 <a href="mailto:bonvoyage.ti@icloud.com">Email</a>
@@ -697,20 +998,19 @@
             entries.forEach((e) => {
                 if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
             });
-        }, { threshold: 0.15 });
+        }, { threshold: 0.12 });
         document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
 
         // 現在地のナビを光らせる
         const navLinks = [...document.querySelectorAll('nav ul a')];
-        const sectionIds = navLinks.map((a) => a.getAttribute('href').slice(1));
         const spy = new IntersectionObserver((entries) => {
             entries.forEach((e) => {
                 if (!e.isIntersecting) return;
                 navLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === `#${e.target.id}`));
             });
         }, { rootMargin: '-45% 0px -50% 0px' });
-        sectionIds.forEach((id) => {
-            const el = document.getElementById(id);
+        navLinks.forEach((a) => {
+            const el = document.getElementById(a.getAttribute('href').slice(1));
             if (el) spy.observe(el);
         });
 
@@ -792,7 +1092,7 @@
 
             const meta = document.createElement('div');
             meta.className = 'meta';
-            meta.textContent = video.year ? `YouTube · ${video.year}` : 'YouTube';
+            meta.textContent = video.year ? `AI制作 · ${video.year}` : 'AI制作';
 
             const h3 = document.createElement('h3');
             h3.textContent = video.title || 'Untitled';
@@ -854,7 +1154,7 @@
             .then((data) => {
                 const videos = Array.isArray(data.videos) ? data.videos.filter((v) => v && v.id) : [];
                 if (videos.length === 0) {
-                    showWorksNote('作品を準備中です。YouTube チャンネルをご覧ください。');
+                    showWorksNote('制作実績を準備中です。YouTube チャンネルをご覧ください。');
                     return;
                 }
 
@@ -892,8 +1192,8 @@
                 }
             })
             .catch((err) => {
-                console.warn('[works] YouTube データを読み込めませんでした:', err.message);
-                showWorksNote('作品を読み込めませんでした。YouTube チャンネルをご覧ください。');
+                console.warn('[works] 制作実績を読み込めませんでした:', err.message);
+                showWorksNote('制作実績を読み込めませんでした。YouTube チャンネルをご覧ください。');
             });
     </script>
 </body>
