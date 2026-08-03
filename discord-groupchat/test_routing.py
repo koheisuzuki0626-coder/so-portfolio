@@ -552,6 +552,51 @@ def run():
     check("デザインは会話用と別モデルにできる",
           isinstance(bot.DESIGN_MODEL, str), True)
 
+    print("■ 長い返事を途中で切らない _chunks / send_as")
+    # 事故：メルカリ出品文の回答が『※ 上記は添付いただいた画像と、一』で切れた
+    _long = ("あ" * 900 + "。\n") * 4
+    _cs = bot._chunks(_long)
+    check("全部の文字が残る", "".join(c.replace("\n", "") for c in _cs).count("あ"),
+          _long.count("あ"))
+    check("1通ずつが上限内", max(len(c) for c in _cs) <= bot.DISCORD_LIMIT, True)
+    check("短い文は分けない", len(bot._chunks("こんにちは")), 1)
+    check("空でも落ちない", bot._chunks(""), ["(空の応答)"])
+    check("改行で切る", bot._chunks("あ" * 1500 + "\n" + "い" * 1000)[0].endswith("あ"), True)
+
+    print("■ 精査で文体を変えさせない _register_changed")
+    # 事故：長い返事だけGeminiの敬語＋箇条書きに化けて、急に他人行儀になった
+    _draft = "収益化の条件はチャンネル単位だよ。登録者500人以上で、あとは再生時間ね。俺はまず本数を増やす方がいいと思う。"
+    _polite = ("収益化の条件はチャンネル単位です。登録者500人以上が必要です。"
+               "まずは本数を増やすことをおすすめします。ご確認ください。")
+    check("敬体に化けたら採用しない", bot._register_changed(_draft, _polite), True)
+    check("話し言葉のままなら通す",
+          bot._register_changed(_draft, _draft + "あとサムネも大事だよ。"), False)
+    check("元から敬体なら変化とみなさない",
+          bot._register_changed(_polite, _polite), False)
+
+    print("■ 『これからもよろしく』で作業を起こさない")
+    # 事故：継続のお願いのたびに確認が立ち上がり『作業を中止した』が割り込んだ
+    for _t in ("チャンネル実績レポートこれからもよろしくね", "引き続き分析レポートよろしく",
+               "指示じゃないよ", "今後も動画作ってね", "今はいい", "実績分析はしなくていい"):
+        check(f"{_t!r} は作業にしない", bot.classify_route(_t), None)
+    for _t in ("実績分析して", "チャンネル実績レポートだ！",
+               "これからもよろしく、でもとりあえず今すぐ実績分析して"):
+        check(f"{_t!r} は作業のまま", bot.classify_route(_t), "ch_stats")
+
+    print("■ 言い直された確認は黙って退く（SUPERSEDED）")
+    import asyncio as _aio
+
+    async def _supersede():
+        loop = _aio.get_running_loop()
+        f1, f2 = loop.create_future(), loop.create_future()
+        bot._set_pending(555, f1, 1)
+        bot._set_pending(555, f2, 1)       # 言い直し＝新しい確認に置き換わる
+        got = f1.result()
+        bot._clear_pending(555, f2)
+        return got
+    check("古い確認は拒否ではなく置き換え扱い", _aio.run(_supersede()) is bot.SUPERSEDED, True)
+    check("置き換えの印は承認と区別できる", bot.SUPERSEDED is True, False)
+
     print("■ 相場・最新の実データは調べてから答えさせる fact_guide")
     # 実例：「アップルウォッチSeries7セルラーを売りたいので本文と金額教えて」に
     # ちゃんと答えられなかった（相場を調べず、シリアルからも何も分からないまま）
@@ -1033,7 +1078,10 @@ def run():
         bot._set_pending(1, f1, 100)
         bot._set_pending(1, f2, 100)          # 2件目が来た
         r = []
-        r.append(("古い確認は自動中止", f1.done() and f1.result() is False, True))
+        # 拒否(False)ではなく「置き換わった」印にする。区別しないと
+        # 言い直すたびに『🛑 やめました』が会話に割り込む。
+        r.append(("古い確認は置き換え扱い",
+                  f1.done() and f1.result() is bot.SUPERSEDED, True))
         bot._clear_pending(1, f1)             # 古い方のタイムアウト後片付け
         r.append(("新しい確認の受付は残る",
                   bot._pending_approvals.get(1) is not None, True))

@@ -3070,6 +3070,15 @@ _ASK_INFO_RE = re.compile(
     "どれくらいかかる|どのくらいかかる|どれぐらいかかる|どのくらい必要|"
     "何クレジット|なんクレジット|クレジット(は|って|を)?(いくら|どれ|どの|何|なん)"
 )
+# 「今やって」ではない言い方。継続のお願い・打ち消し・前置きなど。
+_NOT_NOW_RE = re.compile(
+    "これからも|今後も|引き続き|次回から|次からも|そのうち|いずれ|"
+    "指示じゃな|依頼じゃな|命令じゃな|お願いじゃな|やらなくていい|"
+    "しなくていい|今はいい|今じゃなくて|今すぐじゃな|まだいい"
+)
+# 打ち消しを打ち消す語（「これからも、とりあえず今すぐやって」は依頼のまま）
+_NOW_RE = re.compile("今すぐ|いますぐ|今から|いまから|今回は|とりあえず今|すぐに(やって|お願い)")
+
 # 「今すぐ作れ」という明確な依頼（料金の話が混ざっても作業を止めない）
 _GEN_ORDER_RE = re.compile("作って|作成して|つくって|生成して|描いて|作ってほしい")
 # 会話パスの claude CLI にはMCPの権限が無いため、ツールを呼ぼうとすると弾かれる。
@@ -3105,6 +3114,11 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     返り値: 'status'/'revise'/'short'/'virality'/'ad'/'credits'/'design'/
     'hf_model'/'hf_auto'/'motion'/'motion_ask'/None。
     on_message と同じ順序・同じ正規表現を使うので、これをテストすれば実挙動を検証できる。"""
+    # ⓪ 「これからもよろしく」は“今やって”ではない。
+    #    実際に「チャンネル実績レポートこれからもよろしくね」で確認が立ち上がり、
+    #    言い直すたびに『作業を中止した』が会話に割り込んだ。
+    if _NOT_NOW_RE.search(content) and not _NOW_RE.search(content):
+        return None
     # ① 生成物の状態確認（添付なし・状態ワード・文脈）。
     #    直近の生成があれば「できた？」だけでも状態確認につなぐ。
     #    ただし「作って」「作り直して」など生成・修正の依頼は状態確認にしない
@@ -4034,6 +4048,8 @@ async def _run_revise(message, instruction):
         approved = False
     finally:
         _clear_pending(cid, fut)
+    if approved is SUPERSEDED:
+        approved = False      # 印を承認と取り違えて実行しないための保険
     if not approved:
         await send_as(orch, cid, "🛑 作り直しをやめました（クレジットは消費していません）。")
         add_history(cid, "Orchestrator", "（修正プランが却下されたため作り直しを中止した）")
@@ -4946,8 +4962,31 @@ _REVIEW_PROMPT = (
     "分からないことは分からないままにする。"
     "直すところが無ければ、下書きをそのまま返す。"
     "説明・前置き・『修正しました』等は書かず、"
-    "最終的な回答本文だけを出力する。\n\n"
+    "最終的な回答本文だけを出力する。\n"
+    # 事故：長い返事だけがGeminiの文体に化けて、会話の途中で急に他人行儀な
+    # 敬語＋箇条書きになった。話が噛み合わない一番の原因だった。
+    "【文体は絶対に変えない】下書きの話し方をそのまま保つこと。\n"
+    "・『〜だよ』『〜ね』『〜と思う』のような話し言葉を、"
+    "『〜です』『〜ます』『〜ください』に直すのは禁止。\n"
+    "・見出し・箇条書き・区切り線を勝手に増やさない"
+    "（下書きが地の文なら地の文のまま返す）。\n"
+    "・丁寧にする、敬語にする、体裁を整える、はどれも『修正』ではない。"
+    "内容の誤りだけを直すこと。\n\n"
 )
+
+# 敬体（です・ます）の出現を数えるための目印。
+_POLITE_RE = re.compile(
+    "(?:です|ます|ました|ません|でしょう|ください|いたします|ございます)"
+    "(?=[。、\n！？!?」]|$)"
+)
+
+
+def _register_changed(draft, out):
+    """下書きは話し言葉なのに、精査後が敬体に化けていないか。
+    文体が入れ替わると、同じ相手が急に他人行儀になったように見える。"""
+    d = len(_POLITE_RE.findall(draft))
+    o = len(_POLITE_RE.findall(out))
+    return d <= 1 and o >= 3
 
 
 async def _review_reply(draft, history):
@@ -4969,6 +5008,10 @@ async def _review_reply(draft, history):
     out = _clean_reply((out or "").strip(), _latest_user_msg(history))
     # 空・極端に短い・逆に長くなった場合は、精査が失敗したとみなして下書きを使う
     if not out or len(out) < len(draft) * 0.4 or len(out) > len(draft) * 1.5:
+        return draft, False
+    # 文体が敬体に化けていたら、内容の精査ではなく書き直しなので採用しない
+    if _register_changed(draft, out):
+        print("[review] 文体が変わったため下書きを使用")
         return draft, False
     return out, True
 
@@ -5306,10 +5349,34 @@ async def send_long(channel, text, prefix=""):
         await channel.send((prefix if i == 0 else "") + text[i:i + 1900])
 
 
+DISCORD_LIMIT = 1900        # Discordの2000字上限に余裕を持たせた値
+
+
+def _chunks(text, size=DISCORD_LIMIT):
+    """長文を送信できる大きさに割る。できるだけ改行や句点で切る。
+    以前は [:1900] で切り捨てていたため、長い回答が
+    『※ 上記は添付いただいた画像と、一』のように文の途中で消えていた。"""
+    text = text or "(空の応答)"
+    out = []
+    while len(text) > size:
+        cut = text.rfind("\n", 0, size)
+        if cut < size * 0.5:
+            cut = max(text.rfind("。", 0, size), text.rfind("、", 0, size))
+            cut = cut + 1 if cut >= size * 0.5 else size
+        out.append(text[:cut].rstrip())
+        text = text[cut:].lstrip("\n")
+    out.append(text)
+    return [c for c in out if c] or ["(空の応答)"]
+
+
 async def send_as(bot, channel_id, text, view=None):
+    """長い本文は切り捨てず、分割して全部送る。
+    ボタン(view)は最後の塊に付ける（読み終わった位置に出す）。"""
     channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-    kwargs = {"view": view} if view is not None else {}
-    await channel.send((text or "(空の応答)")[:1900], **kwargs)
+    parts = _chunks(text)
+    for i, part in enumerate(parts):
+        kwargs = {"view": view} if (view is not None and i == len(parts) - 1) else {}
+        await channel.send(part, **kwargs)
 
 
 # 会話ログが「名前: 本文」形式なので、モデルが真似て自分の名前を先頭に付けてしまう。
@@ -5781,6 +5848,10 @@ def _norm_reply(text):
     return re.sub(r"[\s、。．，・！？!?.…〜~ー\-]+", "", text or "").lower()
 
 
+# 確認が「新しい確認に置き換わった」ことを表す印（拒否とは別物）。
+SUPERSEDED = object()
+
+
 def _set_pending(cid, fut, owner_id):
     """新しい確認を出す（1チャンネル1件に保つ）。
     先に出ていた確認は自動的に中止扱いにする。これをしないと、
@@ -5788,7 +5859,9 @@ def _set_pending(cid, fut, owner_id):
     『OKと言っても始まらない → 数分後に急にやめましたと出る』が起きる。"""
     old = _pending_approvals.get(cid)
     if old and not old[0].done():
-        old[0].set_result(False)
+        # 「拒否された」ではなく「新しい確認に置き換わった」。区別しないと
+        # 言い直すたびに『🛑 やめました』が会話に割り込む（実際に起きた）。
+        old[0].set_result(SUPERSEDED)
     _pending_approvals[cid] = (fut, owner_id)
 
 
@@ -5886,6 +5959,8 @@ async def _confirm(message, cid, summary, plan, cost="", engine="", eta=""):
         approved = False
     finally:
         _clear_pending(cid, fut)
+    if approved is SUPERSEDED:
+        return False        # 言い直された分の確認。黙って退く
     if not approved:
         await send_as(orch, cid, "🛑 やめました。言い直してもらえれば作り直します。")
         add_history(cid, "Orchestrator", f"（「{summary}」の作業を中止した）")
@@ -5943,6 +6018,8 @@ async def run_claude_agent(cid, task, owner_id):
         approved = False
     finally:
         _clear_pending(cid, fut)
+    if approved is SUPERSEDED:
+        approved = False      # 印を承認と取り違えて実行しないための保険
     if not approved:
         return "🛑 却下されました。実行しません。"
 
@@ -6258,6 +6335,8 @@ async def _run_self_fix(cid, request, owner_id):
         approved = False
     finally:
         _clear_pending(cid, fut)
+    if approved is SUPERSEDED:
+        approved = False      # 印を承認と取り違えて実行しないための保険
     if not approved:
         back = _restore_self(saved)
         await send_as(
