@@ -741,11 +741,46 @@ async def _push_paths(paths, msg, tries=3):
 
 # 不具合を訴えている発言。これを見たら、頼まれる前にログを共有しておく
 # （スクショを撮って送ってもらう手間をなくすため）。
-_TROUBLE_RE = re.compile(
-    "おかしい|変な挙動|変な動き|誤動作|バグ|不具合|動かない|動作しない|"
-    "うまくいかない|うまく行かない|失敗してる|直ってない|直って無い|なおってない|"
-    "反応しない|返事がない|止まってる|固まってる|勝手に|意味不明|なんで.*なる"
+# ボットの不具合を訴えているかの判定。
+# 事故：「勝手に制作して上げてる動画なんだよね」（自分のYouTube動画の話）に
+# 反応して、会話の途中で「🗂 状況を自動で共有しました」と割り込んだ。
+# 「勝手に」「おかしい」は普通の日本語で日常的に使う語で、それ単体では
+# ボットの話かどうか分からない。2段構えにして、単体で成立する言い方と、
+# 何がおかしいのかを示す語とセットで初めて成立する言い方を分ける。
+_TROUBLE_STRONG_RE = re.compile(
+    "誤動作|変な挙動|変な動き|挙動が?おかしい|バグって|不具合|フリーズ|クラッシュ|"
+    "反応しない|反応がない|返事がない|返事しない|返信がない|応答がない|"
+    "エラーが?出|エラーになる|落ちてる|落ちてた|ちゃんと動いてない|読み込めない"
 )
+_TROUBLE_WEAK_RE = re.compile(
+    "おかしい|動かない|動作しない|うまくいかない|うまく行かない|失敗してる|"
+    "直ってない|直って無い|なおってない|治ってない|止まってる|固まってる|"
+    "意味不明|変になる|変になった"
+)
+# 「ボットのこと」を言っていると分かる語。弱い言い方はこれとセットの時だけ拾う。
+_TROUBLE_SUBJ_RE = re.compile(
+    "ボット|ぼっと|bot|クロード|claude|ジェミニ|gemini|再起動|コード|プログラム|"
+    "アプリ|機能|挙動|動作|エラー|ログ|生成|デザイン|サムネ|バナー|相関図|"
+    "プロンプト|モデル|返事|返信|応答|投入|アップロード",
+    re.I,
+)
+# 「勝手に○○した」は、ボットが頼んでいない動作をした時だけ訴えになる。
+# 「勝手に制作して上げてる（自分が作った）」と区別するため、直後に
+# ボット側の動作を表す語が来ている場合に限る。
+_TROUBLE_AUTO_RE = re.compile(
+    "勝手に[^。、\n]{0,15}(生成|作り直|投稿|始ま|動い|切り替わ|変わって|消え|送信|実行|返事)"
+)
+
+
+def _looks_trouble(content):
+    """『ボットの調子がおかしい』という訴えか。普通の会話では鳴らさない。"""
+    if not content:
+        return False
+    if _USER_REPORT_RE.search(content):     # お礼・成功報告はどう見ても不具合ではない
+        return False
+    if _TROUBLE_STRONG_RE.search(content) or _TROUBLE_AUTO_RE.search(content):
+        return True
+    return bool(_TROUBLE_WEAK_RE.search(content) and _TROUBLE_SUBJ_RE.search(content))
 AUTOLOG_MIN_GAP = int(os.getenv("AUTOLOG_MIN_GAP", "600"))  # 連投を防ぐ間隔（秒）
 _last_autolog = {}
 
@@ -6403,7 +6438,7 @@ async def _dispatch_message(message):
 
     # 不具合の訴えを検知したら、頼まれる前にログを共有しておく。
     # 返事はそのまま普通に続ける（ここでは止めない）。
-    if _TROUBLE_RE.search(content):
+    if _looks_trouble(content):
         _track(asyncio.create_task(_autoshare_log(cid, content[:60])))
 
     # 会話モデルの切替・確認（AI判定より前に拾う。AIに任せると
