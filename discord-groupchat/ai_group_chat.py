@@ -1193,8 +1193,17 @@ OPS_RULES = (
 # 一般知識など）では運用ルールを一切渡さないので、案内文が漏れようがない。
 _OPS_TOPIC_RE = re.compile(
     r"(ボット|ぼっと|bot|再起動|起動|コード|プログラム|バグ|エラー|不具合|"
-    r"直し|修正|反映|デプロイ|ログ|進捗|できた|完成|生成|作っ|作り|つくっ|"
-    r"動画|映像|画像|イラスト|サムネ|字幕|編集|プロンプト|投稿|アップ|"
+    # 「作っ」「できた」「完成」を素で入れていたため、『アップルパイ作った』
+    # 『料理完成した』のような日常会話にも運用ルールが混ざっていた。
+    # 制作物の名前（動画・画像・サムネ…）が下に並んでいるので、それで足りる。
+    r"直し|修正|反映|デプロイ|ログ|進捗|生成|"
+    # 進捗の聞き方だけを拾う（「アップルパイ作った」のような報告は拾わない）
+    r"できた[？?]|できてる|まだできて|完成した[？?]|"
+    # 「アップ」だけだと『アップルウォッチ』『アップグレード』にも当たり、
+    # 物の売買の相談にボットの運用ルールを混ぜてしまった。動画を上げる話に限る。
+    r"動画|映像|画像|イラスト|サムネ|バナー|字幕|編集|プロンプト|投稿|"
+    r"相関図|関係図|家系図|組織図|年表|デザイン|フローチャート|マインドマップ|"
+    r"アップ(ロード|デート|し|する|した|して)|"
     r"チャンネル|discord|ディスコ|claude|クロード|gemini|ジェミニ|"
     r"api|mcp|higgs|ヒッグス|クレジット|課金|youtube|ユーチューブ|ショート)",
     re.I,
@@ -1258,6 +1267,51 @@ def ops_guide(context_text=""):
     return TALK_RULES + OPS_RULES + CAPABILITY_RULES
 
 
+# 「いまの実際の値」を聞かれている話題。記憶で答えると必ず古い/嘘になる。
+# 実例:「アップルウォッチSeries7セルラーを売りたいので本文と金額教えて」に
+# ちゃんと答えられなかった（相場を調べず、シリアルからも何も分からないまま）。
+_FACT_TOPIC_RE = re.compile(
+    "相場|買取|下取り|出品|売りたい|売れる|売値|いくらで売|"
+    "メルカリ|ラクマ|ヤフオク|フリマ|中古|定価|実売|時価|"
+    "今の(値段|価格|相場)|現在の(値段|価格)|在庫|発売日|最新(価格|情報|版)"
+)
+_SELL_TOPIC_RE = re.compile("出品|売りたい|売る|売却|手放|買取|下取り|フリマ")
+FACT_RULES = (
+    "【この話題で必ず守ること】いまの実際の値を聞かれている。"
+    "自分の記憶で答えると必ず古くなるので、WebSearch / WebFetch で実際に"
+    "調べてから答えること（このワークスペースでは許可されている）。"
+    "調べた結果が得られなかった時は、金額を推測で断定せず"
+    "『調べられなかった』と正直に言う。それらしい数字を作らない。\n"
+    "型番・シリアル番号から仕様（サイズ・色・容量・世代）を断定しない。"
+    "メーカーの確認ページで調べるか、分からなければ本人に聞くこと"
+    "（近年のシリアルは規則性が無く、見ただけでは分からない）。\n"
+    "金額を答えるときは、①調べた売れ筋の価格帯 ②その根拠（どこの相場か）"
+    "③価格を左右する条件（状態・付属品・サイズ・バッテリー最大容量など）"
+    "を分けて書く。足りない情報は最後に1〜2点だけ聞く（質問攻めにしない）。\n"
+)
+SELL_RULES = (
+    "売却・出品の相談なので、聞かれていれば出品用の本文もそのまま貼れる形で書く："
+    "タイトル（商品名・型番・サイズ・色）／状態／付属品の有無／"
+    "使用期間・バッテリー状態／発送方法／注意書き（すり替え防止・返品可否）。"
+    "分からない項目は勝手に埋めず「【要確認】」と書いて本人に確認させる。\n"
+)
+
+
+def fact_guide(context_text=""):
+    """相場・最新の実データを聞かれている時だけ、調べさせるルールを渡す。
+    それ以外の話題には渡さない（無関係な会話に指示文が漏れるのを防ぐ）。"""
+    text = context_text if isinstance(context_text, str) else _recent_text(context_text)
+    text = text or ""
+    if not _FACT_TOPIC_RE.search(text):
+        return ""
+    return FACT_RULES + (SELL_RULES if _SELL_TOPIC_RE.search(text) else "")
+
+
+def topic_guide(context_text=""):
+    """その場の話題に応じたルール一式（運用＋実データ）。"""
+    return ops_guide(context_text) + fact_guide(context_text)
+
+
 # 後方互換（外部から参照された場合は全部入りを返す）
 BOT_OPS_GUIDE = TALK_RULES + OPS_RULES
 
@@ -1268,7 +1322,7 @@ def peer_persona(me, partner, history=None):
         f"{partner}も人間も対等な仲間。日本語で{REPLY_CHARS}字以内、1発言だけで自然に参加する。"
         "前置きや名乗りは不要。直前の流れを踏まえ、自分の視点も述べること。"
         "自分や相手の過去の発言と同じ内容の繰り返しは厳禁。毎回、新しい内容を足すこと。"
-        + ops_guide(history)
+        + topic_guide(history)
     )
 
 
@@ -1320,7 +1374,7 @@ async def _ask_claude_persona(role, history):
     prompt = (
         f"あなたは{name}。{persona}\n"
         f"日本語で{REPLY_CHARS}字以内、前置きや名乗りは不要、回答本体のみ。"
-        + ops_guide(history) + "\n\n"
+        + topic_guide(history) + "\n\n"
         + transcript_block(history)
         + "\n\n上の会話ログの最後の発言に、あなたの立場で答えてください。"
         "ログや指示文をそのまま繰り返さず、回答の本文だけを書くこと。"
@@ -2833,7 +2887,7 @@ ORCH_PERSONA = (
 def _answer_prompt(who, history, extra=""):
     return (
         f"あなたは{who}。次の会話の最後の要求に、正確で役立つ回答を日本語で簡潔に述べる。"
-        "前置きや名乗りは不要、回答本体のみ。" + ops_guide(history) + "\n\n"
+        "前置きや名乗りは不要、回答本体のみ。" + topic_guide(history) + "\n\n"
         + _running_note(_cid_of_history(history))
         + _profiles_context()
         + (extra + "\n\n" if extra else "")
@@ -3308,7 +3362,7 @@ async def _plan(history):
            f"その文言をそのまま返事として出力してはいけない。\n"
            if _gemini_replies_on() else
            "\n返事は書かず、JSONだけを返すこと（返事はクロードが書く）。\n")
-        + ops_guide(history) + "\n\n"
+        + topic_guide(history) + "\n\n"
         + _running_note(_cid_of_history(history))
         + _profiles_context()
         + transcript_block(history)
