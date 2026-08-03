@@ -242,34 +242,6 @@
         @keyframes fadeCue { to { opacity: 1; } }
         @keyframes cuePulse { 0%,100% { opacity: 0.25; transform: scaleY(0.7); } 50% { opacity: 0.9; transform: scaleY(1); } }
 
-        /* ---------- Stats ---------- */
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            border-top: 1px solid var(--line);
-            border-bottom: 1px solid var(--line);
-        }
-        .stat {
-            padding: 46px 20px;
-            text-align: center;
-            border-left: 1px solid var(--line);
-        }
-        .stat:first-child { border-left: 0; }
-        .stat .num {
-            font-size: clamp(1.9rem, 5vw, 2.9rem);
-            font-weight: 800;
-            line-height: 1.1;
-            letter-spacing: -0.01em;
-        }
-        .stat .num small { font-size: 0.42em; font-weight: 600; color: var(--accent); margin-left: 4px; }
-        .stat .label {
-            margin-top: 10px;
-            font-size: 0.66rem;
-            letter-spacing: 0.28em;
-            text-transform: uppercase;
-            color: var(--muted);
-        }
-
         /* ---------- Sections ---------- */
         section { padding: 128px 0; border-top: 1px solid var(--line); }
         section:first-of-type { border-top: 0; }
@@ -595,9 +567,6 @@
         @media (max-width: 760px) {
             nav ul { display: none; }
             section { padding: 88px 0; }
-            .stats { grid-template-columns: 1fr; }
-            .stat { border-left: 0; border-top: 1px solid var(--line); padding: 34px 20px; }
-            .stat:first-child { border-top: 0; }
             .mosaic-row img { width: 150px; }
         }
         @media (prefers-reduced-motion: reduce) {
@@ -634,21 +603,6 @@
         </div>
         <div class="scroll-cue">Scroll</div>
     </header>
-
-    <div class="stats" id="stats">
-        <div class="stat">
-            <div class="num" id="stat-works">—</div>
-            <div class="label">Works</div>
-        </div>
-        <div class="stat">
-            <div class="num" id="stat-channel">—</div>
-            <div class="label">Channel</div>
-        </div>
-        <div class="stat">
-            <div class="num" id="stat-updated">—</div>
-            <div class="label">Last Updated</div>
-        </div>
-    </div>
 
     <div class="container">
         <section id="about" class="reveal">
@@ -864,43 +818,6 @@
             grid.replaceChildren(note);
         }
 
-        /* ---------- Stats ---------- */
-        function countUp(el, target) {
-            const duration = 1100;
-            const start = performance.now();
-            function tick(now) {
-                const t = Math.min((now - start) / duration, 1);
-                const eased = 1 - Math.pow(1 - t, 3);
-                el.textContent = Math.round(target * eased);
-                if (t < 1) requestAnimationFrame(tick);
-            }
-            requestAnimationFrame(tick);
-        }
-
-        function fillStats(data, count) {
-            const worksEl = document.getElementById('stat-works');
-            const channelEl = document.getElementById('stat-channel');
-            const updatedEl = document.getElementById('stat-updated');
-
-            channelEl.style.fontSize = 'clamp(1rem, 2.6vw, 1.5rem)';
-            channelEl.textContent = data.channelTitle || 'YouTube';
-
-            updatedEl.style.fontSize = 'clamp(1rem, 2.6vw, 1.5rem)';
-            updatedEl.textContent = data.updatedAt
-                ? new Date(data.updatedAt).toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' })
-                : '—';
-
-            // 数字は画面に入ってからカウントアップさせる
-            const statsIo = new IntersectionObserver((entries, obs) => {
-                entries.forEach((e) => {
-                    if (!e.isIntersecting) return;
-                    countUp(worksEl, count);
-                    obs.disconnect();
-                });
-            }, { threshold: 0.4 });
-            statsIo.observe(document.getElementById('stats'));
-        }
-
         /* ---------- Hero mosaic ---------- */
         function buildMosaic(videos) {
             const host = document.getElementById('hero-mosaic');
@@ -942,7 +859,6 @@
                 }
 
                 buildMosaic(videos);
-                fillStats(data, videos.length);
 
                 const INITIAL = 6;
                 const STEP = 6;
