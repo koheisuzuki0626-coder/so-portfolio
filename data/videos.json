@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-07-31T05:30:58.984Z",
+  "updatedAt": "2026-08-03T00:51:14.019Z",
   "channelId": "UCK-RAb4PrWVN4EXXPnbJ67w",
   "channelTitle": "ふぞろいの林檎たち",
   "videos": [
@@ -147,17 +147,6 @@
       "thumbnail": "https://i.ytimg.com/vi/Mj6lhVsB7Bo/hqdefault.jpg"
     },
     {
-      "id": "KbdYpVtGYHM",
-      "title": "エビオス錠CM",
-      "description": "",
-      "publishedAt": "2026-07-17T05:30:58.979Z",
-      "publishedRelative": "2 週間前",
-      "publishedIsApproximate": true,
-      "year": "2026",
-      "url": "https://www.youtube.com/watch?v=KbdYpVtGYHM",
-      "thumbnail": "https://i.ytimg.com/vi/KbdYpVtGYHM/hqdefault.jpg"
-    },
-    {
       "id": "wmnHqZ8H31I",
       "title": "未知との遭遇",
       "description": "",
@@ -224,28 +213,6 @@
       "thumbnail": "https://i.ytimg.com/vi/8sfyTWzkd-c/hqdefault.jpg"
     },
     {
-      "id": "ldZMQ11uQbs",
-      "title": "無印の水筒はいいよ",
-      "description": "",
-      "publishedAt": "2026-07-10T05:30:58.979Z",
-      "publishedRelative": "3 週間前",
-      "publishedIsApproximate": true,
-      "year": "2026",
-      "url": "https://www.youtube.com/watch?v=ldZMQ11uQbs",
-      "thumbnail": "https://i.ytimg.com/vi/ldZMQ11uQbs/hqdefault.jpg"
-    },
-    {
-      "id": "SHGuTVeTkdk",
-      "title": "やっぱハチミツが一番うまい",
-      "description": "",
-      "publishedAt": "2026-07-10T05:30:58.979Z",
-      "publishedRelative": "3 週間前",
-      "publishedIsApproximate": true,
-      "year": "2026",
-      "url": "https://www.youtube.com/watch?v=SHGuTVeTkdk",
-      "thumbnail": "https://i.ytimg.com/vi/SHGuTVeTkdk/hqdefault.jpg"
-    },
-    {
       "id": "a2N43beV0yo",
       "title": "武士道とは！",
       "description": "",
@@ -266,17 +233,6 @@
       "year": "2026",
       "url": "https://www.youtube.com/watch?v=h7L30UiL9Bo",
       "thumbnail": "https://i.ytimg.com/vi/h7L30UiL9Bo/hqdefault.jpg"
-    },
-    {
-      "id": "eeg4sxpn7UE",
-      "title": "iPhone17ProMax",
-      "description": "",
-      "publishedAt": "2026-07-03T05:30:58.979Z",
-      "publishedRelative": "4 週間前",
-      "publishedIsApproximate": true,
-      "year": "2026",
-      "url": "https://www.youtube.com/watch?v=eeg4sxpn7UE",
-      "thumbnail": "https://i.ytimg.com/vi/eeg4sxpn7UE/hqdefault.jpg"
     },
     {
       "id": "dK0jk37tbBY",
@@ -310,17 +266,6 @@
       "year": "2026",
       "url": "https://www.youtube.com/watch?v=FZcy81vuD80",
       "thumbnail": "https://i.ytimg.com/vi/FZcy81vuD80/hqdefault.jpg"
-    },
-    {
-      "id": "NAff2FBlsgk",
-      "title": "無印の水筒使いやすい",
-      "description": "",
-      "publishedAt": "2026-07-03T05:30:58.979Z",
-      "publishedRelative": "4 週間前",
-      "publishedIsApproximate": true,
-      "year": "2026",
-      "url": "https://www.youtube.com/watch?v=NAff2FBlsgk",
-      "thumbnail": "https://i.ytimg.com/vi/NAff2FBlsgk/hqdefault.jpg"
     }
   ]
 }
