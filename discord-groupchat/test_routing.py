@@ -587,6 +587,24 @@ def run():
     check("デザインは会話用と別モデルにできる",
           isinstance(bot.DESIGN_MODEL, str), True)
 
+    print("■ デザインの続きを画像生成に投げない／黙って生成を始めない")
+    # 事故：相関図に「追加して出して」と頼んだら、動画/画像の作り直しとして
+    # 解釈され、Higgsfieldの画像生成が確認なしで走り出した。
+    _src = open(bot.__file__, encoding="utf-8").read()
+    check("デザインの続きは動画用の解釈にかけない",
+          'if str(lg.get("label", "")).startswith("デザイン"):' in _src, True)
+    check("作り直しの入口でもデザインを受け止める",
+          'if str(last.get("label", "")).startswith("デザイン"):' in _src, True)
+    check("文脈解釈からの新規生成にも確認を挟む",
+          '_fired(cid, "新規生成(文脈解釈)", content)' in _src
+          and "Higgsfieldのクレジットを消費します" in _src, True)
+    # 直前がデザインの時、依頼の形だけが作り直しに進む
+    _D2 = {"has_last_gen": True, "last_was_design": True}
+    check("依頼なら作り直しへ", bot.classify_route("追加して出して", **_D2), "design")
+    for _t in ("見事じゃ", "映像を見るときにおさらいとしてみるわ", "これ何に使えるかな"):
+        check(f"{_t[:14]!r}… は会話のまま", bot.classify_route(_t, **_D2), None)
+        check(f"{_t[:14]!r}… は依頼ではない", bot._wants_action(_t), False)
+
     print("■ 『足してほしい』は作り直し（状態確認に化けない）")
     # 事故：「でもまだ出てきてない武将たちもいるけどそれも追記してくれる？」が
     # 『まだ』だけを拾われて状態確認になり、完成済みのURLを貼り直して終わった

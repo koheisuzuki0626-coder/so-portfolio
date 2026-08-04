@@ -4139,6 +4139,19 @@ async def _run_revise(message, instruction):
     ローカル記録が無ければ Higgsfield の直近生成からプロンプトを回収する。"""
     cid = message.channel.id
     last = _load_last_gen(cid) or {}
+    # 直前がデザイン（HTMLで組んだ図）なら、画像生成で作り直してはいけない。
+    # 文字と線が崩れて別物になるうえ、使う必要のないクレジットを消費する。
+    # 入口がどこであってもここで必ず受け止める（最後の砦）。
+    if str(last.get("label", "")).startswith("デザイン"):
+        _req = f"{last.get('prompt', '')}\n【今回の修正指示】{instruction}"
+        if await _confirm(
+            message, cid, f"デザインの作り直し（{instruction[:40]}）",
+            "前回のデザインに今回の指示を足して、HTMLで組み直して画像に書き出します",
+            "無料（生成モデルを使わないのでクレジットは消費しません）",
+            ENGINE_DESIGN,
+        ):
+            await _run_design(message, _req)
+        return
     base_prompt = last.get("prompt")
     media_type = last.get("media_type", "video")
     aspect_ratio = last.get("aspect_ratio")
@@ -7144,19 +7157,46 @@ async def _dispatch_message(message):
     lg = _load_last_gen(cid)
     if (route is None and content and not message.attachments and lg
             and time.time() - lg.get("t", 0) < 3600):
-        intent, text = await _interpret_video_turn(cid, content, lg)
-        if intent == "revise":
-            add_history(cid, message.author.display_name, content)
-            _spawn(_run_revise(message, content), cid, "作り直し")
-            return
-        if intent == "new":
-            add_history(cid, message.author.display_name, content)
-            _spawn(_run_hf_generate(message, text or content, None,
-                                    lg.get("media_type", "video"), "自動選定",
-                                    aspect_ratio=lg.get("aspect_ratio")),
-                   cid, "動画生成")
-            return
-        # intent == "chat" → 下の通常会話へ（動画の感想・質問はそのまま会話）
+        # 直前がデザイン（HTMLで組んだ図）なら、動画用の意図解釈にはかけない。
+        # 事故：相関図に「追加して出して」と頼んだら、動画/画像の作り直しとして
+        # 解釈され、Higgsfieldの画像生成が確認なしで走り出した。
+        # デザインを画像生成で作り直すと、せっかくの文字が崩れて別物になる。
+        if str(lg.get("label", "")).startswith("デザイン"):
+            if _wants_action(content):
+                add_history(cid, message.author.display_name, content)
+                _fired(cid, "デザインの作り直し(文脈解釈)", content)
+                _req = f"{lg.get('prompt', '')}\n【今回の修正指示】{content}"
+                _gate(message, cid, f"デザインの作り直し（{content[:40]}）",
+                      "前回のデザインに今回の指示を足して、HTMLで組み直して"
+                      "画像に書き出します",
+                      lambda: _run_design(message, _req), "デザイン制作",
+                      "無料（生成モデルを使わないのでクレジットは消費しません）",
+                      engine=ENGINE_DESIGN)
+                return
+            # 依頼の形でなければ、ただの感想・質問なので普通の会話へ
+        else:
+            intent, text = await _interpret_video_turn(cid, content, lg)
+            if intent == "revise":
+                add_history(cid, message.author.display_name, content)
+                _fired(cid, "作り直し(文脈解釈)", content)
+                _spawn(_run_revise(message, content), cid, "作り直し")
+                return
+            if intent == "new":
+                add_history(cid, message.author.display_name, content)
+                _fired(cid, "新規生成(文脈解釈)", content)
+                # ここは確認を挟まずに生成へ入っていた。クレジットを使う作業を
+                # 黙って始めるのは「勝手に生成が始まる」そのものなので必ず確認する。
+                _req2 = text or content
+                _mt = lg.get("media_type", "video")
+                _kind = "動画" if _mt == "video" else "画像"
+                _gate(message, cid, f"{_kind}の生成（{_req2[:40]}）",
+                      f"内容に合う最適なモデルを自動で選んで{_kind}を生成します",
+                      lambda: _run_hf_generate(message, _req2, None, _mt, "自動選定",
+                                               aspect_ratio=lg.get("aspect_ratio")),
+                      "動画/画像生成", "Higgsfieldのクレジットを消費します",
+                      engine=_engine_label_hf("自動選定", _kind))
+                return
+            # intent == "chat" → 下の通常会話へ（感想・質問はそのまま会話）
 
     # 進行中プロジェクトがあれば、その返信（承認/修正）として扱う
     if projects.get(cid):
