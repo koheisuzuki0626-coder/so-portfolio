@@ -4019,16 +4019,28 @@ async def _mcp_motion_control(image_url, video_url, request):
     return _extract_video_url(out) or True
 
 
-async def _mcp_gen_status(media_type="video", model=None):
-    """生成ジョブの完了確認（1回）。完了ならURL、処理中ならNone。全モデル共通。"""
+async def _mcp_gen_status(media_type="video", model=None, since=None):
+    """生成ジョブの完了確認（1回）。完了ならURL、処理中ならNone。全モデル共通。
+    since（投入時刻）を渡すと、それより古い生成は今回のものではないとして無視する。
+    これが無いと、履歴に残る【1か月前の別の生成】を完成として報告していた
+    （実際に『公園でバスケをする男性にリスが絡む動画』が結果として出た）。"""
     model_clause = (
         f"最新の {model} ジョブ" if model else f"最新の {media_type} ジョブ"
     )
+    since_clause = ""
+    if since:
+        stamp = datetime.fromtimestamp(since, JST).strftime("%Y-%m-%d %H:%M")
+        since_clause = (
+            f"\n【重要】今回の投入は {stamp}（JST）です。"
+            "それより前に作られた生成は今回のものではないので絶対に対象にしない。"
+            "該当する新しい生成が無ければ『PENDING』と答えること。"
+        )
     task = (
         f"Higgsfield の MCP ツール show_generations（type={media_type}, size=3）で"
         f"最新の生成履歴を確認して。{model_clause}について、status が completed なら"
         "そのURL（results.rawUrl）だけを最終行に出力。failed なら『ERROR: 理由』、"
         "まだ処理中・履歴に無い場合は『PENDING』とだけ最終行に出力して。"
+        + since_clause
     )
     out = await _run_claude_exec(task, timeout=180)
     print(f"[gen_mcp] 状態確認: {(out or '')[-200:]}")
@@ -5633,7 +5645,9 @@ async def _report_gen_status(channel, cid, author_name=None, said=None):
         label = job.get("label") or "生成"
         await channel.send(f"🔎 「{label}」の状況を Higgsfield で確認します…")
         try:
-            vurl = await _mcp_gen_status(job.get("media_type", "video"), job.get("model"))
+            vurl = await _mcp_gen_status(job.get("media_type", "video"),
+                                         job.get("model"),
+                                         since=job.get("submitted_at"))
         except Exception as e:  # noqa: BLE001
             await channel.send(f"⚠️ 生成が失敗していました: {str(e)[:250]}")
             add_history(cid, "Orchestrator", "（生成の失敗を報告した）")
@@ -7511,11 +7525,17 @@ async def _dispatch_message(message):
         return
 
     if route == "hf_auto":
-        mtype = "image" if re.search("画像|イラスト|ロゴ|絵|写真|アイコン", content) else "video"
         add_history(cid, message.author.display_name, content)
         # 「ヒッグスフィールドで作って」のように作り手の指定しか無い時は、
         # その指定語を題材にせず、直前に頼まれた中身を使う
         _hreq = _request_with_context(content, cid)
+        # 動画か画像かは【補ったあとの依頼】で決める。発言だけで見ると
+        # 「ヒッグスフィールドで」に媒体の語が無く、画像を頼まれたのに
+        # 動画を作り始めていた（実際に seedance で動画ジョブが走った）。
+        mtype = ("image"
+                 if re.search("画像|イラスト|ロゴ|絵|写真|アイコン|サムネ", _hreq)
+                 and not re.search("動画|映像|ムービー|クリップ", content)
+                 else "video")
         _gate(message, cid,
               f"{'動画' if mtype == 'video' else '画像'}の生成（{_hreq[:50]}）",
               "内容に合う最適なモデルを自動で選び、"

@@ -608,6 +608,34 @@ def run():
     _src4 = open(bot.__file__, encoding="utf-8").read()
     check("題材は直前の依頼から補う", "_request_with_context" in _src4, True)
 
+    print("■ 画像を頼まれて動画を作らない／古い生成を結果にしない")
+    # 事故：「この人で画像生成して」→「ヒッグスフィールドで」で
+    # 動画ジョブ(seedance)が走った。媒体を発言だけで判定していたため。
+    bot.histories[9001] = [("kohei", "この人で画像生成して")]
+    bot.histories[9002] = [("kohei", "犬が走ってる動画作って")]
+    try:
+        import re as _re9
+
+        def _mt(said, cid):
+            req = bot._request_with_context(said, cid)
+            return ("image"
+                    if _re9.search("画像|イラスト|ロゴ|絵|写真|アイコン|サムネ", req)
+                    and not _re9.search("動画|映像|ムービー|クリップ", said)
+                    else "video")
+        check("画像の続きは画像のまま", _mt("ヒッグスフィールドで", 9001), "image")
+        check("動画の続きは動画のまま", _mt("ヒッグスフィールドで", 9002), "video")
+        check("補った依頼に元の中身が入る",
+              "この人で画像生成して" in bot._request_with_context("ヒッグスフィールドで", 9001),
+              True)
+    finally:
+        bot.histories.pop(9001, None)
+        bot.histories.pop(9002, None)
+    # 完了確認は投入時刻より新しいものだけを見る
+    _src5 = open(bot.__file__, encoding="utf-8").read()
+    check("完了確認に投入時刻を渡す", "since=job.get(\"submitted_at\")" in _src5, True)
+    check("古い生成を対象にしないと明示",
+          "それより前に作られた生成は今回のものではない" in _src5, True)
+
     print("■ 送った写真を次の発言でも参照として使う")
     # 事故：写真を送った次の発言で作り直したら、参照が消えて別人になった
     _keep_ref = dict(bot._last_ref)
