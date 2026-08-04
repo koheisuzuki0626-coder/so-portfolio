@@ -2905,20 +2905,91 @@ async def _weekly_channel_loop():
                 pass
 
 
+# ---------- 毎日の自動リサーチ（YouTube 急上昇TOP100）----------
+# 以前は環境変数（TREND_CHANNEL_ID / TREND_HOUR）でしか設定できず、
+# 実質いつも無効だった。ユーザーはDiscordだけで完結させたいので、
+# 投稿先も時刻もDiscordの言葉で決められるようにし、設定として保存する。
+
+
+def _trend_conf():
+    """(有効か, 時, 分, 投稿先cid)。未設定なら環境変数→既定の順で埋める。"""
+    return (
+        bool(gen_settings.get("trend_on")),
+        int(gen_settings.get("trend_hour", TREND_HOUR)),
+        int(gen_settings.get("trend_min", 0)),
+        int(gen_settings.get("trend_cid") or TREND_CHANNEL_ID or 0),
+    )
+
+
+def _trend_time_label():
+    _, h, m, _ = _trend_conf()
+    return f"{h}:{m:02d}"
+
+
+# 「毎日◯時にYouTubeのTOP100をリサーチして」の受け取り。
+_TREND_TOPIC_RE = re.compile(
+    "(毎日|毎朝|毎晩|定期|自動|決まった時間).{0,12}"
+    "(リサーチ|調査|トレンド|急上昇|top\\s*100|トップ\\s*100|ランキング)|"
+    "(リサーチ|トレンド|急上昇|top\\s*100|トップ\\s*100).{0,12}(毎日|毎朝|毎晩|定期|自動)",
+    re.I,
+)
+_TREND_OFF_RE = re.compile("やめ|止め|停止|オフ|off|いらない|解除|中止", re.I)
+_TREND_ASK_RE = re.compile("いつ|何時|どうなって|設定は|状況")
+_TIME_RE = re.compile("(\\d{1,2})\\s*(?::|時)\\s*(\\d{1,2})?\\s*(分|半)?")
+
+
+def _parse_jst_hour(text):
+    """発言から時刻を読む。(時, 分) か None。『朝7時』『19:30』『夜8時半』に対応。"""
+    m = _TIME_RE.search(text or "")
+    if not m:
+        return None
+    h = int(m.group(1))
+    mi = 30 if m.group(3) == "半" else int(m.group(2) or 0)
+    if h > 23 or mi > 59:
+        return None
+    # 「夜8時」「午後3時」は12時間制の言い方なので足す
+    if h < 12 and re.search("夜|晩|午後|夕方|pm", text, re.I):
+        h += 12
+    return h, mi
+
+
+def _match_trend_schedule(text):
+    """毎日の自動リサーチの設定変更を読む。
+    返り値: ("on", 時, 分) / ("off", 0, 0) / ("ask", 0, 0) / None"""
+    t = text or ""
+    if not _TREND_TOPIC_RE.search(t):
+        return None
+    if _TREND_OFF_RE.search(t):
+        return "off", 0, 0
+    if _TREND_ASK_RE.search(t) and not _parse_jst_hour(t):
+        return "ask", 0, 0
+    hm = _parse_jst_hour(t)
+    if hm:
+        return "on", hm[0], hm[1]
+    return "on", TREND_HOUR, 0     # 時刻の指定が無ければ既定の時刻で始める
+
+
 async def _daily_trend_loop():
-    """毎日 TREND_HOUR（JST）に急上昇リサーチを自動実行する。"""
-    if not TREND_CHANNEL_ID or not YOUTUBE_API_KEY:
-        print("[trend] TREND_CHANNEL_ID / YOUTUBE_API_KEY 未設定のため毎日の自動リサーチは無効")
-        return
+    """設定された時刻（JST）に急上昇TOP100のリサーチを自動実行する。
+    1分ごとに設定を読み直すので、Discordで時刻を変えても再起動は要らない。"""
+    last_done = None                     # 最後に実行した日付（二重実行の防止）
     while True:
-        now = datetime.now(JST)
-        run_at = now.replace(hour=TREND_HOUR, minute=0, second=0, microsecond=0)
-        if run_at <= now:
-            run_at += timedelta(days=1)
-        print(f"[trend] 次回の自動リサーチ: {run_at.isoformat()}")
-        await asyncio.sleep((run_at - now).total_seconds())
+        await asyncio.sleep(60)
         try:
-            await _run_trend_study(TREND_CHANNEL_ID)
+            on, hour, minute, cid = _trend_conf()
+            if not on or not cid or not YOUTUBE_API_KEY:
+                continue
+            now = datetime.now(JST)
+            if now.hour != hour or now.minute != minute or last_done == now.date():
+                continue
+            last_done = now.date()
+            print(f"[trend] 自動リサーチを開始: {now.isoformat()}")
+            await send_as(
+                orch, cid,
+                f"📊 毎日の自動リサーチ（{now.strftime('%m/%d %H:%M')}）"
+                "：YouTube急上昇TOP100を見てきます…"
+            )
+            _spawn(_run_trend_study(cid), cid, "YouTubeリサーチ")
         except Exception as e:  # noqa: BLE001
             print(f"[trend] 自動リサーチ失敗: {str(e)[:300]}")
 
@@ -6860,6 +6931,45 @@ async def _dispatch_message(message):
         add_history(cid, message.author.display_name, content)
         await message.channel.send(
             f"🔀 会話モデルを **{_mdl[1]}** にしました（次の発言から反映・再起動不要）。"
+        )
+        return
+    _trd = _match_trend_schedule(content)
+    if _trd is not None:
+        _fired(cid, "毎日の自動リサーチの設定", content)
+        add_history(cid, message.author.display_name, content)
+        _act, _h, _m = _trd
+        if _act == "ask":
+            _on, _hh, _mm, _tcid = _trend_conf()
+            await message.channel.send(
+                f"📊 毎日の自動リサーチ: **{'ON' if _on else 'OFF'}**"
+                + (f"（毎日 {_hh}:{_mm:02d} JST・このチャンネルに投稿）" if _on else "")
+                + "\n「**毎日7時にYouTubeのTOP100をリサーチして**」で設定、"
+                "「**毎日のリサーチやめて**」で停止できます。"
+            )
+            return
+        if _act == "off":
+            gen_settings["trend_on"] = False
+            _save_gen_settings()
+            await message.channel.send("📊 毎日の自動リサーチを**停止**しました。")
+            return
+        if not YOUTUBE_API_KEY:
+            await message.channel.send(
+                "⚠️ YouTubeのAPIキーが設定されていないので自動リサーチを始められません。"
+                "実行環境の環境変数に `YOUTUBE_API_KEY` を入れてください"
+                "（チャットに貼らないこと）。"
+            )
+            return
+        gen_settings.update({"trend_on": True, "trend_hour": _h,
+                             "trend_min": _m, "trend_cid": cid})
+        _save_gen_settings()
+        await message.channel.send(
+            f"📊 毎日 **{_h}:{_m:02d}（JST）** に YouTube急上昇**TOP100**を"
+            "リサーチして、このチャンネルに結果を投稿します。\n"
+            "・100本のタイトル・再生数・タグを取得し、上位数本は実際に視聴して分析\n"
+            "・勝ちパターンは学習して以降の企画に反映\n"
+            "・無料です（YouTube APIとGeminiの無料枠のみ／クレジットは使いません）\n"
+            "時刻を変えるなら「**毎日9時半にして**」、"
+            "止めるなら「**毎日のリサーチやめて**」と送ってください。"
         )
         return
     _hfm = _match_hf_mode(content)

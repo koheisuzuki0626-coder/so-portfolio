@@ -587,6 +587,42 @@ def run():
     check("デザインは会話用と別モデルにできる",
           isinstance(bot.DESIGN_MODEL, str), True)
 
+    print("■ 毎日の自動リサーチ（YouTube急上昇TOP100）")
+    for _t, _want in (
+        ("毎日決まった時間にYouTubeのtop100を自動でリサーチする機能をつけて欲しい",
+         ("on", 8, 0)),
+        ("毎日7時にYouTubeのTOP100をリサーチして", ("on", 7, 0)),
+        ("自動リサーチを朝9時半にして", ("on", 9, 30)),
+        ("毎晩8時に急上昇調べて", ("on", 20, 0)),          # 晩＝12時間制
+        ("毎日午後3時にトレンド調査して", ("on", 15, 0)),
+        ("毎日のリサーチやめて", ("off", 0, 0)),
+        ("自動リサーチいつやってる？", ("ask", 0, 0)),
+    ):
+        check(f"{_t[:20]!r}… → {_want}", bot._match_trend_schedule(_t), _want)
+    for _t in ("トレンド調べて", "リサーチャーに聞いて", "毎日ゆっくり過ごす",
+               "毎日つかれる", "急上昇ってどう決まるの"):
+        check(f"{_t!r} は設定変更にしない", bot._match_trend_schedule(_t), None)
+    # 他の機能に先取りされないこと
+    for _t in ("毎日7時にYouTubeのTOP100をリサーチして", "毎日のリサーチやめて"):
+        check(f"{_t[:16]!r}… は他機能に取られない",
+              (bot._match_claude_model(_t), bot._match_casual_lead(_t),
+               bot._match_hf_mode(_t), bot.classify_route(_t)),
+              (None, None, None, None))
+    # 設定の読み書き
+    _keep_t = {k: bot.gen_settings.get(k)
+               for k in ("trend_on", "trend_hour", "trend_min", "trend_cid")}
+    try:
+        bot.gen_settings.update({"trend_on": True, "trend_hour": 9,
+                                 "trend_min": 30, "trend_cid": 42})
+        check("設定を読み戻せる", bot._trend_conf(), (True, 9, 30, 42))
+        check("時刻を読める形で出せる", bot._trend_time_label(), "9:30")
+        bot.gen_settings["trend_on"] = False
+        check("止めたら無効", bot._trend_conf()[0], False)
+    finally:
+        bot.gen_settings.update(_keep_t)
+    check("100本を取りに行く（1回50件なので2ページ）",
+          "maxResults" in open(bot.__file__, encoding="utf-8").read(), True)
+
     print("■ 安易にヒッグスフィールドを使わない")
     # 本人の希望：「クロードだけでやってほしいことはクロードでって言うから、
     # 安易にヒッグスフィールドを使わないでほしい」
