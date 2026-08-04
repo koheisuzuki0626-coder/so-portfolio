@@ -587,6 +587,32 @@ def run():
     check("デザインは会話用と別モデルにできる",
           isinstance(bot.DESIGN_MODEL, str), True)
 
+    print("■ 安易にヒッグスフィールドを使わない")
+    # 本人の希望：「クロードだけでやってほしいことはクロードでって言うから、
+    # 安易にヒッグスフィールドを使わないでほしい」
+    check("既定は『頼まれた時だけ』", bot._hf_explicit_only(), True)
+    _keep_hf = bot.gen_settings.get("hf_mode")
+    try:
+        for _t in ("ヒッグスフィールドは使わないで", "安易にヒッグスフィールド使わないで欲しい",
+                   "higgsfieldは使うな"):
+            check(f"{_t[:16]!r}… で絞る", bot._match_hf_mode(_t)[0], "explicit")
+        check("使っていいと言われたら戻す",
+              bot._match_hf_mode("ヒッグスフィールドを使っていいよ")[0], "auto")
+        for _t in ("ヒッグスフィールドで動画作って", "ヒッグスフィールドってなに"):
+            check(f"{_t!r} は設定変更にしない", bot._match_hf_mode(_t), None)
+        bot.gen_settings["hf_mode"] = "auto"
+        check("設定が効く", bot._hf_explicit_only(), False)
+    finally:
+        bot.gen_settings["hf_mode"] = _keep_hf
+    _src0 = open(bot.__file__, encoding="utf-8").read()
+    check("Gemini失敗で黙って切り替えない",
+          "勝手にHiggsfieldへ" in _src0, True)
+    check("代わりの手段を案内する", "クロードで作って" in _src0, True)
+    check("名指しならそのまま使う",
+          bool(bot._HF_NAMED_RE.search("veo3で動画作って")), True)
+    check("機能一覧にも既定を書く",
+          "名指しで頼まれた時" in bot.BOT_CAPABILITIES, True)
+
     print("■ デザインの続きを画像生成に投げない／黙って生成を始めない")
     # 事故：相関図に「追加して出して」と頼んだら、動画/画像の作り直しとして
     # 解釈され、Higgsfieldの画像生成が確認なしで走り出した。

@@ -1271,6 +1271,12 @@ BOT_CAPABILITIES = (
     "・YouTubeリサーチ／自分のチャンネルの実績分析（週次レポート）／バズ度予測\n"
     "・参考動画からのスタイル学習／料金・残クレジットの照会\n"
     "・自己改修・再起動・ログ共有／会話モデルの切替\n"
+    "【どれで作るかの既定】\n"
+    "・図・表・相関図・年表・サムネ・バナーなど【文字が主役】のもの＝"
+    "クロードがHTMLで組んでPNGに書き出す（無料・文字が崩れない）\n"
+    "・絵そのもの＝まずGeminiの無料枠\n"
+    "・Higgsfield（クレジット消費）は【名指しで頼まれた時】と【動画】だけ。"
+    "うまくいかない時に黙ってHiggsfieldへ切り替えてはいけない\n"
     "【返事の作られ方（聞かれたら答えてよい）】\n"
     "・オーケストレーターが受け取り、内容で担当を決める\n"
     "・返事はクロードが書く。長い返事はGeminiが校閲し、指摘があれば"
@@ -3194,6 +3200,44 @@ _EXPLAIN_Q_RE = re.compile(
     "どういう(こと|意味|仕組み|もの|仕事|役割)"
 )
 
+# ヒッグスフィールドの使い方。既定は「明示的に頼まれた時だけ」。
+# 本人の希望：「クロードだけでやってほしいことはクロードでって言うから、
+# 安易にヒッグスフィールドを使わないでほしい」。クレジットを消費するので、
+# 黙って切り替える（フォールバックする）ことをやめる。
+HF_MODE_DEFAULT = os.getenv("HF_MODE", "explicit")   # explicit / auto
+_HF_OFF_RE = re.compile(
+    "ヒッグス\\S*(は|を)?(使わないで|使うな|使わない|やめて|切って|オフ)|"
+    "higgsfield\\S*(は|を)?(使わないで|使うな|オフ|off)|"
+    "(勝手に|安易に|自動で)\\S*(生成|ヒッグス|higgsfield)\\S*(しないで|使わないで|やめて)",
+    re.I,
+)
+_HF_ON_RE = re.compile(
+    "ヒッグス\\S*(は|を)?(使って|使っていい|オン|許可|解禁)|"
+    "higgsfield\\S*(は|を)?(使って|オン|on|許可)",
+    re.I,
+)
+# ユーザーが名指ししたと言える語（これがあれば明示的に頼まれたとみなす）
+_HF_NAMED_RE = re.compile(
+    "ヒッグス|higgsfield|veo|kling|sora|seedance|seedream|nano\\s*banana|"
+    "ナノバナナ|クリング|ソラ|シードランス", re.I,
+)
+
+
+def _hf_explicit_only():
+    """ヒッグスフィールドを『明示的に頼まれた時だけ』に絞るか。"""
+    return (gen_settings.get("hf_mode") or HF_MODE_DEFAULT) != "auto"
+
+
+def _match_hf_mode(text):
+    """発言からヒッグスフィールドの使い方の切替を読む。(値, 表示) か None。"""
+    t = text or ""
+    if _HF_OFF_RE.search(t):
+        return "explicit", "頼まれた時だけ使う"
+    if _HF_ON_RE.search(t):
+        return "auto", "必要なら自動で使う"
+    return None
+
+
 # 「今やって」ではない言い方。継続のお願い・打ち消し・前置きなど。
 _NOT_NOW_RE = re.compile(
     "これからも|今後も|引き続き|次回から|次からも|そのうち|いずれ|"
@@ -3546,7 +3590,9 @@ async def _plan(history):
 
 async def _handle_image_request(cid, request, refine=True):
     """画像生成の依頼。既定は Gemini（無料枠 約500枚/日）。
-    Gemini が使えないときは Higgsfield MCP の最適モデルへ自動フォールバック。
+    Gemini が使えないとき、以前は黙って Higgsfield に切り替えていたが、
+    頼んでいないクレジット消費になるためやめた（本人の希望）。
+    既定では切り替えず、どうするかを聞く。
     日本語の会話文はそのまま渡すと『全然違う画像』になるため、必ず英語の
     描写プロンプトに変換してから生成し、使ったプロンプトも見せる（動画と同じ扱い）。"""
     original = request
@@ -3567,7 +3613,18 @@ async def _handle_image_request(cid, request, refine=True):
         return
     except Exception as e:  # noqa: BLE001
         print(f"[image_request] Gemini失敗: {str(e)[:200]}")
-        await send_as(orch, cid, "⚠️ Gemini画像が使えないため、Higgsfieldの最適モデルで生成します…")
+    # ここで黙ってHiggsfieldに切り替えていた＝頼んでいないクレジット消費。
+    # 既定では切り替えず、どうするかを本人に選んでもらう。
+    if _hf_explicit_only() and not _HF_NAMED_RE.search(original):
+        await send_as(
+            orch, cid,
+            "⚠️ Gemini（無料枠）で画像を作れませんでした。勝手にHiggsfieldへは"
+            "切り替えません（クレジットを使うため）。どちらか送ってください。\n"
+            "・「**クロードで作って**」＝HTMLから書き出す（無料・文字や図に強い）\n"
+            "・「**ヒッグスフィールドで作って**」＝生成モデルを使う（クレジット消費）"
+        )
+        return
+    await send_as(orch, cid, "⚠️ Gemini画像が使えないため、Higgsfieldで生成します…")
     url = await _mcp_gen_and_wait(request, media_type="image", model=None)
     if url:
         _update_last_gen_url(cid, url)
@@ -6803,6 +6860,22 @@ async def _dispatch_message(message):
         add_history(cid, message.author.display_name, content)
         await message.channel.send(
             f"🔀 会話モデルを **{_mdl[1]}** にしました（次の発言から反映・再起動不要）。"
+        )
+        return
+    _hfm = _match_hf_mode(content)
+    if _hfm is not None:
+        _fired(cid, "ヒッグスフィールドの使い方の切替", content)
+        gen_settings["hf_mode"] = _hfm[0]
+        _save_gen_settings()
+        add_history(cid, message.author.display_name, content)
+        await message.channel.send(
+            f"🧩 Higgsfield は **{_hfm[1]}** ようにしました。\n"
+            + ("※図・表・サムネなど文字が主役のものは、これまでどおり"
+               "クロードがHTMLで作ります（無料）。動画は Higgsfield でしか"
+               "作れないので、その時は確認を出します。"
+               if _hfm[0] == "explicit" else
+               "※クレジットを使う場面が増えます。戻すなら"
+               "「ヒッグスフィールドは使わないで」と送ってください。")
         )
         return
     _lead = _match_casual_lead(content)
