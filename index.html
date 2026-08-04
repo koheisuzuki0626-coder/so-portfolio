@@ -63,7 +63,7 @@
         }
 
         /* ---------- Nav ---------- */
-        nav {
+        #nav {
             position: fixed;
             top: 0; left: 0; right: 0;
             z-index: 100;
@@ -78,13 +78,13 @@
             transition: background 0.4s ease, padding 0.4s ease, border-color 0.4s ease;
             border-bottom: 1px solid transparent;
         }
-        nav.scrolled {
+        #nav.scrolled {
             background: rgba(255, 255, 255, 0.93);
             padding: 11px 24px;
             border-bottom: 1px solid var(--line);
         }
-        nav .logo { font-size: 1.35rem; font-weight: 700; letter-spacing: 0.5px; flex: none; }
-        nav .logo span { color: var(--accent); }
+        #nav .logo { font-size: 1.35rem; font-weight: 700; letter-spacing: 0.5px; flex: none; }
+        #nav .logo span { color: var(--accent); }
         /* ジャンルが多いので、入りきらない幅では横スクロールさせる */
         .nav-scroll {
             flex: 1 1 auto;
@@ -95,7 +95,7 @@
             mask-image: linear-gradient(90deg, transparent, #000 16px, #000 calc(100% - 16px), transparent);
         }
         .nav-scroll::-webkit-scrollbar { display: none; }
-        nav ul {
+        #nav ul {
             display: flex;
             gap: 26px;
             list-style: none;
@@ -107,12 +107,12 @@
             width: max-content;
             min-width: 100%;
         }
-        nav ul a {
+        #nav ul a {
             position: relative;
             color: var(--muted);
             transition: color 0.25s ease;
         }
-        nav ul a::after {
+        #nav ul a::after {
             content: "";
             position: absolute;
             left: 0; bottom: -5px;
@@ -122,8 +122,8 @@
             transform-origin: left;
             transition: transform 0.35s var(--ease);
         }
-        nav ul a:hover, nav ul a.active { color: var(--fg); }
-        nav ul a.active::after { transform: scaleX(1); }
+        #nav ul a:hover, #nav ul a.active { color: var(--fg); }
+        #nav ul a.active::after { transform: scaleX(1); }
         .nav-cta {
             flex: none;
             font-size: 0.75rem;
@@ -757,29 +757,84 @@
 
         /* ---------- Footer ---------- */
         footer {
-            text-align: center;
-            padding: 46px 20px;
             border-top: 1px solid var(--line);
+            background: linear-gradient(180deg, #fff, var(--bg-soft));
         }
-        .footer-nav {
+        .footer-inner {
+            max-width: var(--max);
+            margin: auto;
+            padding: 76px 32px 56px;
+            display: grid;
+            grid-template-columns: 1.5fr 1fr 1fr 1.2fr;
+            gap: 46px;
+        }
+        .f-logo { font-size: 1.5rem; font-weight: 700; letter-spacing: 0.5px; }
+        .f-logo span { color: var(--accent); }
+        .f-tagline { margin: 14px 0 0; font-size: 1rem; font-weight: 700; }
+        .f-note { margin: 12px 0 0; font-size: 0.86rem; color: var(--muted); max-width: 300px; }
+        .f-cta { margin-top: 24px; padding: 13px 30px; font-size: 0.8rem; }
+
+        .f-head {
+            margin: 0 0 16px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.22em;
+            color: var(--accent);
+        }
+        .f-head-gap { margin-top: 30px; }
+        .f-list { list-style: none; margin: 0; padding: 0; }
+        .f-list li { margin-bottom: 10px; }
+        .f-list a {
+            font-size: 0.87rem;
+            color: var(--fg-dim);
+            transition: color 0.25s ease, padding-left 0.25s var(--ease);
+        }
+        .f-list a:hover { color: var(--accent); padding-left: 5px; }
+
+        .f-works { list-style: none; margin: 0; padding: 0; }
+        .f-works li { margin-bottom: 12px; }
+        .f-works-empty { font-size: 0.84rem; color: var(--muted); }
+        .f-work {
+            display: flex;
+            align-items: center;
+            gap: 11px;
+            transition: opacity 0.25s ease;
+        }
+        .f-work:hover { opacity: 0.68; }
+        .f-work img {
+            width: 62px;
+            aspect-ratio: 16 / 9;
+            object-fit: cover;
+            border-radius: 4px;
+            flex: none;
+            background: #e9e8e4;
+        }
+        .f-work span {
+            font-size: 0.83rem;
+            color: var(--fg-dim);
+            line-height: 1.45;
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            line-clamp: 2;
+            overflow: hidden;
+        }
+
+        .footer-bottom {
+            border-top: 1px solid var(--line);
+            padding: 22px 32px;
             display: flex;
             flex-wrap: wrap;
-            justify-content: center;
-            gap: 26px;
-            list-style: none;
-            margin: 0 0 26px;
-            padding: 0;
-            font-size: 0.76rem;
-            letter-spacing: 0.14em;
-            text-transform: uppercase;
-            color: var(--muted);
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            max-width: var(--max);
+            margin: auto;
         }
-        .footer-nav a { transition: color 0.25s ease; }
-        .footer-nav a:hover { color: var(--accent); }
-        footer .copy {
+        .footer-bottom p {
             margin: 0;
             font-size: 0.72rem;
-            letter-spacing: 0.1em;
+            letter-spacing: 0.08em;
             color: #a0a0a6;
         }
 
@@ -792,16 +847,19 @@
         .reveal.in { opacity: 1; transform: translateY(0); }
 
         @media (max-width: 860px) {
-            nav { flex-wrap: wrap; row-gap: 9px; gap: 12px; padding: 11px 16px 9px; }
-            nav.scrolled { padding: 9px 16px 7px; }
-            nav .logo { order: 1; font-size: 1.15rem; }
+            #nav { flex-wrap: wrap; row-gap: 9px; gap: 12px; padding: 11px 16px 9px; }
+            #nav.scrolled { padding: 9px 16px 7px; }
+            #nav .logo { order: 1; font-size: 1.15rem; }
             .nav-cta { order: 2; padding: 7px 15px; font-size: 0.72rem; }
             /* ロゴ・CTA の下に全幅で置く。狭くても全ジャンルを横スクロールで辿れる */
             .nav-scroll { order: 3; flex: 1 0 100%; }
-            nav ul { gap: 18px; padding: 0 4px; font-size: 0.76rem; justify-content: flex-start; }
+            #nav ul { gap: 18px; padding: 0 4px; font-size: 0.76rem; justify-content: flex-start; }
             section { padding: 86px 0; }
             .container { padding: 0 22px; }
             .mosaic-row img { width: 150px; }
+            .footer-inner { grid-template-columns: 1fr; gap: 40px; padding: 56px 22px 40px; }
+            .f-note { max-width: none; }
+            .footer-bottom { padding: 20px 22px; justify-content: center; text-align: center; }
             .flow::before { left: 21px; }
             .flow-step { grid-template-columns: 44px 1fr; gap: 18px; }
             .flow-step .dot { width: 44px; height: 44px; font-size: 0.74rem; }
@@ -1094,15 +1152,50 @@
     </div>
 
     <footer>
-        <ul class="footer-nav">
-            <li><a href="#service">Service</a></li>
-            <li><a href="#genres">Genres</a></li>
-            <li><a href="#why">Why AI</a></li>
-            <li><a href="#process">Process</a></li>
-            <li><a href="#works">Works</a></li>
-            <li><a href="#contact">Contact</a></li>
-        </ul>
-        <p class="copy">© <span id="year">2026</span> so. All Rights Reserved.</p>
+        <div class="footer-inner">
+            <div class="f-brand">
+                <a href="#top" class="f-logo">so<span>.</span></a>
+                <p class="f-tagline">撮影しない、映像制作。</p>
+                <p class="f-note">AI で動画をつくる会社です。出演者の手配も、撮影日の調整も必要ありません。</p>
+                <a href="#contact" class="btn primary f-cta">相談してみる</a>
+            </div>
+
+            <nav class="f-col" aria-labelledby="f-genres-h">
+                <h2 class="f-head" id="f-genres-h">ジャンル</h2>
+                <!-- Genres セクションのカードから自動生成する -->
+                <ul class="f-list" id="footer-genres"></ul>
+            </nav>
+
+            <nav class="f-col" aria-labelledby="f-site-h">
+                <h2 class="f-head" id="f-site-h">サイトマップ</h2>
+                <ul class="f-list">
+                    <li><a href="#service">Service — 事業内容</a></li>
+                    <li><a href="#genres">Genres — つくれる動画</a></li>
+                    <li><a href="#why">Why AI — 撮影しない理由</a></li>
+                    <li><a href="#process">Process — 制作の流れ</a></li>
+                    <li><a href="#works">Works — 制作実績</a></li>
+                    <li><a href="#contact">Contact — お問い合わせ</a></li>
+                </ul>
+            </nav>
+
+            <div class="f-col">
+                <h2 class="f-head">最新の制作実績</h2>
+                <!-- data/videos.json から自動生成する -->
+                <ul class="f-works" id="footer-works">
+                    <li class="f-works-empty">読み込み中…</li>
+                </ul>
+                <h2 class="f-head f-head-gap">お問い合わせ</h2>
+                <ul class="f-list">
+                    <li><a href="mailto:bonvoyage.ti@icloud.com">bonvoyage.ti@icloud.com</a></li>
+                    <li><a href="https://www.youtube.com/@hzrinrng" target="_blank" rel="noopener">YouTube チャンネル ↗</a></li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="footer-bottom">
+            <p class="copy">© <span id="year">2026</span> so. All Rights Reserved.</p>
+            <p class="f-meta" id="footer-meta" hidden></p>
+        </div>
     </footer>
 
     <script>
@@ -1134,7 +1227,7 @@
 
         // ヘッダーのジャンルは1セクション内に並ぶので、
         // 画面中央にいちばん近いカードを選ぶ(複数が同時に交差して点滅するのを避ける)
-        const navLinks = [...document.querySelectorAll('nav ul a')];
+        const navLinks = [...document.querySelectorAll('#nav ul a')];
         const navTargets = navLinks
             .map((a) => ({ link: a, el: document.getElementById(a.getAttribute('href').slice(1)) }))
             .filter((t) => t.el);
@@ -1181,6 +1274,21 @@
         }, true);
 
         document.getElementById('year').textContent = new Date().getFullYear();
+
+        // フッターのジャンル一覧は Genres セクションのカードから組み立てる。
+        // ジャンルを増減しても本文とフッターがずれない。
+        const footerGenres = document.getElementById('footer-genres');
+        if (footerGenres) {
+            const items = [...document.querySelectorAll('.genre')].map((card) => {
+                const li = document.createElement('li');
+                const a = document.createElement('a');
+                a.href = `#${card.id}`;
+                a.textContent = card.querySelector('h3')?.textContent ?? '';
+                li.append(a);
+                return li;
+            });
+            footerGenres.replaceChildren(...items);
+        }
 
         /* ---------- Lightbox ---------- */
         const grid = document.getElementById('works-grid');
@@ -1284,6 +1392,61 @@
             grid.replaceChildren(note);
         }
 
+        /* ---------- Footer (本文と同じデータから組み立てる) ---------- */
+        const footerWorks = document.getElementById('footer-works');
+        const footerMeta = document.getElementById('footer-meta');
+
+        function buildFooterWorks(videos) {
+            const items = videos.slice(0, 3).map((video) => {
+                const li = document.createElement('li');
+                const a = document.createElement('a');
+                a.className = 'f-work';
+                a.href = video.url || `https://www.youtube.com/watch?v=${video.id}`;
+                a.setAttribute('aria-label', `${video.title || 'この動画'} を再生`);
+                a.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    openVideo(video.id, video.title);
+                });
+
+                const img = document.createElement('img');
+                img.src = `https://i.ytimg.com/vi/${video.id}/mqdefault.jpg`;
+                img.alt = '';
+                img.loading = 'lazy';
+
+                const span = document.createElement('span');
+                span.textContent = video.title || 'Untitled';
+
+                a.append(img, span);
+                li.append(a);
+                return li;
+            });
+            footerWorks.replaceChildren(...items);
+        }
+
+        function footerWorksFallback() {
+            const li = document.createElement('li');
+            li.className = 'f-works-empty';
+            const a = document.createElement('a');
+            a.href = 'https://www.youtube.com/@hzrinrng';
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.textContent = 'YouTube チャンネルでご覧ください ↗';
+            li.append(a);
+            footerWorks.replaceChildren(li);
+        }
+
+        function buildFooterMeta(data, count) {
+            const parts = [`制作実績 ${count} 本`];
+            if (data.updatedAt) {
+                const d = new Date(data.updatedAt);
+                if (!Number.isNaN(d.getTime())) {
+                    parts.push(`最終更新 ${d.toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' })}`);
+                }
+            }
+            footerMeta.textContent = parts.join(' ／ ');
+            footerMeta.hidden = false;
+        }
+
         /* ---------- Hero mosaic ---------- */
         function buildMosaic(videos) {
             const host = document.getElementById('hero-mosaic');
@@ -1321,10 +1484,13 @@
                 const videos = Array.isArray(data.videos) ? data.videos.filter((v) => v && v.id) : [];
                 if (videos.length === 0) {
                     showWorksNote('制作実績を準備中です。YouTube チャンネルをご覧ください。');
+                    footerWorksFallback();
                     return;
                 }
 
                 buildMosaic(videos);
+                buildFooterWorks(videos);
+                buildFooterMeta(data, videos.length);
 
                 const INITIAL = 6;
                 const STEP = 6;
@@ -1360,6 +1526,7 @@
             .catch((err) => {
                 console.warn('[works] 制作実績を読み込めませんでした:', err.message);
                 showWorksNote('制作実績を読み込めませんでした。YouTube チャンネルをご覧ください。');
+                footerWorksFallback();
             });
     </script>
 </body>
