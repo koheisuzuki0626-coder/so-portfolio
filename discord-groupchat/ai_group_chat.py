@@ -3262,7 +3262,7 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
             and not _USER_REPORT_RE.search(content)
             and not re.search("作って|作りたい|つくって|生成して|作成して|描いて|アニメ化", content)
             and not _CONTENT_Q_RE.search(content)   # 中身への質問は会話へ
-            and not _looks_revise(content)):
+            and not _looks_revise(content, has_last_gen)):
         return "status"
     # ※編集は作り直しより先に判定する。「もっと短くして」は作り直しではなく
     #   尺の編集だが、作り直しの語（もっと等）にも当たるため順序が効く。
@@ -3277,8 +3277,10 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     # ①.4 前の生成の作り直し（修正マーカーがあれば発動。記録が無くても
     #     _run_revise が Higgsfield から直前プロンプトを回収するので安全）。
     #     「前の動画のこと覚えてる？」のような質問では発動しない
-    if (not has_attachments and _looks_revise(content)
-            and not _looks_like_question(content)):
+    # 「〜してくれる？」は問いかけの形をした依頼なので、?で終わっても通す。
+    # これが無いと「武将も追記してくれる？」が会話に落ちて何も起きなかった。
+    if (not has_attachments and _looks_revise(content, has_last_gen)
+            and (not _looks_like_question(content) or _wants_action(content))):
         # 作り直しでも「誰に作らせるか」の指定が最優先。
         # 「クロードで作り直して」を作風の指定と読んで Higgsfield に投げ、
         # 「Claude.ai風デザイン」の画像を生成してしまう事故が起きた。
@@ -3297,7 +3299,8 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     # 変更動詞だけを条件にしていたため、「親が入院しろって言ってくる」の
     # 「しろ」を手直し指示と読んでデザイン制作を始める事故が起きた。
     if (last_was_design and not has_attachments
-            and not _looks_like_question(content)
+            # 「背景も変えてくれる？」は問いかけの形をした手直しの依頼
+            and (not _looks_like_question(content) or _wants_action(content))
             # 「デザインの話はしてないよ」を手直しの指示と読まない
             and not _NEGATION_RE.search(content)
             and not _USER_REPORT_RE.search(content)
@@ -4058,6 +4061,14 @@ _REVISE_STRONG_RE = re.compile(
     "もう一回|もう一度|もっかい|作り直|作りなお|やり直|やりなお|"
     "同じの|別バージョン|別ver|修正して"
 )
+# 「足してほしい」系。直前の生成がある時だけ作り直しになる
+# （「機能を追加して」のような、生成物と関係ない依頼を巻き込まないため）。
+# 事故：「まだ出てきてない武将も追記してくれる？」が『まだ』だけを拾われて
+# 状態確認になり、完成済みのURLを貼り直して終わった。
+_REVISE_ADD_RE = re.compile(
+    "追記|付け足|書き足|足してくれ|足して欲しい|足してほしい|"
+    "追加して|入れて欲しい|入れてほしい|入れてくれ|載せて|加えて"
+)
 _REVISE_WEAK_RE = re.compile(
     "さっきの(動画|画像|映像|やつ|の)|前の(動画|画像|映像|やつ)|"
     "少し変えて|ちょっと変えて|もうちょい|もうちょっと|もう少し|もっと"
@@ -4068,9 +4079,12 @@ _CHANGE_VERB_RE = re.compile(
 )
 
 
-def _looks_revise(content):
-    """『前の生成を作り直したい』発言か。"""
+def _looks_revise(content, has_last_gen=True):
+    """『前の生成を作り直したい』発言か。
+    has_last_gen=False（直前の生成が無い）なら、『足して』系は対象外にする。"""
     if _REVISE_STRONG_RE.search(content):
+        return True
+    if has_last_gen and _REVISE_ADD_RE.search(content):
         return True
     return bool(_REVISE_WEAK_RE.search(content) and _CHANGE_VERB_RE.search(content))
 

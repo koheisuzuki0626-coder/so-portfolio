@@ -587,6 +587,31 @@ def run():
     check("デザインは会話用と別モデルにできる",
           isinstance(bot.DESIGN_MODEL, str), True)
 
+    print("■ 『足してほしい』は作り直し（状態確認に化けない）")
+    # 事故：「でもまだ出てきてない武将たちもいるけどそれも追記してくれる？」が
+    # 『まだ』だけを拾われて状態確認になり、完成済みのURLを貼り直して終わった
+    _D = {"has_last_gen": True, "last_was_design": True}
+    for _t in ("でもまだ出てきてない武将たちもいるけどそれも追記してくれる？",
+               "他の武将も追加して", "もっと詳しく書き足して", "秀次も入れてほしい",
+               "この人も載せて", "説明を付け足してくれる？"):
+        check(f"{_t[:18]!r}… は作り直しへ", bot.classify_route(_t, **_D), "design")
+    # 直前の生成が無ければ「足して」系は作り直しにしない
+    check("直前の生成が無ければ作り直しにしない",
+          bot.classify_route("機能を追加して"), None)
+    check("『足して』系は直前の生成が要る",
+          bot._looks_revise("追加して", has_last_gen=False), False)
+    # 状態確認は従来どおり
+    for _t in ("まだできてない？", "できた？", "どうなった？"):
+        check(f"{_t!r} は状態確認のまま",
+              bot.classify_route(_t, has_last_gen=True), "status")
+    # 問いかけの形でも依頼なら通す／ただの質問は通さない
+    check("「〜してくれる？」は依頼として通す",
+          bot.classify_route("背景も変えてくれる？", **_D), "design")
+    check("「覚えてる？」は作り直しにしない",
+          bot.classify_route("前の動画のこと覚えてる？", has_last_gen=True), None)
+    check("感想は作り直しにしない",
+          bot.classify_route("さっきの動画よかったよ", has_last_gen=True), None)
+
     print("■ 自分の構成の話だと気づくこと（オーケストレーターの運用）")
     # 事故：「オーケストレーターの運用について、いい方法ある？」に対し、
     # 自分の構成の話だと気づかず kohei の生活サポートの話として答えた
@@ -680,6 +705,12 @@ def run():
     _keep_h = bot._handle_orchestrator
     _keep_fl2, _keep_fs2 = dict(bot._fired_log), dict(bot._fired_seq)
     _keep_sc = dict(bot._sent_count)
+    # 起動時のセルフテストでもここが走る。本番のエラーログに
+    # テストの「取りこぼし」を書き込むと、本物の不具合が埋もれる。
+    import tempfile as _tf2, pathlib as _pl2
+    _keep_err = bot.ERROR_LOG
+    _errdir = _tf2.TemporaryDirectory()
+    bot.ERROR_LOG = _pl2.Path(_errdir.name) / "errors.log"
     try:
         _rescued = []
 
@@ -705,6 +736,8 @@ def run():
         _aio8.run(bot._rescue_if_silent(_FakeMsg("機能が拾った話"), 88, 5, 2))
         check("機能が拾った時は割り込まない", _rescued, [])
     finally:
+        bot.ERROR_LOG = _keep_err
+        _errdir.cleanup()
         bot._handle_orchestrator = _keep_h
         bot._fired_log.clear(); bot._fired_log.update(_keep_fl2)
         bot._fired_seq.clear(); bot._fired_seq.update(_keep_fs2)
