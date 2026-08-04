@@ -2973,6 +2973,10 @@ async def _weekly_channel_loop():
 # 投稿先も時刻もDiscordの言葉で決められるようにし、設定として保存する。
 
 
+# 直前にこの話をしていたか（「じゃあ毎日7時で」のような続きを拾うため）
+_trend_talk = {}
+
+
 def _trend_conf():
     """(有効か, 時, 分, 投稿先cid)。未設定なら環境変数→既定の順で埋める。"""
     return (
@@ -2997,6 +3001,18 @@ _TREND_TOPIC_RE = re.compile(
 )
 _TREND_OFF_RE = re.compile("やめ|止め|停止|オフ|off|いらない|解除|中止", re.I)
 _TREND_ASK_RE = re.compile("いつ|何時|どうなって|設定は|状況")
+# 「何時頃がいいかな？」は【相談】。設定の説明を返すのではなく普通に話す。
+# 実際にこれで設定の案内を出してしまい、「相談してるだけ」と言われた。
+_TREND_ADVICE_RE = re.compile(
+    "がいい|が良い|でいい|おすすめ|オススメ|お勧め|どう思う|どっち|"
+    "べき|かな[？?]?$|かなあ|だろう|迷"
+)
+# 担当（誰にリサーチさせるか）の指定
+_TREND_WHO_RE = re.compile(
+    "(リサーチ|調査|トレンド|急上昇).{0,10}(クロード\\s*[123１２３])|"
+    "(クロード\\s*[123１２３]).{0,10}(にして|に任せ|でお願い|が担当|担当)",
+    re.I,
+)
 _TIME_RE = re.compile("(\\d{1,2})\\s*(?::|時)\\s*(\\d{1,2})?\\s*(分|半)?")
 
 
@@ -3015,17 +3031,29 @@ def _parse_jst_hour(text):
     return h, mi
 
 
-def _match_trend_schedule(text):
+def _match_trend_schedule(text, recent_topic=False):
     """毎日の自動リサーチの設定変更を読む。
-    返り値: ("on", 時, 分) / ("off", 0, 0) / ("ask", 0, 0) / None"""
+    返り値: ("on", 時, 分) / ("off", 0, 0) / ("ask", 0, 0) / ("who", 0, 0) / None
+    recent_topic=True（直前にこの話をしていた）なら、
+    「じゃあ毎日7時で」のような続きの短い返事も設定として受け取る。"""
     t = text or ""
-    if not _TREND_TOPIC_RE.search(t):
+    on_topic = bool(_TREND_TOPIC_RE.search(t))
+    hm = _parse_jst_hour(t)
+    # 担当の指定は「毎日」が付かない言い方（「リサーチはクロード1にして」）が普通
+    if _TREND_WHO_RE.search(t):
+        return "who", 0, 0
+    # 直前にこの話をしていたなら、時刻だけの返事でも設定として受け取る
+    if not on_topic and recent_topic and hm and re.search("毎日|じゃあ|それで|で$|でいい", t):
+        return "on", hm[0], hm[1]
+    if not on_topic:
         return None
     if _TREND_OFF_RE.search(t):
         return "off", 0, 0
-    if _TREND_ASK_RE.search(t) and not _parse_jst_hour(t):
+    # 【相談】は設定にしない。時刻がはっきり書かれている時だけ設定として扱う。
+    if _TREND_ADVICE_RE.search(t) and not hm:
+        return None
+    if _TREND_ASK_RE.search(t) and not hm:
         return "ask", 0, 0
-    hm = _parse_jst_hour(t)
     if hm:
         return "on", hm[0], hm[1]
     return "on", TREND_HOUR, 0     # 時刻の指定が無ければ既定の時刻で始める
@@ -3046,10 +3074,13 @@ async def _daily_trend_loop():
                 continue
             last_done = now.date()
             print(f"[trend] 自動リサーチを開始: {now.isoformat()}")
+            _who = gen_settings.get("trend_who", "claude1")
+            _wname = {"claude1": CLAUDE1_NAME, "claude2": CLAUDE2_NAME,
+                      "claude3": CLAUDE3_NAME}.get(_who, CLAUDE1_NAME)
             await send_as(
                 orch, cid,
                 f"📊 毎日の自動リサーチ（{now.strftime('%m/%d %H:%M')}）"
-                "：YouTube急上昇TOP100を見てきます…"
+                f"：{_wname}がYouTube急上昇TOP100を見てきます…"
             )
             _spawn(_run_trend_study(cid), cid, "YouTubeリサーチ")
         except Exception as e:  # noqa: BLE001
@@ -3321,6 +3352,17 @@ def _asks_gen_model(said):
     )
 
 
+# 役（クロード1/3）に意見を求める言い方。名前が出ただけでは呼ばない。
+_ASK_ROLE_RE = re.compile(
+    "聞いて|訊いて|きいて|意見|どう思う|見て|見解|検討|相談|"
+    "出して|答えて|教えて|考えて|分析"
+)
+# 役の担当を決める言い方（呼び出しではなく設定の話）
+_ROLE_ASSIGN_RE = re.compile(
+    "にして|にしとい|に任せ|担当|でお願い|が(やる|担当)|に変えて|"
+    "に割り当て|役割|でいい|にしよう"
+)
+
 # 「〜って何？」「〜ってどうやるの？」＝ものの説明を求める質問。
 # 名前が出ただけで機能を起動しない（普通の会話のテンションを守るための門）。
 # 実例:「実績ってどうやって見るの」で実績分析が、
@@ -3378,7 +3420,12 @@ _NOT_NOW_RE = re.compile(
     "しなくていい|今はいい|今じゃなくて|今すぐじゃな|まだいい"
 )
 # 打ち消しを打ち消す語（「これからも、とりあえず今すぐやって」は依頼のまま）
-_NOW_RE = re.compile("今すぐ|いますぐ|今から|いまから|今回は|とりあえず今|すぐに(やって|お願い)")
+# 「今すぐじゃなくていいから」は打ち消し。ここで「今すぐ」に当ててしまうと
+# 打ち消しが効かず、実際に役の呼び出しが走った。否定形は除く。
+_NEG_TAIL = "(?!じゃな|ではな|でなく|じゃなく|なくて)"
+_NOW_RE = re.compile(
+    f"今すぐ{_NEG_TAIL}|いますぐ{_NEG_TAIL}|今から|いまから|今回は|"
+    "とりあえず今|すぐに(やって|お願い)")
 
 # 「今すぐ作れ」という明確な依頼（料金の話が混ざっても作業を止めない）
 _GEN_ORDER_RE = re.compile("作って|作成して|つくって|生成して|描いて|作ってほしい")
@@ -3505,10 +3552,14 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     ):
         return "ad"
     # ①.71 複数視点で検討（クロード1＝情報収集／クロード3＝多角的視点）
-    if re.search("クロード\\s*[1１]|クロード\\s*[3３]|claude\\s*[13]|"
-                 "リサーチャー|アドバイザー", content, re.I) or \
-            re.search("多角的|多角度|いろんな(視点|角度)|色んな(視点|角度)|"
-                      "複数の(視点|角度)|両面から|別の視点", content):
+    # 名前が出ただけでは呼ばない。実際に「リサーチするのはクロード1にしてね」で
+    # 役の呼び出しが走った（担当を決める話であって、意見を聞く話ではない）。
+    if (re.search("多角的|多角度|いろんな(視点|角度)|色んな(視点|角度)|"
+                  "複数の(視点|角度)|両面から|別の視点", content)
+            or (re.search("クロード\\s*[1１]|クロード\\s*[3３]|claude\\s*[13]|"
+                          "リサーチャー|アドバイザー", content, re.I)
+                and not _ROLE_ASSIGN_RE.search(content)
+                and _ASK_ROLE_RE.search(content))):
         return "multiview"
     # ①.72 自分のチャンネルの実績分析／チャンネル登録
     if re.search("チャンネル", content) and re.search(
@@ -6996,11 +7047,24 @@ async def _dispatch_message(message):
             f"🔀 会話モデルを **{_mdl[1]}** にしました（次の発言から反映・再起動不要）。"
         )
         return
-    _trd = _match_trend_schedule(content)
+    _trd = _match_trend_schedule(
+        content, recent_topic=time.time() - _trend_talk.get(cid, 0) < 900)
     if _trd is not None:
         _fired(cid, "毎日の自動リサーチの設定", content)
         add_history(cid, message.author.display_name, content)
+        _trend_talk[cid] = time.time()
         _act, _h, _m = _trd
+        if _act == "who":
+            _who = re.search("クロード\\s*([123１２３])", content)
+            _n = "123"["０１２３".find(_who.group(1)) - 1] if _who and \
+                _who.group(1) in "１２３" else (_who.group(1) if _who else "1")
+            gen_settings["trend_who"] = f"claude{_n}"
+            _save_gen_settings()
+            await message.channel.send(
+                f"🔎 リサーチの担当を **クロード{_n}** にしました。"
+                "毎日の自動リサーチも、その名前で結果を出します。"
+            )
+            return
         if _act == "ask":
             _on, _hh, _mm, _tcid = _trend_conf()
             await message.channel.send(
