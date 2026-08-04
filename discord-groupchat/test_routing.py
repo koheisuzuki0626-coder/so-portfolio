@@ -587,6 +587,24 @@ def run():
     check("デザインは会話用と別モデルにできる",
           isinstance(bot.DESIGN_MODEL, str), True)
 
+    print("■ 自分の構成の話だと気づくこと（オーケストレーターの運用）")
+    # 事故：「オーケストレーターの運用について、いい方法ある？」に対し、
+    # 自分の構成の話だと気づかず kohei の生活サポートの話として答えた
+    for _t in ("オーケストレーターの運用について、いい方法ある？",
+               "クロードが受け取ってgeminiが精査して結果を出すのってできる？",
+               "クロード1とクロード3の役割分担どうなってる",
+               "校閲って誰がやってるの", "話者のラベルってどう決まる"):
+        check(f"{_t[:18]!r}… は自分の話として扱う",
+              bot.ops_guide(_t) != bot.TALK_RULES, True)
+    for _t in ("資産運用どう思う？", "今日つかれた", "夏のレシピ教えて"):
+        check(f"{_t!r} は自分の話にしない", bot.ops_guide(_t), bot.TALK_RULES)
+    check("Discordの外へ回すのを禁じている",
+          "Claude Codeのセッションで相談して" in bot.OPS_RULES, True)
+    check("いまの返事の作られ方を機能一覧に持つ",
+          "Geminiが校閲" in bot.BOT_CAPABILITIES, True)
+    check("できないと言わせない",
+          "すでに動いている" in bot.BOT_CAPABILITIES, True)
+
     print("■ 普通の会話のテンションで話せること（依頼の形を要求する）")
     # 本人の指摘：「クロードコード」と言っただけでコード修正が立ち上がる。
     # 話題に出しただけの語で作業を始めないよう、依頼の【形】を要求する。

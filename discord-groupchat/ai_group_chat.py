@@ -1190,6 +1190,11 @@ TALK_RULES = (
 # 雑談や一般知識の質問には渡さない（渡すと上の事故が再発する）。
 OPS_RULES = (
     "運用ルール: ユーザーの操作は常にDiscord内で完結させ、ターミナルコマンドは案内しない。"
+    "【厳禁】『Claude Codeのセッションで相談して』『開発側に聞いて』"
+    "『別のツールで』のように、ユーザーをDiscordの外へ回してはいけない"
+    "（実際にそう答えて話が止まった）。自分の構成や仕様の話も、"
+    "分かる範囲でその場で普通に答える。仕様変更が要るなら"
+    "『それは作り込みが要るから、直してほしければそう言って』と伝えるだけでよい。"
     "『再起動してください』という案内は、ユーザーが"
     "【コードの修正をボットに反映すること】について聞いてきた時だけ使う。"
     "作業結果の報告や普通の質問の末尾に再起動の案内を付けるのは禁止。"
@@ -1225,7 +1230,12 @@ OPS_RULES = (
 # 「ボット自身・制作の話をしているか」の判定語。ここに無い話題（体調・雑談・
 # 一般知識など）では運用ルールを一切渡さないので、案内文が漏れようがない。
 _OPS_TOPIC_RE = re.compile(
-    r"(ボット|ぼっと|bot|再起動|起動|コード|プログラム|バグ|エラー|不具合|"
+    # 事故：「オーケストレーターの運用について、いい方法ある？」に対して
+    # 自分の構成の話だと気づかず、koheiの生活サポートの話として答えた。
+    # 自分自身の呼び名・役割の名前が入っていなかったため。
+    r"(オーケストレーター|オケストレーター|orchestrator|"
+    r"クロード[123]|リサーチャー|アドバイザー|話者|校閲|精査|連携|役割分担|"
+    r"ボット|ぼっと|bot|再起動|起動|コード|プログラム|バグ|エラー|不具合|"
     # 「作っ」「できた」「完成」を素で入れていたため、『アップルパイ作った』
     # 『料理完成した』のような日常会話にも運用ルールが混ざっていた。
     # 制作物の名前（動画・画像・サムネ…）が下に並んでいるので、それで足りる。
@@ -1261,6 +1271,13 @@ BOT_CAPABILITIES = (
     "・YouTubeリサーチ／自分のチャンネルの実績分析（週次レポート）／バズ度予測\n"
     "・参考動画からのスタイル学習／料金・残クレジットの照会\n"
     "・自己改修・再起動・ログ共有／会話モデルの切替\n"
+    "【返事の作られ方（聞かれたら答えてよい）】\n"
+    "・オーケストレーターが受け取り、内容で担当を決める\n"
+    "・返事はクロードが書く。長い返事はGeminiが校閲し、指摘があれば"
+    "クロードが直す（Geminiは本文を書き直さない＝文体を保つため）\n"
+    "・クロード1=リサーチャー / クロード2=PM（返事担当） / クロード3=アドバイザー。"
+    "『クロード1に聞いて』『多角的に見て』で複数の視点を出せる\n"
+    "・この仕組みは【すでに動いている】。『できない』『実装が必要』と答えないこと\n"
 )
 # 道具の名前の意味。機能一覧だけ渡しても、名前の意味を知らないと
 # 「ヒッグスフィールドって何ですか？」とユーザーに聞き返してしまう
@@ -6792,12 +6809,14 @@ async def _dispatch_message(message):
     if re.search("エラー", content) and re.search(
         "教えて|見せて|ログ|直近|最近|何|なに|ある\\?|ある？|出てる", content
     ):
+        _fired(cid, "エラー確認", content)
         await message.channel.send("🔴 直近のエラー:\n" + _recent_errors(3)[:1800])
         return
 
     # 承認待ちがあれば、テキストの「許可/拒否」でも受け付ける（ボタン不要）
     approval = _try_text_approval(cid, message.author.id, content)
     if approval is not None:
+        _fired(cid, "承認の返事" if approval else "却下の返事", content)
         await message.channel.send(
             "✅ 承認を受け付けました。進めます…" if approval else "🛑 却下を受け付けました。"
         )
@@ -6811,18 +6830,24 @@ async def _dispatch_message(message):
         )
 
     if content == "!stop" or _is_stop_phrase(content):
+        _fired(cid, "停止", content)
         await _do_stop(message, cid)
         return
     if content == "!restart" or _is_restart_phrase(content):
+        _fired(cid, "再起動", content)
         await _restart_self(cid)
         return
     # !コマンドは表引きで処理（if の羅列をやめ、追加も1行で済むようにした）
     cmd, _, arg = content.partition(" ")
     handler = _COMMANDS.get(cmd)
     if handler:
+        _fired(cid, f"!コマンド({cmd})", content)
         await handler(message, cid, arg.strip())
         return
     if content.startswith("!"):
+        # 打ち間違いの「!」「!!!」も含め、ここで引き受けたものとして扱う。
+        # 印を付けないと「取りこぼし」と誤判定され、記号に会話で返事をしていた。
+        _fired(cid, "!コマンド", content)
         return
 
     # ---- 決定的ルーティング（classify_route で判定。テストと同じ関数を使う）----
