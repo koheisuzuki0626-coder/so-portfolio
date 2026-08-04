@@ -2988,6 +2988,41 @@ def _match_casual_lead(text):
 
 # AI判定が必要そうなキーワード（作業指示・生成依頼・検索・過去記憶）。
 # これに全く該当しない短い発言は、AIを呼ばず雑談として即処理（Gemini無料枠の節約）。
+# 「実際にやって」と頼んでいる形か。会話のテンションの発言を作業にしないための門。
+# 事故：「クロードコードって便利だよね」のような雑談から、コード修正の
+# 実行プラン（承認ダイアログ）が立ち上がっていた。話題に出しただけの語を
+# 依頼と取り違えないよう、依頼の【形】を要求する。
+_ORDER_RE = re.compile(
+    # 文末が依頼形（「〜して」「〜してくれる？」「〜してほしい」）
+    "(して|してくれ|して下さ|してくださ|しといて|しておいて)"
+    "(ほしい|欲しい|くれ|ください|下さい|よ|ね|て|る|る？|る\?)?[。、!！]?$|"
+    # 依頼の言い切り
+    "お願い|頼む|頼める|やって|やっといて|"
+    # 具体的な動作の命令形
+    "作って|つくって|作成して|生成して|描いて|書いて|直して|なおして|修正して|"
+    "変えて|かえて|変更して|追加して|足して|消して|削除して|実行して|走らせて|"
+    "入れて|出して|調べて|探して|止めて|再起動|更新して|送って|見せて|教えて"
+)
+
+
+# 依頼の形を要求する分類（勝手に始まると困るもの）。
+# restart / talk / profile / trend は害が小さいので対象外にしない。
+_ACTION_KINDS = ("selffix", "exec", "video", "image")
+
+
+def _wants_action(text):
+    """『いま実際にやって』と頼まれている形か。
+    プロンプトで「迷ったらchat」と書いても守られなかったので、
+    最終判断はコード側で持つ（このリポジトリの決まり）。"""
+    t = _strip_media_context(text or "").strip()
+    if not t:
+        return False
+    if (_NEGATION_RE.search(t) or _USER_REPORT_RE.search(t)
+            or _NOT_NOW_RE.search(t)):
+        return False                      # 打ち消し・お礼・継続のお願い
+    return bool(_ORDER_RE.search(t))
+
+
 _PLAN_TRIGGER_RE = re.compile(
     "作って|作成|生成|描いて|書いて|直して|修正|書き換え|編集|実行|インストール|コマンド|"
     "デバッグ|バグ|動画|映像|ＣＭ|CM|PV|画像|イラスト|ロゴ|絵|"
@@ -3130,6 +3165,18 @@ def _asks_gen_model(said):
     )
 
 
+# 「〜って何？」「〜ってどうやるの？」＝ものの説明を求める質問。
+# 名前が出ただけで機能を起動しない（普通の会話のテンションを守るための門）。
+# 実例:「実績ってどうやって見るの」で実績分析が、
+#      「クロード3ってどんな役割？」で複数視点の呼び出しが走っていた。
+_EXPLAIN_Q_RE = re.compile(
+    "って(何|なに|どう|どんな|する人|できる|使う|やる|便利|すごい|いい|難しい|大事)|"
+    "とは(何|なに|\?|？|$)|"
+    "の(意味|仕組み|やり方|使い方|作り方|直し方|調べ方|コツ|違い|役割)|"
+    "どうやって(見る|やる|する|作る|調べる|使う|出す)|"
+    "どういう(こと|意味|仕組み|もの|仕事|役割)"
+)
+
 # 「今やって」ではない言い方。継続のお願い・打ち消し・前置きなど。
 _NOT_NOW_RE = re.compile(
     "これからも|今後も|引き続き|次回から|次からも|そのうち|いずれ|"
@@ -3178,6 +3225,9 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     #    実際に「チャンネル実績レポートこれからもよろしくね」で確認が立ち上がり、
     #    言い直すたびに『作業を中止した』が会話に割り込んだ。
     if _NOT_NOW_RE.search(content) and not _NOW_RE.search(content):
+        return None
+    # ⓪.5 「〜って何？」は説明を求める質問。制作の指示が同じ文に無ければ会話。
+    if _EXPLAIN_Q_RE.search(content) and not _GEN_ORDER_RE.search(content):
         return None
     # ① 生成物の状態確認（添付なし・状態ワード・文脈）。
     #    直近の生成があれば「できた？」だけでも状態確認につなぐ。
@@ -3453,6 +3503,13 @@ async def _plan(history):
             "trend", "talk", "profile",
         ):
             kind = d["kind"]
+        # 依頼の形をしていない発言は、AIが何と言おうと会話に戻す。
+        # 「クロードコードって便利だよね」から実行プランが立ち上がる等、
+        # 話題に出しただけの語で作業が始まる事故を、コード側で止める。
+        if kind in _ACTION_KINDS and not _wants_action(latest):
+            print(f"[plan] 依頼の形ではないので会話に戻す: {kind} ← {latest[:40]}")
+            _fired(_cid_of_history(history), f"{kind}→会話に戻した", latest)
+            kind, reply = "chat", ""
         if d.get("mode") in ("single", "debate"):
             mode = d["mode"]
         if d.get("lead") in ("claude", "gemini"):
