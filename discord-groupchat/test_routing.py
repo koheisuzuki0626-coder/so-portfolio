@@ -587,6 +587,42 @@ def run():
     check("デザインは会話用と別モデルにできる",
           isinstance(bot.DESIGN_MODEL, str), True)
 
+    print("■ 作り手の指定を『題材』にしない")
+    # 事故：「ヒッグスフィールドで作って」が題材として読まれ、
+    # "Higgs boson field visualized as an endless dark cosmic void..." という
+    # 素粒子物理の画像が生成された（頼んだのは人物写真の作り直し）
+    for _t in ("ヒッグスフィールドで作って", "ヒッグスフィールドで", "クロードで作って",
+               "geminiで", "HTMLで"):
+        check(f"{_t!r} に題材は無い", bot._has_subject(_t), False)
+    for _t in ("ヒッグスフィールドで猫の画像作って", "黄色いドレスの女性",
+               "クロードで相関図作って"):
+        check(f"{_t!r} には題材がある", bot._has_subject(_t), True)
+    _L = {"has_last_gen": True}
+    check("指定だけならHiggsfieldへ", bot.classify_route("ヒッグスフィールドで", **_L),
+          "hf_auto")
+    check("指定だけならクロードへ", bot.classify_route("クロードで作って", **_L), "design")
+    check("題材があってもHiggsfield指定が勝つ",
+          bot.classify_route("ヒッグスフィールドでサムネ作って", **_L), "hf_auto")
+    check("直前の依頼が無ければ何も起こさない",
+          bot.classify_route("ヒッグスフィールドで作って"), None)
+    _src4 = open(bot.__file__, encoding="utf-8").read()
+    check("題材は直前の依頼から補う", "_request_with_context" in _src4, True)
+
+    print("■ 送った写真を次の発言でも参照として使う")
+    # 事故：写真を送った次の発言で作り直したら、参照が消えて別人になった
+    _keep_ref = dict(bot._last_ref)
+    try:
+        bot._last_ref.clear()
+        check("何も無ければ空", bot._recent_ref(5), "")
+        bot._remember_ref(5, "https://example.com/a.jpg")
+        check("直前の画像を引き継ぐ", bot._recent_ref(5), "https://example.com/a.jpg")
+        import time as _tm4
+        bot._last_ref[5] = ("https://example.com/a.jpg",
+                            _tm4.time() - bot.REF_KEEP_SEC - 10)
+        check("古い画像は引き継がない", bot._recent_ref(5), "")
+    finally:
+        bot._last_ref.clear(); bot._last_ref.update(_keep_ref)
+
     print("■ 設定の【相談】を【設定変更】と取り違えない")
     # 実例：「毎日決まった時間にTOP100をリサーチして欲しいんだけど何時頃がいいかな？」
     # に対して設定の案内を返し、「相談してるだけ」と言われた

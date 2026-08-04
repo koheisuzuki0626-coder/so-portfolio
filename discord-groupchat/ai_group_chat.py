@@ -3279,6 +3279,71 @@ _BY_CLAUDE_RE = re.compile(
     r"(クロード|claude|くろーど|html)\s*(?:で|に|を使って|使って|側で)", re.I)
 _BY_GEMINI_RE = re.compile(
     r"(gemini|ジェミニ|じぇみに)\s*(?:で|に|を使って|使って|側で)", re.I)
+_BY_HF_RE = re.compile(
+    r"(ヒッグスフィールド|ヒッグス|higgsfield|hf)\s*(?:で|に|を使って|使って|側で)",
+    re.I)
+# 作り手の指定だけを取り除くための語（依頼の中身と混ぜない）。
+# 事故：「ヒッグスフィールドで作って」が題材として読まれ、
+# "Higgs boson field visualized as an endless dark cosmic void..." という
+# 素粒子物理の画像が生成された。指定語は題材ではない。
+_ENGINE_WORD_RE = re.compile(
+    r"(ヒッグスフィールド|ヒッグス|higgsfield|クロード|claude|くろーど|"
+    r"gemini|ジェミニ|じぇみに|html)\s*(?:で|に|を使って|使って|側で)?",
+    re.I)
+_REQ_VERB_RE = re.compile(
+    "作って|作成して|生成して|つくって|描いて|お願いします|お願い|ください|"
+    "してほしい|して欲しい|やって|して")
+
+
+def _strip_engine_words(text):
+    """『ヒッグスフィールドで作って』から作り手の指定と依頼の動詞を落として、
+    依頼の【中身】だけを残す。空になれば中身は書かれていない、と判断できる。"""
+    t = _ENGINE_WORD_RE.sub("", text or "")
+    t = _REQ_VERB_RE.sub("", t)
+    return re.sub(r"[\s、。,.！!？?でにをがはもの]+", "", t)
+
+
+def _has_subject(text):
+    """何を作るのかが、その発言自体に書かれているか。"""
+    return len(_strip_engine_words(text)) >= 2
+
+
+# 直近に送られた画像（cid -> (url, 時刻)）。写真を送った次の発言で
+# 「これで作って」と言われた時に、参照として引き継ぐために持つ。
+_last_ref = {}
+REF_KEEP_SEC = 1800
+
+
+def _remember_ref(cid, url):
+    if url:
+        _last_ref[cid] = (url, time.time())
+
+
+def _recent_ref(cid):
+    url, t = _last_ref.get(cid, ("", 0))
+    return url if url and time.time() - t < REF_KEEP_SEC else ""
+
+
+def _last_request_text(cid):
+    """直近の『中身のある依頼』の本文を会話履歴から拾う。
+    「ヒッグスフィールドで」のような指定だけの発言を、
+    直前に何を頼まれていたかで補うために使う。"""
+    for name, text in reversed(get_history(cid) or []):
+        if not text or name == SUMMARY_SPEAKER or name == "Orchestrator":
+            continue
+        body = _strip_media_context(text)
+        if _has_subject(body):
+            return body
+    return ""
+
+
+def _request_with_context(req, cid):
+    """作り手の指定しかない依頼を、直前の依頼の中身で補う。
+    これが無いと『ヒッグスフィールドで作って』の指定語が題材になる。"""
+    if _has_subject(req or ""):
+        return req
+    prev = _last_request_text(cid)
+    return f"{prev}（{req}）" if prev else req
 # 作り手を名指しできる対象物（絵・デザインの両方）
 _VISUAL_NOUN_RE = re.compile(
     "サムネ|thumbnail|バナー|画像|イラスト|ロゴ|絵|写真|アイコン|デザイン|"
@@ -3512,6 +3577,8 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
             return "design"
         if _BY_GEMINI_RE.search(content):
             return "image"
+        if _BY_HF_RE.search(content):
+            return "hf_auto"
         # 直前がデザインなら、作り直しも同じ作り方（HTML）で行う。
         # 画像生成に投げると、せっかくの文字が崩れたものに置き換わってしまう。
         if last_was_design:
@@ -3532,6 +3599,15 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
             and _CHANGE_VERB_RE.search(content)
             and _DESIGN_TWEAK_RE.search(content)):
         return "design"
+    # ①.45 作り手の名指しだけの言い直し（「ヒッグスフィールドで」「クロードで」）。
+    #      直前に依頼があるので、その中身のまま作り手だけ変える。
+    if has_last_gen and not has_attachments and not _has_subject(content):
+        if _BY_HF_RE.search(content):
+            return "hf_auto"
+        if _BY_CLAUDE_RE.search(content):
+            return "design"
+        if _BY_GEMINI_RE.search(content):
+            return "image"
     # ①.5 ショート量産（「ショート作って」「今日のショート」等）
     if re.search("ショート|shorts?|ショート動画", content, re.I) and (
         _GEN_INTENT2_RE.search(content) or re.search("今日の|ネタ|企画|お願い", content)
@@ -3623,6 +3699,8 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
             return "design"
         if _BY_GEMINI_RE.search(content):
             return "image"
+        if _BY_HF_RE.search(content):
+            return "hf_auto"
     # ①.9 デザイン制作（文字が主役のもの。画像生成AIは文字が苦手なので
     #      ClaudeにHTMLで組ませてスクリーンショットする）。
     #      「猫のイラスト作って」のような絵の依頼は従来どおり画像生成へ。
@@ -4221,6 +4299,13 @@ async def _run_hf_generate(message, request, model, media_type, label,
         a.url for a in message.attachments
         if Path(a.filename).suffix.lower() in (SUPPORTED_IMAGE_TYPES | SUPPORTED_VIDEO_TYPES)
     ]
+    # 添付は前の発言に付いていることが多い（写真を送る→次に「これで作って」）。
+    # 引き継がないと参照が消え、まったく別人の画像になる（実際に起きた）。
+    if not refs:
+        _prev_ref = _recent_ref(cid)
+        if _prev_ref:
+            refs = [_prev_ref]
+            await send_as(orch, cid, "🖼 直前に送られた画像を参照として使います。")
     kind = "動画" if media_type == "video" else "画像"
     if refine:
         refined = await _refine_prompt(request, media_type)
@@ -7191,6 +7276,8 @@ async def _dispatch_message(message):
     _job = _load_motion_job()
     _video_att = _find_attachment(message, SUPPORTED_VIDEO_TYPES)
     _image_att = _find_attachment(message, SUPPORTED_IMAGE_TYPES)
+    if _image_att:
+        _remember_ref(cid, _image_att.url)   # 次の発言でも参照として使えるように
     _lg_rec = _load_last_gen(cid)
     route = classify_route(
         content,
@@ -7426,11 +7513,14 @@ async def _dispatch_message(message):
     if route == "hf_auto":
         mtype = "image" if re.search("画像|イラスト|ロゴ|絵|写真|アイコン", content) else "video"
         add_history(cid, message.author.display_name, content)
+        # 「ヒッグスフィールドで作って」のように作り手の指定しか無い時は、
+        # その指定語を題材にせず、直前に頼まれた中身を使う
+        _hreq = _request_with_context(content, cid)
         _gate(message, cid,
-              f"{'動画' if mtype == 'video' else '画像'}の生成（{content[:50]}）",
+              f"{'動画' if mtype == 'video' else '画像'}の生成（{_hreq[:50]}）",
               "内容に合う最適なモデルを自動で選び、"
               "英語プロンプトに整えてから生成します",
-              lambda: _run_hf_generate(message, content, None, mtype, "自動選定"),
+              lambda: _run_hf_generate(message, _hreq, None, mtype, "自動選定"),
               "動画/画像生成", "Higgsfieldのクレジットを消費します",
               engine=_engine_label_hf("自動選定",
                                       "動画" if mtype == "video" else "画像"))
@@ -7489,14 +7579,17 @@ async def _dispatch_message(message):
             if intent == "revise":
                 add_history(cid, message.author.display_name, content)
                 _fired(cid, "作り直し(文脈解釈)", content)
-                _spawn(_run_revise(message, content), cid, "作り直し")
+                _spawn(_run_revise(message, _request_with_context(content, cid)),
+                       cid, "作り直し")
                 return
             if intent == "new":
                 add_history(cid, message.author.display_name, content)
                 _fired(cid, "新規生成(文脈解釈)", content)
                 # ここは確認を挟まずに生成へ入っていた。クレジットを使う作業を
                 # 黙って始めるのは「勝手に生成が始まる」そのものなので必ず確認する。
-                _req2 = text or content
+                # 「ヒッグスフィールドで」だけの発言を題材にしない。
+                # 直前に何を頼まれていたかで中身を補う。
+                _req2 = _request_with_context(text or content, cid)
                 _mt = lg.get("media_type", "video")
                 _kind = "動画" if _mt == "video" else "画像"
                 _gate(message, cid, f"{_kind}の生成（{_req2[:40]}）",
