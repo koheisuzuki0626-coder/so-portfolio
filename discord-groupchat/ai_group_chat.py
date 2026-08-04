@@ -403,6 +403,34 @@ _running = {}
 HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "90"))
 
 
+# どの機能が発火したかの記録（cid -> 直近の [時刻, 発言, 機能名]）。
+# 「変な挙動」の調査のたびに、発言から発火先を推測していた。実際に
+# 「セルラーモデル」で生成モデル設定が出た件は、これがあれば一目で分かった。
+_fired_log = {}
+_fired_seq = {}
+FIRED_KEEP = 15
+
+
+def _fired(cid, name, said=""):
+    """この発言がどの機能に流れたかを残す。判定を変えた時の検証にも使う。"""
+    log = _fired_log.setdefault(cid, [])
+    log.append((time.time(), (said or "")[:60], name))
+    del log[:-FIRED_KEEP]
+    # 件数は上限で頭打ちになるので、通し番号を別に持つ
+    # （長さで「新しく発火したか」を見ると、埋まった後は必ず素通りになる）
+    _fired_seq[cid] = _fired_seq.get(cid, 0) + 1
+    return name
+
+
+def _fired_recent(cid, n=8):
+    """直近の『発言 → 発火した機能』を読める形で返す（デバッグログ用）。"""
+    out = []
+    for t, said, name in (_fired_log.get(cid) or [])[-n:]:
+        stamp = datetime.fromtimestamp(t, JST).strftime("%m-%d %H:%M:%S")
+        out.append(f"{stamp}  「{said}」 → {name}")
+    return "\n".join(out) or "（記録なし）"
+
+
 def _busy_tasks(cid):
     """いま実行中の「ユーザーが待っている作業」（完了監視は除く）。"""
     return [(n, sec) for n, sec in _running_for(cid) if "監視" not in n]
@@ -825,6 +853,11 @@ async def _share_debug_log(cid, limit=80):
         f"- 実際に投入されたプロンプト: {(_last_submitted.get('prompt') or '(記録なし)')[:400]}",
         f"- モデル設定: {json.dumps(gen_settings, ensure_ascii=False)[:300]}",
         f"- Geminiクールダウン中: {[m for m, t in _gemini_cooldown.items() if t > time.time()]}",
+        "",
+        "## 発言がどの機能に流れたか（新しいものほど下）",
+        "```",
+        _fired_recent(cid, 12),
+        "```",
         "",
         "## 直近のエラー",
         "```",
@@ -4979,26 +5012,24 @@ REVIEW_REPLIES = os.getenv("REVIEW_REPLIES", "1") not in ("0", "false", "False")
 REVIEW_MIN_CHARS = int(os.getenv("REVIEW_MIN_CHARS", "120"))
 
 _REVIEW_PROMPT = (
-    "あなたは編集者。下の【下書き】は、この会話への回答案です。"
-    "内容の担当者が書いたものを、あなたが最終確認します。\n"
+    "あなたは校閲役。下の【下書き】は、この会話への回答案です。\n"
+    "書き直してはいけません。読んで、直すべき点だけを挙げてください。\n"
     "見るところ:\n"
     "・質問に答えていない箇所、答え漏れ\n"
-    "・事実の食い違い、根拠のない断定\n"
-    "・冗長な言い回し、同じことの繰り返し\n"
-    "【厳守】新しい事実・数字・固有名詞を足さない。"
-    "分からないことは分からないままにする。"
-    "直すところが無ければ、下書きをそのまま返す。"
-    "説明・前置き・『修正しました』等は書かず、"
-    "最終的な回答本文だけを出力する。\n"
-    # 事故：長い返事だけがGeminiの文体に化けて、会話の途中で急に他人行儀な
-    # 敬語＋箇条書きになった。話が噛み合わない一番の原因だった。
-    "【文体は絶対に変えない】下書きの話し方をそのまま保つこと。\n"
-    "・『〜だよ』『〜ね』『〜と思う』のような話し言葉を、"
-    "『〜です』『〜ます』『〜ください』に直すのは禁止。\n"
-    "・見出し・箇条書き・区切り線を勝手に増やさない"
-    "（下書きが地の文なら地の文のまま返す）。\n"
-    "・丁寧にする、敬語にする、体裁を整える、はどれも『修正』ではない。"
-    "内容の誤りだけを直すこと。\n\n"
+    "・事実の誤り、根拠のない断定\n"
+    "・同じことの繰り返し\n"
+    "【出力の形】\n"
+    "・直すところが無ければ、『問題なし』の4文字だけを出力する。\n"
+    "・あれば、箇条書きで最大3点。1点は40字以内。指摘だけを書く。\n"
+    "【禁止】回答本文を書かない。言い換え・整形・敬語化・箇条書き化の"
+    "提案はしない（文体は担当者のもので、あなたが決めるものではない）。\n\n"
+)
+_FIX_PROMPT = (
+    "下の【下書き】に、校閲から【指摘】が付きました。"
+    "指摘のあった点だけを直した本文を出力してください。\n"
+    "【厳守】話し方・語尾・文体・長さは下書きのまま変えない。"
+    "指摘に無い箇所は1文字も触らない。"
+    "前置きや『修正しました』は書かず、本文だけを出力する。\n\n"
 )
 
 # 敬体（です・ます）の出現を数えるための目印。
@@ -5006,6 +5037,10 @@ _POLITE_RE = re.compile(
     "(?:です|ます|ました|ません|でしょう|ください|いたします|ございます)"
     "(?=[。、\n！？!?」]|$)"
 )
+
+
+# 「指摘なし」の言い方（校閲がそのまま通した合図）
+_NO_ISSUE_RE = re.compile("問題なし|問題ありません|指摘なし|特になし|修正点はあり")
 
 
 def _register_changed(draft, out):
@@ -5017,30 +5052,44 @@ def _register_changed(draft, out):
 
 
 async def _review_reply(draft, history):
-    """クロードの下書きをGeminiが精査して締める（返すのは最終本文だけ）。
-    失敗・枠切れ・怪しい結果のときは下書きをそのまま使う（劣化させない）。"""
+    """クロードの下書きを、Geminiが【校閲】する（書き直させない）。
+    以前はGeminiに本文を書き直させていたため、長い返事だけが
+    Geminiの敬語・箇条書きに化けて、会話が急に他人行儀になった。
+    いまはGeminiは指摘だけを返し、直すのは書いた本人（クロード）。
+    指摘が無ければ余計な呼び出しをしないので、速さも落ちない。"""
     if not (REVIEW_REPLIES and draft) or len(draft) < REVIEW_MIN_CHARS:
         return draft, False
     if _gemini_all_cooling():
         return draft, False
     try:
-        out = await _gemini_call(
+        notes = await _gemini_call(
             _REVIEW_PROMPT + transcript_block(history)
-            + f"\n\n【下書き】\n{draft}\n\n最終的な回答本文:",
+            + f"\n\n【下書き】\n{draft}\n\n指摘:",
             "review",
         )
     except Exception as e:  # noqa: BLE001
-        print(f"[review] 精査に失敗（下書きを使用）: {str(e)[:120]}")
+        print(f"[review] 校閲に失敗（下書きを使用）: {str(e)[:120]}")
         return draft, False
-    out = _clean_reply((out or "").strip(), _latest_user_msg(history))
-    # 空・極端に短い・逆に長くなった場合は、精査が失敗したとみなして下書きを使う
-    if not out or len(out) < len(draft) * 0.4 or len(out) > len(draft) * 1.5:
+    notes = (notes or "").strip()
+    if not notes or _NO_ISSUE_RE.search(notes) or len(notes) > 400:
+        return draft, False          # 指摘なし／長すぎる＝書き直している
+    try:
+        fixed = await run_claude_cli(
+            _FIX_PROMPT + transcript_block(history)
+            + f"\n\n【下書き】\n{draft}\n\n【指摘】\n{notes}\n\n直した本文:"
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[review] 直しに失敗（下書きを使用）: {str(e)[:120]}")
         return draft, False
-    # 文体が敬体に化けていたら、内容の精査ではなく書き直しなので採用しない
-    if _register_changed(draft, out):
+    fixed = _clean_reply(_strip_cli_boilerplate((fixed or "").strip()),
+                         _latest_user_msg(history))
+    # 別物になっていたら採用しない（校閲は手直しであって書き直しではない）
+    if not fixed or len(fixed) < len(draft) * 0.5 or len(fixed) > len(draft) * 1.6:
+        return draft, False
+    if _register_changed(draft, fixed):
         print("[review] 文体が変わったため下書きを使用")
         return draft, False
-    return out, True
+    return fixed, True
 
 
 async def ask_orchestrator(history):
@@ -5243,6 +5292,7 @@ async def _handle_orchestrator(message, cid):
     # 「アップルウォッチのセルラーモデル…金額教えて」へ生成モデル設定を返し、
     # 質問には一切答えないまま終わっていた。
     if _asks_gen_model(said):
+        _fired(cid, "生成モデル設定の表示", said)
         await message.channel.send("🔧 現在の生成モデル設定:\n" + _gen_settings_summary())
         return
 
@@ -5374,6 +5424,7 @@ async def _handle_orchestrator(message, cid):
 # ---------- 送信・進行 ----------
 async def send_long(channel, text, prefix=""):
     """長文をDiscordの上限に合わせて分割送信する（先頭だけ prefix を付ける）。"""
+    _mark_sent(getattr(channel, "id", 0))
     text = text or ""
     for i in range(0, max(len(text), 1), 1900):
         await channel.send((prefix if i == 0 else "") + text[i:i + 1900])
@@ -5399,9 +5450,18 @@ def _chunks(text, size=DISCORD_LIMIT):
     return [c for c in out if c] or ["(空の応答)"]
 
 
+# チャンネルごとの送信回数。「何も答えないまま終わった」の検知に使う。
+_sent_count = {}
+
+
+def _mark_sent(cid):
+    _sent_count[cid] = _sent_count.get(cid, 0) + 1
+
+
 async def send_as(bot, channel_id, text, view=None):
     """長い本文は切り捨てず、分割して全部送る。
     ボタン(view)は最後の塊に付ける（読み終わった位置に出す）。"""
+    _mark_sent(channel_id)
     channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
     parts = _chunks(text)
     for i, part in enumerate(parts):
@@ -6481,8 +6541,12 @@ async def on_message(message):
     （沈黙して失敗＝毎回スクショ待ち、を防ぐ自己修復の要）。"""
     if message.author.bot:
         return
+    cid = message.channel.id
+    before_sent = _sent_count.get(cid, 0)
+    before_fired = _fired_seq.get(cid, 0)
     try:
         await _dispatch_message(message)
+        await _rescue_if_silent(message, cid, before_sent, before_fired)
     except Exception as e:  # noqa: BLE001
         summary = _log_error(f"on_message: {message.content[:80]}", e)
         try:
@@ -6493,6 +6557,30 @@ async def on_message(message):
         except Exception:  # noqa: BLE001
             pass
         _track(asyncio.create_task(_autoshare_log(message.channel.id, "on_message")))
+
+
+async def _rescue_if_silent(message, cid, before_sent, before_fired):
+    """発言を受けたのに、何の機能にも流れず、何も送っていない場合の受け皿。
+    「反応しない」の正体が毎回分からなかったので、取りこぼしを記録として
+    必ず残し、そのうえで普通の会話として答え直す（黙って終わらせない）。"""
+    if _sent_count.get(cid, 0) != before_sent:
+        return                              # 何かは答えている
+    if _fired_seq.get(cid, 0) != before_fired:
+        return                              # どこかの機能が引き受けた
+    if _busy_tasks(cid):
+        return                              # 裏で作業中（終われば結果が出る）
+    said = (message.content or "").strip()
+    if not said and not message.attachments:
+        return
+    _log_error("取りこぼし", RuntimeError(f"どの経路にも流れなかった: {said[:80]}"))
+    _fired(cid, "取りこぼし→会話で答え直す", said)
+    hist = get_history(cid)
+    if not hist or (hist[-1][1] or "") != said:
+        add_history(cid, message.author.display_name, said)
+    try:
+        await _handle_orchestrator(message, cid)
+    except Exception as e:  # noqa: BLE001
+        _log_error("取りこぼしの答え直しに失敗", e)
 
 
 # ---------- !コマンド（表引き。各実装は (message, cid, 引数) を受ける）----------
@@ -6608,6 +6696,7 @@ async def _dispatch_message(message):
     # 「コードを直さないと変えられない」と答えてしまい、実際そうなった）
     _mdl = _match_claude_model(content)
     if _mdl is not None:
+        _fired(cid, "会話モデルの切替", content)
         gen_settings["claude_model"] = _mdl[0]
         _save_gen_settings()
         add_history(cid, message.author.display_name, content)
@@ -6617,6 +6706,7 @@ async def _dispatch_message(message):
         return
     _lead = _match_casual_lead(content)
     if _lead is not None:
+        _fired(cid, "雑談担当の切替", content)
         gen_settings["casual_lead"] = _lead[0]
         _save_gen_settings()
         add_history(cid, message.author.display_name, content)
@@ -6626,7 +6716,9 @@ async def _dispatch_message(message):
         )
         return
 
-    if _MODEL_ASK_RE.search(content) and not re.search("画像|動画|映像|生成", content):
+    if (_MODEL_ASK_RE.search(content) and not _NOT_GEN_MODEL_RE.search(content)
+            and not re.search("画像|動画|映像|生成", content)):
+        _fired(cid, "会話モデルの確認", content)
         await message.channel.send(
             f"🔀 いまの会話モデル: **{_current_model_label()}**\n"
             "「**ハイクにして**」「**ソネットにして**」「**オーパスにして**」"
@@ -6636,6 +6728,7 @@ async def _dispatch_message(message):
 
     # 自己診断・エラー確認（最優先で拾う）
     if re.search("システムチェック|自己診断|ヘルスチェック|健康診断|全体チェック", content):
+        _fired(cid, "自己診断", content)
         await message.channel.send("🩺 自己診断を実行します（30秒〜1分）…")
         await message.channel.send((await _self_diagnose())[:1900])
         return
@@ -6704,6 +6797,7 @@ async def _dispatch_message(message):
     pm = _pending_motion.get(cid)
     if route is None and pm and _video_att and time.time() - pm["ts"] < 900:
         route = "motion"
+    _fired(cid, route or "会話", content)
 
     if route == "status":
         # 進行中も完成物も無ければ状態確認に入らず、普通の会話として続行する

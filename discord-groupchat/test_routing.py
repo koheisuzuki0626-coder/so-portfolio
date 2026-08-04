@@ -473,42 +473,77 @@ def run():
           bot._with_speaker("本文"), "**Gemini**: 本文")
     bot._last_engine["name"] = "クロード"
 
-    print("■ 返事の精査（クロードが書き、Geminiが締める）")
+    print("■ 返事の校閲（クロードが書き、Geminiは指摘だけ）")
+    # 事故：Geminiに書き直させていたため、長い返事だけ敬語＋箇条書きに化けた。
+    # いまはGeminiは指摘を返すだけで、本文を直すのは書いた本人。
     import asyncio as _aio7
     _orig_g, _orig_cool = bot._gemini_call, bot._gemini_all_cooling
+    _orig_cli = bot.run_claude_cli
+    _h = [("kohei", "これどう思う？")]
+    _draft = "クロードの下書きだよ。" + "y" * 130
 
-    async def _fake_g(prompt, tag="gemini"):
+    async def _notes(prompt, tag="gemini"):
         bot._last_engine["name"] = "Gemini"     # 裏で汚染される状況も再現
-        return "精査後の回答本文です。" + "x" * 110
+        return "・料金の根拠が無い\n・後半が繰り返し"
+
+    async def _ok(prompt, tag="gemini"):
+        return "問題なし"
+
+    async def _fixed_cli(prompt, background=False):
+        return "直した下書きだよ。" + "y" * 130
 
     try:
-        bot._gemini_call, bot._gemini_all_cooling = _fake_g, (lambda: False)
-        _h = [("kohei", "これどう思う？")]
-        _draft = "クロードの下書き。" + "y" * 130
+        bot._gemini_all_cooling = lambda: False
+        bot._gemini_call, bot.run_claude_cli = _notes, _fixed_cli
         _out, _rev = _aio7.run(bot._review_reply(_draft, _h))
-        check("長い返事は精査する", _rev, True)
-        check("精査後の本文になる", _out.startswith("精査後"), True)
-        check("短い返事は精査しない（速度優先）",
+        check("指摘があれば直す", _rev, True)
+        check("直すのはクロード（クロードの文体のまま）",
+              _out.startswith("直した"), True)
+
+        bot._gemini_call = _ok
+        check("指摘なしなら下書きのまま",
+              _aio7.run(bot._review_reply(_draft, _h)), (_draft, False))
+
+        _calls = []
+
+        async def _count_cli(prompt, background=False):
+            _calls.append(1)
+            return "呼ばれた"
+        bot.run_claude_cli = _count_cli
+        _aio7.run(bot._review_reply(_draft, _h))
+        check("指摘なしなら余計な呼び出しをしない", _calls, [])
+
+        bot._gemini_call, bot.run_claude_cli = _notes, _fixed_cli
+        check("短い返事は校閲しない（速度優先）",
               _aio7.run(bot._review_reply("短い返事", _h))[1], False)
         bot._gemini_all_cooling = lambda: True
         check("枠切れなら下書きをそのまま使う",
               _aio7.run(bot._review_reply(_draft, _h)), (_draft, False))
+        bot._gemini_all_cooling = lambda: False
 
-        # 精査が壊れた結果を返したら採用しない（劣化させない）
-        async def _bad_short(prompt, tag="gemini"):
+        async def _rewrote(prompt, tag="gemini"):
+            return "こちらが最終的な回答本文です。" + "z" * 400
+        bot._gemini_call = _rewrote
+        check("本文を書いてきたら指摘とみなさない",
+              _aio7.run(bot._review_reply(_draft, _h))[1], False)
+
+        bot._gemini_call = _notes
+
+        async def _bad_short(prompt, background=False):
             return "あ"
 
-        async def _bad_long(prompt, tag="gemini"):
-            return "あ" * 500
-        bot._gemini_all_cooling = lambda: False
-        bot._gemini_call = _bad_short
+        async def _bad_polite(prompt, background=False):
+            return ("料金の根拠を示します。後半の繰り返しを削除しました。"
+                    "ご確認ください。" + "z" * 100)
+        bot.run_claude_cli = _bad_short
         check("短くなりすぎたら下書きを使う",
               _aio7.run(bot._review_reply(_draft, _h))[1], False)
-        bot._gemini_call = _bad_long
-        check("長くなりすぎたら下書きを使う",
+        bot.run_claude_cli = _bad_polite
+        check("敬体に化けたら下書きを使う",
               _aio7.run(bot._review_reply(_draft, _h))[1], False)
     finally:
         bot._gemini_call, bot._gemini_all_cooling = _orig_g, _orig_cool
+        bot.run_claude_cli = _orig_cli
 
     print("■ Geminiとクロードの役割分担（声はひとつ、頭は複数）")
     check("Geminiの視点担当の人格がある",
@@ -551,6 +586,83 @@ def run():
     check("デザインに速さの指示を入れる場所がある", isinstance(_dt, str), True)
     check("デザインは会話用と別モデルにできる",
           isinstance(bot.DESIGN_MODEL, str), True)
+
+    print("■ 発言がどの機能に流れたかを記録する _fired")
+    # 「変な挙動」の調査のたびに、発言から発火先を推測していた。記録しておけば一目で分かる。
+    _keep_fl, _keep_fs = dict(bot._fired_log), dict(bot._fired_seq)
+    try:
+        bot._fired_log.clear(); bot._fired_seq.clear()
+        bot._fired(9, "会話", "おはよう")
+        bot._fired(9, "design", "相関図作って")
+        check("発言と機能が残る", "相関図作って" in bot._fired_recent(9), True)
+        check("機能名も残る", "design" in bot._fired_recent(9), True)
+        check("記録が無ければそう言う", bot._fired_recent(12345), "（記録なし）")
+        # 上限を超えても「新しく発火したか」が分かること（件数で見ると必ず素通りする）
+        for _i in range(bot.FIRED_KEEP + 5):
+            bot._fired(9, "会話", f"発言{_i}")
+        check("保持件数は上限で頭打ち", len(bot._fired_log[9]), bot.FIRED_KEEP)
+        _n = bot._fired_seq[9]
+        bot._fired(9, "会話", "もう1件")
+        check("通し番号は増え続ける", bot._fired_seq[9] > _n, True)
+    finally:
+        bot._fired_log.clear(); bot._fired_log.update(_keep_fl)
+        bot._fired_seq.clear(); bot._fired_seq.update(_keep_fs)
+
+    print("■ 何も答えずに終わらせない _rescue_if_silent")
+    import asyncio as _aio8
+
+    class _FakeAuthor:
+        display_name = "kohei"
+        id = 1
+        bot = False
+
+    class _FakeMsg:
+        def __init__(self, text):
+            self.content = text
+            self.attachments = []
+            self.author = _FakeAuthor()
+
+    _keep_h = bot._handle_orchestrator
+    _keep_fl2, _keep_fs2 = dict(bot._fired_log), dict(bot._fired_seq)
+    _keep_sc = dict(bot._sent_count)
+    try:
+        _rescued = []
+
+        async def _fake_handle(message, cid):
+            _rescued.append(message.content)
+        bot._handle_orchestrator = _fake_handle
+        bot._sent_count.clear(); bot._fired_seq.clear(); bot._fired_log.clear()
+
+        # 何も送らず・どこにも流れなかった → 会話として答え直す
+        _aio8.run(bot._rescue_if_silent(_FakeMsg("これどう思う？"), 88, 0, 0))
+        check("取りこぼしは会話で答え直す", _rescued, ["これどう思う？"])
+        check("取りこぼしを記録に残す", "取りこぼし" in bot._recent_errors(3), True)
+
+        # 何か送っていたら手を出さない
+        _rescued.clear()
+        bot._sent_count[88] = 5
+        _aio8.run(bot._rescue_if_silent(_FakeMsg("答えた話"), 88, 4, 0))
+        check("答えている時は割り込まない", _rescued, [])
+
+        # どこかの機能が引き受けていたら手を出さない
+        bot._sent_count[88] = 5
+        bot._fired_seq[88] = 3
+        _aio8.run(bot._rescue_if_silent(_FakeMsg("機能が拾った話"), 88, 5, 2))
+        check("機能が拾った時は割り込まない", _rescued, [])
+    finally:
+        bot._handle_orchestrator = _keep_h
+        bot._fired_log.clear(); bot._fired_log.update(_keep_fl2)
+        bot._fired_seq.clear(); bot._fired_seq.update(_keep_fs2)
+        bot._sent_count.clear(); bot._sent_count.update(_keep_sc)
+
+    print("■ 『最新モデル』で会話モデルの確認を返さない")
+    for _t in ("iPhoneの最新モデル教えて", "上位モデル確認したい"):
+        check(f"{_t!r} は会話モデルの確認にしない",
+              bool(bot._MODEL_ASK_RE.search(_t)
+                   and not bot._NOT_GEN_MODEL_RE.search(_t)), False)
+    check("『モデル教えて』は従来どおり拾う",
+          bool(bot._MODEL_ASK_RE.search("モデル教えて")
+               and not bot._NOT_GEN_MODEL_RE.search("モデル教えて")), True)
 
     print("■ 『モデル』の一語で生成モデル設定を返さない _asks_gen_model")
     # 事故：「アップルウォッチのセルラーモデル…金額教えて」に
