@@ -587,6 +587,31 @@ def run():
     check("デザインは会話用と別モデルにできる",
           isinstance(bot.DESIGN_MODEL, str), True)
 
+    print("■ 起きたことをファイルに残す（再起動で消えない）")
+    # 事故：「いきなりまとめみたいなの出してきた」を調べようとしたら、
+    # ボットが送った内容がどこにも残っておらず、記録も再起動で消えていた
+    import tempfile as _tf3, pathlib as _pl3
+    _keep_tr = bot.TRACE_FILE
+    with _tf3.TemporaryDirectory() as _d3:
+        try:
+            bot.TRACE_FILE = _pl3.Path(_d3) / "trace.jsonl"
+            bot._fired(7, "design", "相関図作って")
+            bot._mark_sent(7, "🎨 デザインを作ります（図 1600×1200）…")
+            bot._mark_sent(7, "✅ できました！")
+            bot._mark_sent(8, "別チャンネルの投稿")
+            check("行き先が残る", "→ design" in bot._fired_recent(7), True)
+            check("送った内容が残る", "できました" in bot._sent_recent(7), True)
+            check("チャンネルは混ざらない",
+                  "別チャンネル" in bot._sent_recent(7), False)
+            check("ファイルに残る（再起動で消えない）",
+                  bot.TRACE_FILE.exists(), True)
+            check("記録が無ければそう言う", bot._sent_recent(99), "（記録なし）")
+        finally:
+            bot.TRACE_FILE = _keep_tr
+    _src3 = open(bot.__file__, encoding="utf-8").read()
+    check("デバッグログに送信内容を載せる",
+          "ボットが実際に送った内容" in _src3, True)
+
     print("■ 毎日の自動リサーチ（YouTube急上昇TOP100）")
     for _t, _want in (
         ("毎日決まった時間にYouTubeのtop100を自動でリサーチする機能をつけて欲しい",

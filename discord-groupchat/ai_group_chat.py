@@ -411,6 +411,51 @@ _fired_seq = {}
 FIRED_KEEP = 15
 
 
+# 記録はファイルにも残す。メモリだけだと再起動で消え、実際に
+# 「いきなり何か出てきた」の調査時に2回続けて（記録なし）になった。
+TRACE_FILE = HISTORY_DIR / "trace.jsonl"
+TRACE_KEEP = 500
+_trace_writes = 0
+
+
+def _trace(cid, kind, text):
+    """起きたことを1行ずつ残す（再起動しても消えない）。
+    kind: "route"=発言の行き先 / "out"=ボットが実際に送った内容。"""
+    global _trace_writes
+    try:
+        with TRACE_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(
+                {"t": time.time(), "cid": cid, "kind": kind,
+                 "text": (text or "")[:400]}, ensure_ascii=False) + "\n")
+        _trace_writes += 1
+        if _trace_writes % 50 == 0:          # たまに間引く（毎回読み書きしない）
+            lines = TRACE_FILE.read_text(encoding="utf-8").splitlines()
+            if len(lines) > TRACE_KEEP:
+                TRACE_FILE.write_text(
+                    "\n".join(lines[-TRACE_KEEP:]) + "\n", encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass                                  # 記録の失敗で本体を止めない
+
+
+def _trace_read(cid, kind, n):
+    """記録を新しい順に n 件読んで、古い順に戻す。"""
+    try:
+        lines = TRACE_FILE.read_text(encoding="utf-8").splitlines()
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for ln in reversed(lines):
+        try:
+            d = json.loads(ln)
+        except Exception:  # noqa: BLE001
+            continue
+        if d.get("kind") == kind and (cid is None or d.get("cid") == cid):
+            out.append(d)
+            if len(out) >= n:
+                break
+    return list(reversed(out))
+
+
 def _fired(cid, name, said=""):
     """この発言がどの機能に流れたかを残す。判定を変えた時の検証にも使う。"""
     log = _fired_log.setdefault(cid, [])
@@ -419,16 +464,28 @@ def _fired(cid, name, said=""):
     # 件数は上限で頭打ちになるので、通し番号を別に持つ
     # （長さで「新しく発火したか」を見ると、埋まった後は必ず素通りになる）
     _fired_seq[cid] = _fired_seq.get(cid, 0) + 1
+    _trace(cid, "route", f"「{(said or '')[:60]}」 → {name}")
     return name
 
 
-def _fired_recent(cid, n=8):
-    """直近の『発言 → 発火した機能』を読める形で返す（デバッグログ用）。"""
-    out = []
-    for t, said, name in (_fired_log.get(cid) or [])[-n:]:
-        stamp = datetime.fromtimestamp(t, JST).strftime("%m-%d %H:%M:%S")
-        out.append(f"{stamp}  「{said}」 → {name}")
-    return "\n".join(out) or "（記録なし）"
+def _stamp(t):
+    return datetime.fromtimestamp(t, JST).strftime("%m-%d %H:%M:%S")
+
+
+def _fired_recent(cid, n=12):
+    """直近の『発言 → 発火した機能』（再起動をまたいでも残る）。"""
+    rows = [f"{_stamp(d['t'])}  {d['text']}" for d in _trace_read(cid, "route", n)]
+    return "\n".join(rows) or "（記録なし）"
+
+
+def _sent_recent(cid, n=12):
+    """ボットが実際に送った内容。会話履歴に残らない投稿も含めて追える。
+    『いきなり〇〇を出してきた』の調査は、これが無いと何も分からなかった。"""
+    rows = []
+    for d in _trace_read(cid, "out", n):
+        body = " ".join((d.get("text") or "").split())[:160]
+        rows.append(f"{_stamp(d['t'])}  {body}")
+    return "\n".join(rows) or "（記録なし）"
 
 
 def _busy_tasks(cid):
@@ -857,6 +914,11 @@ async def _share_debug_log(cid, limit=80):
         "## 発言がどの機能に流れたか（新しいものほど下）",
         "```",
         _fired_recent(cid, 12),
+        "```",
+        "",
+        "## ボットが実際に送った内容（会話履歴に残らないものも含む）",
+        "```",
+        _sent_recent(cid, 12),
         "```",
         "",
         "## 直近のエラー",
@@ -5653,7 +5715,7 @@ async def _handle_orchestrator(message, cid):
 # ---------- 送信・進行 ----------
 async def send_long(channel, text, prefix=""):
     """長文をDiscordの上限に合わせて分割送信する（先頭だけ prefix を付ける）。"""
-    _mark_sent(getattr(channel, "id", 0))
+    _mark_sent(getattr(channel, "id", 0), text)
     text = text or ""
     for i in range(0, max(len(text), 1), 1900):
         await channel.send((prefix if i == 0 else "") + text[i:i + 1900])
@@ -5683,14 +5745,15 @@ def _chunks(text, size=DISCORD_LIMIT):
 _sent_count = {}
 
 
-def _mark_sent(cid):
+def _mark_sent(cid, text=""):
     _sent_count[cid] = _sent_count.get(cid, 0) + 1
+    _trace(cid, "out", text)
 
 
 async def send_as(bot, channel_id, text, view=None):
     """長い本文は切り捨てず、分割して全部送る。
     ボタン(view)は最後の塊に付ける（読み終わった位置に出す）。"""
-    _mark_sent(channel_id)
+    _mark_sent(channel_id, text)
     channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
     parts = _chunks(text)
     for i, part in enumerate(parts):
