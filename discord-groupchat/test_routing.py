@@ -644,6 +644,30 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ iPhoneのファイルアプリの道順をそのまま受け取る")
+    # 事故：iCloudの道順を貼ったら、エージェント実行→Higgsfieldの動画生成と
+    # さまよって3分かかり、最後は「iCloudの動画は取りに行けない」で終わった。
+    # iCloud DriveはMacにも同期されているので、パスを組み立てれば扱える。
+    _ios = ("⁨iCloud Drive⁩ ▸ ⁨マルサヂ⁩ ▸ ⁨AI⁩ ▸ ⁨動画⁩の中の"
+            "武士道：究極のサバイバル哲学.mp4をショート動画にして")
+    _got = bot._ios_files_path(_ios)
+    check("iCloudの道順をMacのパスにする",
+          _got.endswith("com~apple~CloudDocs/マルサヂ/AI/動画/"
+                        "武士道：究極のサバイバル哲学.mp4"), True)
+    check("フォルダとファイル名を取り違えない", "動画の中の" in _got, False)
+    check("依頼文をファイル名に混ぜない", "ショート" in _got, False)
+    check("iPhone内の道順も読める",
+          bot._ios_files_path("このiPhone内 ▸ ダウンロード ▸ 動画の中のtest.mov")
+          .endswith("ダウンロード/動画/test.mov"), True)
+    check("道順でなければ空", bot._ios_files_path("ただの雑談です"), "")
+    check("道順から切り抜きへ直行する", bot.classify_route(_ios), "clip")
+    check("ファイル名の言及だけでも素材とみなす",
+          bot.classify_route("武士道.mp4をショートにして"), "clip")
+    check("ファイルの話でも質問なら会話",
+          bot.classify_route("この動画.mp4って何分？"), None)
+    _src9 = open(bot.__file__, encoding="utf-8").read()
+    check("見つからない時は探しに行く", "_find_video_by_name" in _src9, True)
+
     print("■ 1GBまでの動画を素材にできる")
     check("素材の上限は1GB以上", bot.MAX_VIDEO_SIZE >= 1024 * 1024 * 1024, True)
     check("AIに読ませる分の上限とは別",

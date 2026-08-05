@@ -2976,6 +2976,62 @@ async def _cut_one_clip(src, rows, clip, idx, workdir):
     return out, ""
 
 
+# iPhoneの「ファイル」アプリから貼られる道順を、Mac上の実際のパスに変える。
+# 実例:「⁨iCloud Drive⁩ ▸ ⁨マルサヂ⁩ ▸ ⁨AI⁩ ▸ ⁨動画⁩の中の武士道….mp4」
+# iCloud DriveはMacにも同期されているので、Mac側のパスを組み立てれば扱える。
+# これが無いと「iCloudの動画は取りに行けない」と断って終わっていた。
+ICLOUD_ROOT = "~/Library/Mobile Documents/com~apple~CloudDocs"
+_BIDI_RE = re.compile("[\u2066-\u2069\u200e\u200f]")
+_IOS_CRUMB_RE = re.compile(
+    r"(iCloud\s*Drive|このiPhone内|iPhone内)((?:\s*▸\s*[^▸]+)+)", re.I)
+_VIDEO_EXT_RE = re.compile(r"\.(?:mp4|mov|m4v|webm|mkv)$", re.I)
+
+
+def _ios_files_path(text):
+    """iPhoneのファイルアプリの道順 → Macのパス。読めなければ空。
+    最後の区切りのあとは「動画の中の◯◯.mp4」のように
+    フォルダ名とファイル名が助詞でつながっているので、そこで分ける。"""
+    t = _BIDI_RE.sub("", text or "")
+    m = _IOS_CRUMB_RE.search(t)
+    if not m:
+        return ""
+    segs = [x.strip() for x in m.group(2).split("▸") if x.strip()]
+    if not segs:
+        return ""
+    tail = segs.pop()
+    # 「動画の中の武士道….mp4」→ フォルダ「動画」＋ ファイル「武士道….mp4」
+    sp = re.search(r"(.*?)(?:の中の|の中に|内の|フォルダの)(.+)$", tail)
+    if sp:
+        folder, name = sp.group(1).strip(), sp.group(2).strip()
+        if folder:
+            segs.append(folder)
+    else:
+        name = tail
+    # ファイル名の後ろに続く依頼文（「をショート動画にして」等）を落とす
+    m2 = re.search(r"^(.+?\.(?:mp4|mov|m4v|webm|mkv))", name, re.I)
+    if not m2:
+        return ""
+    name = m2.group(1)
+    base = ICLOUD_ROOT if re.search("icloud", m.group(1), re.I) else "~"
+    return os.path.expanduser("/".join([base, *segs, name]))
+
+
+def _find_video_by_name(name, limit_dirs=(ICLOUD_ROOT, "~/Movies", "~/Downloads",
+                                          "~/Desktop")):
+    """同じ名前の動画をよくある場所から探す（深さは控えめ）。"""
+    for d in limit_dirs:
+        root = Path(os.path.expanduser(d))
+        if not root.exists():
+            continue
+        try:
+            for hit in root.rglob(name):
+                if hit.is_file():
+                    return hit
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
 def _clip_source(message, content):
     """切り抜きの素材がどこにあるかを決める。
     (種類, 値) を返す。種類: "youtube" / "url" / "file"。
@@ -2994,6 +3050,10 @@ def _clip_source(message, content):
     m = re.search(r"(~?/[^\s'\"]+\.(?:mp4|mov|webm|m4v|mkv))", content or "", re.I)
     if m:
         return "file", os.path.expanduser(m.group(1))
+    # iPhoneの「ファイル」アプリから貼った道順（iCloudはMacにも同期されている）
+    ios = _ios_files_path(content)
+    if ios:
+        return "file", ios
     return "", ""
 
 
@@ -3003,8 +3063,20 @@ async def _download_video(cid, url, dest, kind="youtube"):
     if kind == "file":
         src = Path(url)
         if not src.exists():
-            await send_as(orch, cid, f"⚠️ ファイルが見つかりません: {url}")
-            return False
+            # 名前が合っていれば場所違いのことが多いので、iCloudとホームを探す。
+            # 「見つかりません」で終わると、やり取りが何往復も増える。
+            found = _find_video_by_name(src.name)
+            if found:
+                await send_as(orch, cid, f"📁 場所が違ったので探しました: {found}")
+                src = found
+            else:
+                await send_as(
+                    orch, cid,
+                    f"⚠️ ファイルが見つかりませんでした: {url}\n"
+                    "iPhoneのファイルアプリの道順をそのまま貼るか、"
+                    "動画をこのチャンネルに添付してください。"
+                )
+                return False
         size = src.stat().st_size
         if size > MAX_VIDEO_SIZE:
             await send_as(
@@ -3965,6 +4037,8 @@ _CLIP_INTENT_RE = re.compile(
 )
 _YT_LINK_RE = re.compile(r"https?://(?:www\.|m\.)?(?:youtube\.com|youtu\.be)/\S+")
 # 動画ファイルの直リンク、またはMac上のパス（1GB級はDiscordに載らないため）
+# 動画ファイルの名前が出てくるか（パスでもURLでもない、名前だけの言及も拾う）
+_VIDEO_NAME_RE = re.compile(r"[^\s▸/]+\.(?:mp4|mov|m4v|webm|mkv)", re.I)
 _VIDEO_PATH_RE = re.compile(
     r"https?://\S+\.(?:mp4|mov|webm|m4v)|~?/[^\s'\"]+\.(?:mp4|mov|webm|m4v|mkv)", re.I)
 
@@ -4110,7 +4184,10 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     #       添付動画に「切り抜いて」と言われたら、こちらが本命。
     if (_CLIP_INTENT_RE.search(content) and not _looks_like_question(content)
             and (_YT_LINK_RE.search(content) or has_video_att
-                 or _VIDEO_PATH_RE.search(content))):
+                 or _VIDEO_PATH_RE.search(content)
+                 # 動画ファイルの名前が書かれていれば素材の指定とみなす。
+                 # iPhoneから貼った道順（iCloud Drive ▸ …）もここで拾う。
+                 or _VIDEO_NAME_RE.search(content))):
         return "clip"
     # ※編集は作り直しより先に判定する。「もっと短くして」は作り直しではなく
     #   尺の編集だが、作り直しの語（もっと等）にも当たるため順序が効く。
@@ -7896,11 +7973,15 @@ async def _dispatch_message(message):
         _kind, _srcref = _clip_source(message, content)
         if not _srcref:
             await message.channel.send(
-                "切り抜く動画を教えてください。次のどれでも大丈夫です。\n"
-                "・YouTubeのリンク\n"
-                "・動画ファイルを添付（Discordの上限まで）\n"
-                f"・Macにあるファイルのパス（例: /Users/…/movie.mp4／"
-                f"{MAX_VIDEO_SIZE / 1048576:.0f}MBまで）"
+                "切り抜く動画の場所を教えてください。次のどれでも大丈夫です。\n"
+                "・**YouTubeのリンク**\n"
+                "・**動画を添付**（Discordの上限まで）\n"
+                "・**iPhoneのファイルアプリの道順をそのまま貼る**"
+                "（「iCloud Drive ▸ …」の形。iCloudはMacにも同期されているので"
+                "そのまま扱えます）\n"
+                f"・**Macのファイルのパス**（例: /Users/…/movie.mp4）\n"
+                f"※大きいファイルは添付ではなく上の2つが確実です"
+                f"（{MAX_VIDEO_SIZE / 1048576:.0f}MBまで）。"
             )
             return
         _n = re.search(r"(\d{1,2})\s*本", content)
