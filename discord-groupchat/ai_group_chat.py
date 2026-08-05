@@ -6409,6 +6409,7 @@ async def _handle_orchestrator(message, cid):
             _last_credits[cid] = time.time()
             _spawn(_do_retry(), cid, "クレジット確認")
             return
+        reply = _drop_false_progress(reply, cid)
         add_history(cid, "Orchestrator", reply)
         await send_as(orch, cid, _with_speaker(reply, plan_engine))
         return
@@ -6493,6 +6494,7 @@ async def _handle_orchestrator(message, cid):
     # クロードの下書きをGeminiが精査して締める（＝二人で1つの返事にする）。
     # 出す声はオーケストレーターひとつなので、誰が書いたかで混乱しない。
     answer, reviewed = await _review_reply(answer, history)
+    answer = _drop_false_progress(answer, cid)
     add_history(cid, "Orchestrator", answer)
     await send_as(orch, cid, _with_speaker(
         answer, CLAUDE2_NAME))
@@ -6572,6 +6574,53 @@ _OPS_ADVICE_RE = re.compile(
     r"(ログ(を)?送って|デバッグログ|ログ(を)?共有|再起動して|再起動をして|"
     r"動画できた\??？?」?と送)"
 )
+
+
+# 「作業を始めた／終わったら知らせる」という言い方。
+# 実際に何も動いていない時にこれを言われると、ユーザーは待ち続けてしまう。
+# 事故：ショート切り抜きが一度も起動していないのに、4通続けて
+# 「このまま処理に入るね」「終わったタイミングで知らせる」「そのまま処理進めるね」
+# と言い張り、ユーザーは完成を待っていた。
+# 「作業を始めた」と読める言い方。
+_PROGRESS_START_RE = re.compile(
+    "処理に入る|処理を始め|処理進め|処理を進め|作業を始め|作業に入る|"
+    "取りかかる|取り掛かる|始めるね|始めるよ|やっておく|やっとく|進めておく|"
+    "処理が終わ|作業中|実行中|走らせて|動かして(る|いる)|生成して(る|いる)|"
+    "切り出して(る|いる)|作って(る|いる)"
+)
+# 「終わったら知らせる」と読める言い方（間に語が挟まっても拾う）。
+_NOTIFY_LATER_RE = re.compile(
+    "(終わったら|終わった時|終わったタイミング|終わり次第|できたら|"
+    "完了したら|出来たら)[^。\n]{0,30}(知らせ|教え|連絡|報告|送)"
+)
+
+
+def _drop_false_progress(text, cid):
+    """何も動いていないのに『処理を始めた／終わったら知らせる』と書いた文を落とす。
+    プロンプトで禁じても守られなかったので、コード側で必ず落とす
+    （このリポジトリの決まり：条件は文章でなくコードで守らせる）。
+    事故：切り抜きが一度も起動していないのに4通続けて作業中だと言い張り、
+    ユーザーは完成を待ち続けた。"""
+    if not text:
+        return text
+    try:
+        if _busy_tasks(cid) or _load_motion_job():
+            return text          # 本当に動いているなら触らない
+    except Exception:  # noqa: BLE001
+        return text
+    parts = re.split(r"(?<=[。\n])", text)
+    kept = [p for p in parts
+            if not (_PROGRESS_START_RE.search(p) or _NOTIFY_LATER_RE.search(p))]
+    if len(kept) == len(parts):
+        return text              # 何も落ちていない＝作業の宣言はしていない
+    out = "".join(kept).strip()
+    print(f"[reply] 動いていない作業の宣言を落とした: channel={cid}")
+    # 落としただけだと「始まった」と読める文が残ることがあるので、
+    # 実際には動いていないことを必ず明記する。
+    note = "（まだ実際には動かしていない。始めていいなら「やって」と言って）"
+    if not out:
+        return "まだ何も動かしていないよ。始めていいなら「やって」と言って。"
+    return f"{out}\n{note}"
 
 
 def _drop_ops_advice(t, user_said):

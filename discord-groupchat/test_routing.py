@@ -644,6 +644,37 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 動いていない作業を『やっている』と言わせない")
+    # 事故：切り抜きが一度も起動していないのに4通続けて
+    # 「このまま処理に入るね」「終わったタイミングで知らせる」
+    # 「そのまま処理進めるね」と言い張り、ユーザーは完成を待ち続けた。
+    _keep_busy, _keep_job = bot._busy_tasks, bot._load_motion_job
+    try:
+        bot._busy_tasks = lambda cid: []
+        bot._load_motion_job = lambda: None
+        for _t in ("了解、そのまま処理進めるね。",
+                   "このまま処理に入るね。",
+                   "終わったら本数と一緒に知らせる。",
+                   "処理が終わったタイミングで本数含めて知らせる。",
+                   "いま切り出してるよ。",
+                   "作業中だから待ってて。"):
+            _out = bot._drop_false_progress(_t, 1)
+            check(f"{_t[:14]!r}… は言わせない", _out != _t, True)
+            check(f"{_t[:14]!r}… 動いていないと明記",
+                  "動かしていない" in _out, True)
+        # 作業と無関係な返事はそのまま
+        for _t in ("今日はいい天気だね。散歩でもどう？", "秀吉役だと思うよ。"):
+            check(f"{_t[:12]!r}… はそのまま", bot._drop_false_progress(_t, 1), _t)
+        # 本当に動いている時は触らない
+        bot._busy_tasks = lambda cid: [("切り抜き制作", 30)]
+        _t2 = "了解、そのまま処理進めるね。終わったら知らせる。"
+        check("本当に動いている時はそのまま", bot._drop_false_progress(_t2, 1), _t2)
+    finally:
+        bot._busy_tasks, bot._load_motion_job = _keep_busy, _keep_job
+    _srcA = open(bot.__file__, encoding="utf-8").read()
+    check("会話の返事に必ず通す",
+          _srcA.count("_drop_false_progress(") >= 3, True)
+
     print("■ iPhoneのファイルアプリの道順をそのまま受け取る")
     # 事故：iCloudの道順を貼ったら、エージェント実行→Higgsfieldの動画生成と
     # さまよって3分かかり、最後は「iCloudの動画は取りに行けない」で終わった。
