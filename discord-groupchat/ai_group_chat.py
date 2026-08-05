@@ -1332,6 +1332,9 @@ BOT_CAPABILITIES = (
     "・モーション転写／作り直し・修正\n"
     "・YouTubeリサーチ／自分のチャンネルの実績分析（週次レポート）／バズ度予測\n"
     "・参考動画からのスタイル学習／料金・残クレジットの照会\n"
+    "・長い動画からショートの切り抜き＝字幕を読んで見どころを選び、"
+    "Mac上のffmpegで縦型9:16に切り出して日本語字幕を焼き付ける。"
+    "生成モデルを使わないのでクレジットは消費しない\n"
     "・自己改修・再起動・ログ共有／会話モデルの切替\n"
     "【どれで作るかの既定】\n"
     "・図・表・相関図・年表・サムネ・バナーなど【文字が主役】のもの＝"
@@ -2646,6 +2649,319 @@ def _decode_caption_xml(xml):
     return " ".join(p for p in parts if p)
 
 
+# ---------- 長い動画 → ショート切り抜き（Mac上で完結・クレジット不要）----------
+# 本人の希望：「ヒッグスフィールドを使わないで、クロードコードだけで完結したい」。
+# 使うのは Mac の ffmpeg と、字幕（YouTubeの自動生成でも可）だけ。
+# 生成モデルを使わないのでクレジットは一切消費しない。
+CLIP_TOOLS = ("ffmpeg", "yt-dlp")
+CLIP_DIR = HISTORY_DIR / "clips"
+CLIP_MAX_MB = 24            # Discordの添付上限（無料枠）に収める
+CLIP_DEFAULT_N = 5
+
+
+def _missing_clip_tools():
+    """Macに入っていない道具を返す。無ければ空リスト。"""
+    return [t for t in CLIP_TOOLS if not shutil.which(t)]
+
+
+async def _install_clip_tools(cid, missing):
+    """足りない道具をボット自身が入れる（ユーザーにターミナルを触らせない）。"""
+    await send_as(
+        orch, cid,
+        f"🔧 切り抜きに必要な道具（{', '.join(missing)}）がMacに入っていないので、"
+        "先に入れます（数分かかることがあります）…"
+    )
+    out = await _run_claude_exec(
+        "次の道具をこのMacに入れて。Homebrew があれば brew install、"
+        "無ければ Homebrew の導入から行うこと。完了したら"
+        "`which` で入ったことを確認し、最後の行に OK か NG だけ書いて。\n"
+        f"入れる道具: {' '.join(missing)}",
+        timeout=900,
+    )
+    still = _missing_clip_tools()
+    if still:
+        await send_as(
+            orch, cid,
+            f"⚠️ {', '.join(still)} を入れられませんでした。\n"
+            f"実行結果: {(out or '')[-400:]}"
+        )
+        return False
+    await send_as(orch, cid, "✅ 道具の準備ができました。切り抜きを始めます。")
+    return True
+
+
+CLIP_PICK_PROMPT = (
+    "あなたはショート動画の編集者。下は長い動画の字幕を時刻つきで並べたもの。\n"
+    "ここから【単体で成立する】切り抜きを選ぶ。\n"
+    "選ぶ基準:\n"
+    "・最初の2秒で引きがある（結論・驚き・断言・問いかけから始まる）\n"
+    "・その区間だけ見て意味が通る（前後の説明が要らない）\n"
+    "・15〜60秒に収まる\n"
+    "・内容が互いに重ならない\n"
+    "JSONだけを出力する。説明や前置きは書かない。\n"
+    '形式: {"clips":[{"start":"mm:ss","end":"mm:ss","title":"日本語のタイトル(25字以内)",'
+    '"hook":"最初の2秒で出す一言(15字以内)","why":"選んだ理由(30字以内)"}]}\n'
+)
+
+
+def _mmss_to_sec(v):
+    """"mm:ss" / "hh:mm:ss" / 数値 を秒に。読めなければ None。"""
+    if isinstance(v, (int, float)):
+        return float(v)
+    parts = str(v or "").strip().split(":")
+    try:
+        nums = [float(x) for x in parts]
+    except ValueError:
+        return None
+    if len(nums) == 1:
+        return nums[0]
+    if len(nums) == 2:
+        return nums[0] * 60 + nums[1]
+    if len(nums) == 3:
+        return nums[0] * 3600 + nums[1] * 60 + nums[2]
+    return None
+
+
+async def _pick_clip_ranges(transcript, n):
+    """字幕から切り抜き区間を選ぶ（クロードが読んで決める）。"""
+    raw = await run_claude_cli(
+        CLIP_PICK_PROMPT + f"\n作る本数: {n}本\n\n【字幕】\n{transcript}\n\nJSON:"
+    )
+    raw = _strip_cli_boilerplate((raw or "").strip())
+    m = re.search(r"\{.*\}", raw, re.S)
+    if not m:
+        raise RuntimeError(f"切りどころを決められませんでした: {raw[:200]}")
+    clips = []
+    for c in (json.loads(m.group(0)).get("clips") or []):
+        st, en = _mmss_to_sec(c.get("start")), _mmss_to_sec(c.get("end"))
+        if st is None or en is None or en - st < 5:
+            continue
+        clips.append({
+            "start": st, "end": min(en, st + 90),      # 長すぎる指定は切り詰める
+            "title": (c.get("title") or "")[:40],
+            "hook": (c.get("hook") or "")[:30],
+            "why": (c.get("why") or "")[:60],
+        })
+    if not clips:
+        raise RuntimeError("使える切り抜き区間がありませんでした。")
+    return clips[:n]
+
+
+# 日本語が出るフォント。指定を誤ると字幕が全部豆腐（□）になるので、
+# macOSに最初から入っているものを順に試す。
+CLIP_FONTS = (
+    "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc",
+    "/System/Library/Fonts/ヒラギノ丸ゴ ProN W4.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/Library/Fonts/Arial Unicode.ttf",
+)
+
+
+def _clip_font():
+    for f in CLIP_FONTS:
+        if Path(f).exists():
+            return f
+    return ""
+
+
+async def _sh(cmd, timeout=900):
+    """Mac上でコマンドを1つ実行して (成功か, 出力) を返す。"""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await _reap(proc)
+        return False, "タイムアウト"
+    return proc.returncode == 0, (out or b"").decode(errors="replace")[-1500:]
+
+
+def _srt_for(rows, start, end):
+    """区間内の字幕を、区間の頭を0秒とするSRTにする。"""
+    def _t(sec):
+        h, rem = divmod(max(sec, 0), 3600)
+        m, sec2 = divmod(rem, 60)
+        return f"{int(h):02d}:{int(m):02d}:{int(sec2):02d},{int(sec2 % 1 * 1000):03d}"
+    lines, i = [], 0
+    for st, dur, text in rows:
+        en = st + (dur or 2.0)
+        if en <= start or st >= end:
+            continue
+        i += 1
+        lines.append(f"{i}\n{_t(max(st, start) - start)} --> "
+                     f"{_t(min(en, end) - start)}\n{text}\n")
+    return "\n".join(lines)
+
+
+async def _cut_one_clip(src, rows, clip, idx, workdir):
+    """1本分を切り出して、縦型9:16・字幕焼き付けのMP4にする。"""
+    out = workdir / f"clip{idx}.mp4"
+    srt = workdir / f"clip{idx}.srt"
+    body = _srt_for(rows, clip["start"], clip["end"])
+    font = _clip_font()
+    # 縦型化：中央を9:16で切り出し、1080x1920へ。字幕があれば焼き付ける。
+    vf = ("crop='min(iw,ih*9/16)':'min(ih,iw*16/9)',"
+          "scale=1080:1920:force_original_aspect_ratio=increase,"
+          "crop=1080:1920")
+    if body and font:
+        srt.write_text(body, encoding="utf-8")
+        style = ("FontName=Hiragino Sans,FontSize=15,PrimaryColour=&H00FFFFFF,"
+                 "OutlineColour=&H00000000,Outline=3,Shadow=0,Alignment=2,MarginV=140")
+        vf += f",subtitles='{srt}':force_style='{style}'"
+    ok, log = await _sh([
+        "ffmpeg", "-y", "-ss", str(clip["start"]), "-to", str(clip["end"]),
+        "-i", str(src), "-vf", vf, "-c:v", "libx264", "-preset", "veryfast",
+        "-crf", "26", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+        str(out),
+    ])
+    if not ok or not out.exists():
+        return None, log
+    # Discordの上限に収まらなければ、もう一段圧縮してから諦める
+    if out.stat().st_size > CLIP_MAX_MB * 1024 * 1024:
+        small = workdir / f"clip{idx}_s.mp4"
+        ok2, log2 = await _sh([
+            "ffmpeg", "-y", "-i", str(out), "-vf", "scale=720:1280",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+            "-c:a", "aac", "-b:a", "96k", str(small)])
+        if ok2 and small.exists():
+            return small, ""
+        return None, log2
+    return out, ""
+
+
+async def _run_clip_shorts(message, url, n=CLIP_DEFAULT_N):
+    """長い動画を読み込み、切り抜きショートを作ってDiscordに投稿する。
+    生成モデルを使わないので、クレジットは一切消費しない。"""
+    cid = message.channel.id
+    missing = _missing_clip_tools()
+    if missing and not await _install_clip_tools(cid, missing):
+        return
+    vid = _yt_video_id(url)
+    await send_as(orch, cid, "📝 字幕を読み込んでいます…")
+    rows = await _fetch_captions_timed(vid)
+    if not rows:
+        await send_as(
+            orch, cid,
+            "⚠️ この動画の字幕を取得できませんでした。"
+            "字幕（自動生成でも可）が公開されている動画なら、中身を読んで切り抜けます。\n"
+            "自分の動画なら、YouTube Studio で字幕をオンにしてから試してください。"
+        )
+        return
+    total = int(rows[-1][0] + (rows[-1][1] or 0))
+    await send_as(
+        orch, cid,
+        f"🔎 字幕を{len(rows)}行（約{total // 60}分ぶん）読みました。"
+        f"{CLAUDE3_NAME}が切りどころを{n}本選びます…"
+    )
+    try:
+        clips = await _pick_clip_ranges(_timed_transcript(rows), n)
+    except Exception as e:  # noqa: BLE001
+        await send_as(orch, cid, f"⚠️ 切りどころを決められませんでした: {str(e)[:250]}")
+        return
+    plan = "\n".join(
+        f"{i}. {int(c['start']) // 60:02d}:{int(c['start']) % 60:02d}"
+        f"〜{int(c['end']) // 60:02d}:{int(c['end']) % 60:02d}"
+        f"（{int(c['end'] - c['start'])}秒）**{c['title']}**\n"
+        f"　　フック: {c['hook']} / 理由: {c['why']}"
+        for i, c in enumerate(clips, 1)
+    )
+    await send_as(orch, cid, f"✂️ 切り抜く場所を決めました。\n{plan}\n\n動画を取得します…")
+
+    CLIP_DIR.mkdir(parents=True, exist_ok=True)
+    workdir = CLIP_DIR / str(int(time.time()))
+    workdir.mkdir(parents=True, exist_ok=True)
+    src = workdir / "src.mp4"
+    ok, log = await _sh([
+        "yt-dlp", "-f", "bv*[height<=1080]+ba/b[height<=1080]",
+        "--merge-output-format", "mp4", "-o", str(src), url], timeout=1800)
+    if not ok or not src.exists():
+        await send_as(
+            orch, cid,
+            "⚠️ 動画を取得できませんでした。自分の動画であればYouTube Studioから"
+            f"ダウンロードしたファイルでも切り抜けます。\n詳細: {log[-300:]}"
+        )
+        return
+    await send_as(orch, cid, f"🎞 {len(clips)}本を切り出しています…")
+    made = 0
+    for i, c in enumerate(clips, 1):
+        path, err = await _cut_one_clip(src, rows, c, i, workdir)
+        if not path:
+            await send_as(orch, cid, f"⚠️ {i}本目の切り出しに失敗: {err[-200:]}")
+            continue
+        try:
+            data = path.read_bytes()
+            await send_image_bytes(
+                cid,
+                f"**{i}. {c['title']}**\n"
+                f"フック: {c['hook']}\n"
+                f"元動画 {int(c['start']) // 60:02d}:{int(c['start']) % 60:02d} から"
+                f"{int(c['end'] - c['start'])}秒",
+                data, f"short{i}.mp4",
+            )
+            made += 1
+        except Exception as e:  # noqa: BLE001
+            await send_as(orch, cid, f"⚠️ {i}本目の投稿に失敗: {str(e)[:200]}")
+    try:
+        shutil.rmtree(workdir, ignore_errors=True)
+    except Exception:  # noqa: BLE001
+        pass
+    await send_as(
+        orch, cid,
+        f"✅ {made}本できました（クレジットは使っていません）。\n"
+        "直したいところがあれば「2本目をもう少し長くして」のように言ってください。"
+    )
+
+
+# 切り抜きには「いつ何を言ったか」が要る。本文だけの取り出しでは足りない。
+_CAPTION_TIMED_RE = re.compile(
+    r'<text start="([\d.]+)"(?:\s+dur="([\d.]+)")?[^>]*>(.*?)</text>', re.S)
+
+
+def _decode_caption_timed(xml):
+    """timedtext のXMLを [(開始秒, 長さ秒, 本文)] にする。"""
+    import html
+    rows = []
+    for start, dur, body in _CAPTION_TIMED_RE.findall(xml or ""):
+        text = html.unescape(html.unescape(re.sub(r"<[^>]+>", "", body))).strip()
+        if text:
+            rows.append((float(start), float(dur or 0), text))
+    return rows
+
+
+async def _fetch_captions_timed(vid):
+    """時刻つきの字幕を取る。取れなければ空リスト。
+    自動生成字幕でも取れるので、たいていの動画で中身を読める。"""
+    if not vid:
+        return []
+    try:
+        async with aiohttp.ClientSession() as s:
+            for params in ({"lang": "ja", "v": vid}, {"lang": "ja", "v": vid, "kind": "asr"},
+                           {"lang": "en", "v": vid}, {"lang": "en", "v": vid, "kind": "asr"}):
+                async with s.get(
+                    "https://video.google.com/timedtext", params=params,
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as r:
+                    if r.status != 200:
+                        continue
+                    rows = _decode_caption_timed(await r.text())
+                    if len(rows) >= 5:
+                        return rows
+    except Exception as e:  # noqa: BLE001
+        print(f"[captions] 時刻つき字幕の取得に失敗: {str(e)[:150]}")
+    return []
+
+
+def _timed_transcript(rows, limit=24000):
+    """[mm:ss] 本文 の形に整えてAIに渡す（切りどころを選ばせるため）。"""
+    out = []
+    for start, _dur, text in rows:
+        m, sec = divmod(int(start), 60)
+        out.append(f"[{m:02d}:{sec:02d}] {text}")
+    joined = "\n".join(out)
+    return joined[:limit]
+
+
 async def _fetch_captions(vid, limit=6000):
     """字幕（自動生成を含む）が公開されていれば本文を返す。取れなければ空。
     字幕が取れれば、動画を視聴しなくても【本物の】要約ができる。
@@ -3417,6 +3733,13 @@ def _asks_gen_model(said):
     )
 
 
+# 長い動画から切り抜く依頼。新規生成（ショート量産）とは別物なので分ける。
+_CLIP_INTENT_RE = re.compile(
+    "切り抜|切りぬき|きりぬき|クリップ|ショートに|ショート動画に|"
+    "短くして|分割して|ショートにして|切って|切り出|きりだ|抜き出して|ダイジェスト"
+)
+_YT_LINK_RE = re.compile(r"https?://(?:www\.|m\.)?(?:youtube\.com|youtu\.be)/\S+")
+
 # 役（クロード1/3）に意見を求める言い方。名前が出ただけでは呼ばない。
 _ASK_ROLE_RE = re.compile(
     "聞いて|訊いて|きいて|意見|どう思う|見て|見解|検討|相談|"
@@ -3608,6 +3931,11 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
             return "design"
         if _BY_GEMINI_RE.search(content):
             return "image"
+    # ①.48 長い動画の切り抜き（リンクを渡して「ショートにして」）。
+    #      新規生成ではなく、既にある動画から切り出す作業。
+    if (_YT_LINK_RE.search(content) and _CLIP_INTENT_RE.search(content)
+            and not _looks_like_question(content)):
+        return "clip"
     # ①.5 ショート量産（「ショート作って」「今日のショート」等）
     if re.search("ショート|shorts?|ショート動画", content, re.I) and (
         _GEN_INTENT2_RE.search(content) or re.search("今日の|ネタ|企画|お願い", content)
@@ -7330,6 +7658,20 @@ async def _dispatch_message(message):
     if route == "revise":
         add_history(cid, message.author.display_name, content)
         _spawn(_run_revise(message, content), cid, "作り直し")
+        return
+
+    if route == "clip":
+        add_history(cid, message.author.display_name, content)
+        _m = _YT_LINK_RE.search(content)
+        _n = re.search(r"(\d{1,2})\s*本", content)
+        _num = min(int(_n.group(1)), 10) if _n else CLIP_DEFAULT_N
+        _gate(message, cid,
+              f"長い動画からショートの切り抜き（{_num}本）",
+              "字幕を読んで見どころを選び、Mac上で縦型9:16に切り出して"
+              "日本語字幕を焼き付けます。生成モデルは使いません",
+              lambda: _run_clip_shorts(message, _m.group(0), _num), "切り抜き制作",
+              "無料（クレジットは消費しません）",
+              engine="クロード（字幕を読んで選定）＋Mac上のffmpeg（切り出し）")
         return
 
     if route == "short":

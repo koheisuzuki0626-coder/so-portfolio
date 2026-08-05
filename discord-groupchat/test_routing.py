@@ -608,6 +608,42 @@ def run():
     _src4 = open(bot.__file__, encoding="utf-8").read()
     check("題材は直前の依頼から補う", "_request_with_context" in _src4, True)
 
+    print("■ 長い動画の切り抜き（Mac上で完結・クレジット不要）")
+    _U = "https://www.youtube.com/watch?v=abc12345678"
+    for _t in (f"{_U} これショートにして", f"この動画切り抜いて3本 {_U}",
+               f"{_U} をダイジェストにして", f"{_U} 縦型に切り出して"):
+        check(f"{_t[:24]!r}… は切り抜きへ", bot.classify_route(_t), "clip")
+    for _t in (f"{_U} どう思う？", _U, f"{_U} 切り抜きってどうやるの？",
+               f"{_U} これ参考にして"):
+        check(f"{_t[:24]!r}… は切り抜きにしない",
+              bot.classify_route(_t) == "clip", False)
+    check("新規のショート量産とは分ける", bot.classify_route("ショート作って"), "short")
+    # 時刻の解釈
+    for _v, _want in (("01:30", 90.0), ("1:02:03", 3723.0), (95, 95.0), ("bad", None)):
+        check(f"時刻 {_v!r} を秒に", bot._mmss_to_sec(_v), _want)
+    # 時刻つき字幕
+    _xml = ('<transcript><text start="12.5" dur="3.2">これはテスト</text>'
+            '<text start="20.0" dur="2.0">次の場面</text></transcript>')
+    check("字幕を時刻つきで読む", bot._decode_caption_timed(_xml),
+          [(12.5, 3.2, "これはテスト"), (20.0, 2.0, "次の場面")])
+    check("AIに渡す形は時刻つき",
+          bot._timed_transcript(bot._decode_caption_timed(_xml)).startswith("[00:12]"),
+          True)
+    # 区間内の字幕だけをSRTにする（頭を0秒に寄せる）
+    _srt = bot._srt_for(bot._decode_caption_timed(_xml), 10, 18)
+    check("区間内の字幕だけ残す", "これはテスト" in _srt and "次の場面" not in _srt, True)
+    check("区間の頭を0秒に寄せる", "00:00:02" in _srt, True)
+    # 生成モデルを使わない＝クレジットを消費しない
+    _src6 = open(bot.__file__, encoding="utf-8").read()
+    _clip_fn = _src6[_src6.index("async def _run_clip_shorts"):
+                     _src6.index("# 切り抜きには「いつ何を言ったか」")]
+    for _ng in ("_mcp_generate_submit", "_mcp_gen_and_wait", "hf_wrapper",
+                "sandbox_exec", "generate_image", "generate_video"):
+        check(f"切り抜きは {_ng} を使わない", _ng in _clip_fn, False)
+    check("日本語が出るフォントを使う",
+          any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
+    check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
+
     print("■ 画像を頼まれて動画を作らない／古い生成を結果にしない")
     # 事故：「この人で画像生成して」→「ヒッグスフィールドで」で
     # 動画ジョブ(seedance)が走った。媒体を発言だけで判定していたため。

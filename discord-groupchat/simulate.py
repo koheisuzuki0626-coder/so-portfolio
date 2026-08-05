@@ -1071,6 +1071,20 @@ async def run():
     await drive("リサーチするのはクロード1にしてね")
     check("担当を決める話で役を呼び出さない", "multiview" not in FIRED, f"fired={FIRED}")
 
+    # --- ⑥ 長い動画の切り抜きが、Higgsfieldに流れないこと ---
+    install_stubs()
+    bot._load_last_gen = lambda cid: None
+    bot._run_clip_shorts = _rec("clip")
+    _r6 = await drive(
+        "https://www.youtube.com/watch?v=abc12345678 これ3本ショートにして")
+    check("切り抜きは専用の処理へ", "clip" in FIRED, f"fired={FIRED}")
+    check("切り抜きで生成モデルを呼ばない",
+          "hf_generate" not in FIRED and "image_gen" not in FIRED, f"fired={FIRED}")
+    _c6 = last_call("clip")
+    if _c6:
+        check("本数の指定が伝わる", _c6[0][2], 3)
+        check("動画のURLが伝わる", "abc12345678" in _c6[0][1], _c6[0][1])
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile
