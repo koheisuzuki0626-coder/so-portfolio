@@ -167,24 +167,39 @@ def _reply_to(text, attachments=None, name="Orchestrator"):
 
 
 # ---- 記録用にハンドラを差し替え ----
+# 何が呼ばれたか（FIRED）だけでなく、【どんな引数で】呼ばれたかも残す。
+# ルートだけ見て合格にしていたため、「題材は直したが媒体は動画のまま」
+# という半端な修正を通してしまった。仕事の中身まで検証できるようにする。
 FIRED = []
+CALLS = []
 
 
 def _rec(label):
     async def _f(*a, **k):
         FIRED.append(label)
+        CALLS.append((label, a, k))
     return _f
 
 
 def _rec_str(label, ret):
     async def _f(*a, **k):
         FIRED.append(label)
+        CALLS.append((label, a, k))
         return ret
     return _f
 
 
+def last_call(label):
+    """最後にその処理が呼ばれたときの (args, kwargs)。無ければ None。"""
+    for lb, a, k in reversed(CALLS):
+        if lb == label:
+            return a, k
+    return None
+
+
 def install_stubs(mcp_url=None):
     FIRED.clear()
+    CALLS.clear()
     bot.CONFIRM_BEFORE_WORK = False   # 確認は専用テストで検証する
     for ch in _CHANNELS.values():
         ch.sent.clear()   # 前のテストの送信内容が混ざらないように
@@ -296,6 +311,9 @@ def check(desc, cond, detail=""):
     else:
         fail += 1
         print(f"  ❌ {desc} {detail}")
+
+
+import time as _tm4
 
 
 async def run():
@@ -996,6 +1014,62 @@ async def run():
     check("明示なら3時間前でも読む", "石造りの大きな門" in out, out[:150])
     out = await _MEDIA_CTX(_FakeMessage("ここどこ？"), "ここどこ？", 1234)
     check("曖昧な指定＋古い生成物は読まない", "石造り" not in out, out[:150])
+
+    print("■ E2E: 実際に壊れた会話の再現（ルートだけでなく仕事の中身まで見る）")
+    # ここは「直したつもりで半分だけ直っていた」を防ぐための場所。
+    # 1件でも実害が出た会話は、必ずここに丸ごと再現を足すこと。
+
+    # --- ① 画像を頼んだのに動画が走った（05:26 の実例）---
+    install_stubs()
+    # 直前に画像を作っている状態（実際の流れと同じ）
+    bot._load_last_gen = lambda cid: {
+        "prompt": "この人で画像生成して", "media_type": "image", "label": "画像",
+        "t": _tm4.time()}
+    await drive("この人で画像生成して")
+    await drive("ヒッグスフィールドで")
+    _c = last_call("hf_generate")
+    check("『ヒッグスフィールドで』が生成につながる", _c is not None, f"CALLS={FIRED}")
+    if _c:
+        _args = _c[0]
+        _req, _media = _args[1], _args[3]
+        check("題材は直前の依頼から補う（指定語を題材にしない）",
+              "画像生成して" in _req and "Higgs" not in _req, _req[:80])
+        check("画像を頼まれたら画像のまま（動画にしない）", _media == "image", _media)
+
+    # --- ② 動画の続きは動画のまま（①の直しで巻き添えにしない）---
+    install_stubs()
+    bot._load_last_gen = lambda cid: {
+        "prompt": "犬が走ってる動画作って", "media_type": "video", "label": "動画",
+        "t": _tm4.time()}
+    await drive("犬が走ってる動画作って")
+    await drive("ヒッグスフィールドで")
+    _c2 = last_call("hf_generate")
+    if _c2:
+        check("動画の続きは動画のまま", _c2[0][3] == "video", _c2[0][3])
+
+    # --- ③ デザインの続きを画像生成に投げない（14:53 の実例）---
+    install_stubs()
+    bot._load_last_gen = lambda cid: {
+        "prompt": "豊臣兄弟の相関図", "media_type": "image", "label": "デザイン（図）",
+        "t": _tm4.time(), "url": "https://example.com/x.png"}
+    await drive("追加して出して")
+    check("デザインの続きはクロード（HTML）で作り直す",
+          "design" in FIRED and "hf_generate" not in FIRED, f"fired={FIRED}")
+
+    # --- ④ 相談を設定変更にしない（04:41 の実例）---
+    install_stubs()
+    bot._load_last_gen = lambda cid: None
+    _r4 = await drive(
+        "毎日決まった時間にYouTubeのTOP100をリサーチして欲しいんだけど何時頃がいいかな？")
+    check("相談に設定の案内を返さない",
+          not any("毎日の自動リサーチ" in s and "設定" in s for s in _r4["sent"]),
+          f"sent={_r4['sent'][:1]}")
+
+    # --- ⑤ 役の名前が出ただけで呼び出さない（04:43 の実例）---
+    install_stubs()
+    bot._load_last_gen = lambda cid: None
+    await drive("リサーチするのはクロード1にしてね")
+    check("担当を決める話で役を呼び出さない", "multiview" not in FIRED, f"fired={FIRED}")
 
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
