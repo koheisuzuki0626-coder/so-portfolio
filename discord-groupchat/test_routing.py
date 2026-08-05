@@ -644,6 +644,34 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 暴走した重い処理をDiscordから止められること")
+    # 事故：文字起こしがCPUを占有し、「再起動」すら届かず復旧できなかった
+    class _FakeProc:
+        def __init__(self, done=False):
+            self.returncode = 0 if done else None
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+    _keep_hp = set(bot._heavy_procs)
+    try:
+        bot._heavy_procs.clear()
+        _p1, _p2, _p3 = _FakeProc(), _FakeProc(), _FakeProc(done=True)
+        bot._heavy_procs.update({_p1, _p2, _p3})
+        check("動いている分だけ止める", bot.stop_heavy_procs(), 2)
+        check("実際に止まる", (_p1.killed, _p2.killed), (True, True))
+        check("終わった処理は数えない", _p3.killed, False)
+        check("止めたら記録も空になる", len(bot._heavy_procs), 0)
+        check("何も無ければ0", bot.stop_heavy_procs(), 0)
+    finally:
+        bot._heavy_procs.clear(); bot._heavy_procs.update(_keep_hp)
+    _srcD = open(bot.__file__, encoding="utf-8").read()
+    check("「やめて」で重い処理も止める",
+          "killed = stop_heavy_procs()" in _srcD, True)
+    check("再起動の前にも片付ける",
+          _srcD.count("stop_heavy_procs()") >= 3, True)
+
     print("■ 重い処理でボットが黙らないこと")
     # 事故：文字起こし中にCPUを使い切り、「あとどのくらい？」「ログ送って」
     # 「再起動」のどれにも反応しなくなった（処理自体は正常に進んでいた）

@@ -2922,19 +2922,46 @@ def _work_threads():
     return max(1, (os.cpu_count() or 4) - 1)
 
 
+# 走らせている重い処理。暴走した時にDiscordから止められるように持っておく。
+# 事故：文字起こしがCPUを占有し、「再起動」すら届かなくなって復旧できなかった。
+_heavy_procs = set()
+
+
+def stop_heavy_procs():
+    """動いている重い処理を全部止める。止めた数を返す。"""
+    n = 0
+    for proc in list(_heavy_procs):
+        try:
+            if proc.returncode is None:
+                proc.kill()
+                n += 1
+        except Exception:  # noqa: BLE001
+            pass
+        _heavy_procs.discard(proc)
+    return n
+
+
 async def _sh(cmd, timeout=900, heavy=False):
     """Mac上でコマンドを1つ実行して (成功か, 出力) を返す。
-    heavy=True の時は優先度を下げて動かす。ボットの返事を止めないため。"""
+    heavy=True の時は優先度を下げて動かし、いつでも止められるよう記録する。"""
     if heavy and shutil.which("nice"):
         cmd = ["nice", "-n", "15", *cmd]
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    if heavy:
+        _heavy_procs.add(proc)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await _reap(proc)
         return False, "タイムアウト"
+    except asyncio.CancelledError:
+        proc.kill()
+        await _reap(proc)
+        raise
+    finally:
+        _heavy_procs.discard(proc)
     return proc.returncode == 0, (out or b"").decode(errors="replace")[-1500:]
 
 
@@ -7646,12 +7673,16 @@ def _is_stop_phrase(content):
 
 async def _do_stop(message, cid):
     state["stop"] = True
+    # 文字起こしや切り出しが走っていたら、それも止める。
+    # 止められないと、CPUを占有したまま「再起動」すら届かなくなる。
+    killed = stop_heavy_procs()
+    note = f"（重い処理を{killed}件止めました）" if killed else ""
     if projects.pop(cid, None):
         await message.channel.send(
-            "⏹️ 進行中の作業を停止しました。以降は通常の会話に戻ります。"
+            f"⏹️ 進行中の作業を停止しました{note}。以降は通常の会話に戻ります。"
         )
     else:
-        await message.channel.send("⏹️ 停止しました。")
+        await message.channel.send(f"⏹️ 停止しました{note}。")
 
 
 _trend_task_started = False
@@ -8036,6 +8067,8 @@ async def _dispatch_message(message):
         return
     if content == "!restart" or _is_restart_phrase(content):
         _fired(cid, "再起動", content)
+        # 重い処理を残したまま入れ替わると、CPUを占有したままになる
+        stop_heavy_procs()
         await _restart_self(cid)
         return
     # !コマンドは表引きで処理（if の羅列をやめ、追加も1行で済むようにした）
