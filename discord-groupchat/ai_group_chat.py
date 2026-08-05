@@ -3022,7 +3022,7 @@ def _ios_files_path(text):
 _pending_do = {}
 PENDING_DO_SEC = 3600
 _BARE_GO_RE = re.compile(
-    r"^(やって|やろう|お願い(します)?|おねがい|進めて|すすめて|начать|"
+    r"^(やって|やろう|お願い(します)?|おねがい|進めて|すすめて|"
     r"始めて|はじめて|go|ゴー|実行|やっちゃって|よろしく)[。、!！\s]*$", re.I)
 # iCloudの「共有リンク」はブラウザで開くページなので、そのままでは取得できない。
 # ここを「リンクなら取りに行ける」と案内してしまい、貼っても何も起きなかった。
@@ -7877,7 +7877,10 @@ async def _dispatch_message(message):
 
     # 「やって」だけの返事。何が足りなくて止まっているかを覚えているので、
     # 同じ説明を繰り返さずに、先に進めるか・何が要るかをはっきり返す。
-    if _BARE_GO_RE.match(content.strip()):
+    # 【重要】確認待ちがある時は絶対に横取りしない。
+    # 「やって」「お願い」「よろしく」は承認の返事でもあるので、ここで
+    # 拾ってしまうと確認が承認されず、いつまでも作業が始まらない。
+    if _BARE_GO_RE.match(content.strip()) and cid not in _pending_approvals:
         _pend = _get_pending_do(cid)
         if _pend:
             _fired(cid, f"やって（{_pend['need']}待ち）", content)

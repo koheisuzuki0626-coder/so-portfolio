@@ -1150,12 +1150,42 @@ async def run():
           any("ブラウザで開くページ" in t for t in _r8a["sent"]), _r8a["sent"][:1])
     check("代わりの渡し方を示す",
           any("ファイルアプリの道順" in t for t in _r8a["sent"]), _r8a["sent"][:1])
+    _before8 = len(_r8a["sent"])          # 送信は積み上がるので、増えた分だけ見る
     _r8b = await drive("やって")
+    _new8 = _r8b["sent"][_before8:]
     check("『やって』に具体的に答える",
-          any("分からないので動かせない" in t for t in _r8b["sent"]), _r8b["sent"][:1])
+          any("分からないので動かせない" in t for t in _new8), _new8)
     check("『やって』で同じ説明を繰り返さない",
-          any("ブラウザで開くページ" in t for t in _r8b["sent"]), False)
+          not any("ブラウザで開くページ" in t for t in _new8), _new8)
     bot._pending_do.clear()
+
+    # --- ⑨ 確認待ちの「やって」を横取りしないこと ---
+    #     「やって」「お願い」「よろしく」は承認の返事でもある。ここを
+    #     横取りすると、承認しても作業が始まらず「返事がない」になる。
+    install_stubs()
+    bot.CONFIRM_BEFORE_WORK = True
+    bot._load_last_gen = lambda cid: None
+    bot._pending_do.clear()
+    bot._set_pending_do(1234, "動画の場所", "切り抜きたい")   # 未解決の依頼がある状態
+    try:
+        _t9 = asyncio.get_running_loop().create_task(drive("犬が走ってる動画作って"))
+        for _ in range(60):
+            await asyncio.sleep(0)
+            if 1234 in bot._pending_approvals:
+                break
+        check("確認が出ている", 1234 in bot._pending_approvals, "確認が出ていない")
+        _r9 = await drive("やって")
+        check("承認として受け付ける",
+              any("承認を受け付け" in t for t in _r9["sent"]), _r9["sent"][-2:])
+        check("『動かせない』で横取りしない",
+              not any("分からないので動かせない" in t for t in _r9["sent"]),
+              _r9["sent"][-2:])
+        await asyncio.wait_for(_t9, timeout=5)
+        check("承認後に作業が走る", "hf_generate" in FIRED, f"fired={FIRED}")
+    finally:
+        bot.CONFIRM_BEFORE_WORK = False
+        bot._pending_do.clear()
+        bot._pending_approvals.pop(1234, None)
 
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
