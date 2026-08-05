@@ -2811,9 +2811,9 @@ async def _transcribe_local(cid, src, workdir, lang="ja"):
     wav = workdir / "audio.wav"
     await send_as(orch, cid, "🎧 音声を取り出しています…")
     ok, log = await _sh([
-        "ffmpeg", "-y", "-threads", str(_work_threads()), "-i", str(src), "-vn",
+        "ffmpeg", "-nostdin", "-y", "-threads", str(_work_threads()), "-i", str(src), "-vn",
         "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)],
-        timeout=1800, heavy=True)
+        timeout=900, heavy=True)
     if not ok or not wav.exists():
         await send_as(orch, cid, f"⚠️ 音声を取り出せませんでした: {log[-200:]}")
         return []
@@ -2946,8 +2946,13 @@ async def _sh(cmd, timeout=900, heavy=False):
     heavy=True の時は優先度を下げて動かし、いつでも止められるよう記録する。"""
     if heavy and shutil.which("nice"):
         cmd = ["nice", "-n", "15", *cmd]
+    # 【重要】標準入力を必ず切る。バックグラウンドで動かしているボットの
+    # 子プロセスが端末から読もうとすると SIGTTIN で【止まる】（死なない）。
+    # 実際に ffmpeg がここで固まり、「音声を取り出しています…」から
+    # 一切先へ進まなくなった。2回とも同じ場所で止まっていた。
     proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        *cmd, stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     if heavy:
         _heavy_procs.add(proc)
     try:
@@ -2998,7 +3003,7 @@ async def _cut_one_clip(src, rows, clip, idx, workdir):
                  "OutlineColour=&H00000000,Outline=3,Shadow=0,Alignment=2,MarginV=140")
         vf += f",subtitles='{srt}':force_style='{style}'"
     ok, log = await _sh([
-        "ffmpeg", "-y", "-threads", str(_work_threads()),
+        "ffmpeg", "-nostdin", "-y", "-threads", str(_work_threads()),
         "-ss", str(clip["start"]), "-to", str(clip["end"]),
         "-i", str(src), "-vf", vf, "-c:v", "libx264", "-preset", "veryfast",
         "-crf", "26", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
@@ -3010,7 +3015,7 @@ async def _cut_one_clip(src, rows, clip, idx, workdir):
     if out.stat().st_size > CLIP_MAX_MB * 1024 * 1024:
         small = workdir / f"clip{idx}_s.mp4"
         ok2, log2 = await _sh([
-            "ffmpeg", "-y", "-threads", str(_work_threads()),
+            "ffmpeg", "-nostdin", "-y", "-threads", str(_work_threads()),
             "-i", str(out), "-vf", "scale=720:1280",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
             "-c:a", "aac", "-b:a", "96k", str(small)], heavy=True)
@@ -7196,6 +7201,7 @@ async def _claude_exec_run(task, timeout, model=None):
     args = ["--model", model] if model else _model_args()
     proc = await asyncio.create_subprocess_exec(
         CLAUDE_BIN, "-p", "--dangerously-skip-permissions", *args, task,
+        stdin=asyncio.subprocess.DEVNULL,   # 端末から読ませない（固まるため）
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=BASE_DIR,
@@ -7483,6 +7489,7 @@ async def _selfcheck():
     for args in checks:
         proc = await asyncio.create_subprocess_exec(
             *args,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(SELF_FILE.parent),
@@ -7551,6 +7558,7 @@ async def _git_self(args, timeout=90):
     通信不良の push/fetch で永久に固まらないよう必ずタイムアウトする。"""
     proc = await asyncio.create_subprocess_exec(
         "git", *args,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=BASE_DIR,

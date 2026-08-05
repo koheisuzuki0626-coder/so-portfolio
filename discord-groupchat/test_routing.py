@@ -644,6 +644,23 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 子プロセスが端末待ちで固まらないこと")
+    # 事故：「🎧 音声を取り出しています…」から一切先へ進まなくなった。2回とも同じ場所。
+    # バックグラウンドのボットの子プロセスが端末から読もうとすると
+    # SIGTTIN で【止まる】（死なないので、待っても終わらない）。
+    _srcE = open(bot.__file__, encoding="utf-8").read()
+    check("子プロセスの標準入力を切る",
+          _srcE.count("stdin=asyncio.subprocess.DEVNULL") >= 4, True)
+    check("ffmpegにも明示する", '"-nostdin"' in _srcE, True)
+    # 起動する外部コマンドのうち、標準入力を渡していないものが無いこと
+    import re as _re10
+    _spawns = _re10.findall(r"create_subprocess_exec\((?:[^()]|\([^()]*\))*?\)",
+                            _srcE, _re10.S)
+    _no_stdin = [c for c in _spawns if "stdin=" not in c]
+    check("標準入力を指定していない起動が無い", _no_stdin, [])
+    check("音声の抽出は長く待ちすぎない",
+          "timeout=900, heavy=True" in _srcE, True)
+
     print("■ 暴走した重い処理をDiscordから止められること")
     # 事故：文字起こしがCPUを占有し、「再起動」すら届かず復旧できなかった
     class _FakeProc:
