@@ -3151,6 +3151,12 @@ def _clip_source(message, content):
     ios = _ios_files_path(content)
     if ios:
         return "file", ios
+    # ファイル名だけでも受け取る。iCloud/ムービー/ダウンロード/デスクトップから
+    # 同名を探すので、道順を調べてもらう手間が要らない
+    # （いちばん簡単な渡し方なのに、これまで受け取れていなかった）。
+    m = _VIDEO_NAME_RE.search(_BIDI_RE.sub("", content or ""))
+    if m:
+        return "file", m.group(0)
     return "", ""
 
 
@@ -3159,6 +3165,8 @@ async def _download_video(cid, url, dest, kind="youtube"):
     kind="file" は既にMacにあるファイルなので、コピーせずそのまま使う。"""
     if kind == "file":
         src = Path(url)
+        if not src.exists() and "/" not in str(url):
+            await send_as(orch, cid, f"🔎 「{url}」をMacの中から探しています…")
         if not src.exists():
             # 名前が合っていれば場所違いのことが多いので、iCloudとホームを探す。
             # 「見つかりません」で終わると、やり取りが何往復も増える。

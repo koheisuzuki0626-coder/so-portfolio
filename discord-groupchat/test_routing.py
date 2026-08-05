@@ -644,6 +644,31 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 動画の渡し方（いちばん簡単な形も受け取る）")
+    class _A2:
+        def __init__(self, fn, url):
+            self.filename, self.url = fn, url
+
+    class _M2:
+        def __init__(self, atts=()):
+            self.attachments = list(atts)
+    _U2 = "https://www.youtube.com/watch?v=abc12345678"
+    for _t, _f, _want in (
+        (f"{_U2} 切り抜いて", _M2(), "youtube"),
+        ("切り抜いて", _M2([_A2("a.mp4", "https://cdn/a.mp4")]), "url"),
+        ("https://example.com/a.mp4 切り抜いて", _M2(), "url"),
+        ("/Users/kohei/Movies/a.mp4 を切り抜いて", _M2(), "file"),
+        ("iCloud Drive ▸ AI ▸ 動画の中のa.mp4 を切り抜いて", _M2(), "file"),
+        # ファイル名だけでも受け取る（探しに行く）
+        ("武士道：究極のサバイバル哲学.mp4を切り抜いて", _M2(), "file"),
+    ):
+        check(f"{_t[:22]!r}… → {_want}", bot._clip_source(_f, _t)[0], _want)
+    check("名前だけなら名前を渡す",
+          bot._clip_source(_M2(), "武士道.mp4を切り抜いて")[1], "武士道.mp4")
+    check("動画の指定が無ければ空", bot._clip_source(_M2(), "切り抜いて")[0], "")
+    _srcH = open(bot.__file__, encoding="utf-8").read()
+    check("探している間も黙らない", "をMacの中から探しています" in _srcH, True)
+
     print("■ ボットが黙り込まない土台")
     _srcG = open(bot.__file__, encoding="utf-8").read()
     # iCloud配下の探索は巨大になり得る。そのまま回すとループが止まる。
