@@ -2778,7 +2778,7 @@ async def _ensure_whisper(cid):
         )
         ok, log = await _sh(
             ["curl", "-fL", "--retry", "3", "-o", str(model),
-             WHISPER_URL.format(name=WHISPER_MODEL)], timeout=1800)
+             WHISPER_URL.format(name=WHISPER_MODEL)], timeout=1800, heavy=True)
         if not ok or not model.exists() or model.stat().st_size < 1_000_000:
             model.unlink(missing_ok=True)
             await send_as(orch, cid, f"⚠️ モデルを取得できませんでした: {log[-200:]}")
@@ -2811,20 +2811,25 @@ async def _transcribe_local(cid, src, workdir, lang="ja"):
     wav = workdir / "audio.wav"
     await send_as(orch, cid, "🎧 音声を取り出しています…")
     ok, log = await _sh([
-        "ffmpeg", "-y", "-i", str(src), "-vn",
-        "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)], timeout=1800)
+        "ffmpeg", "-y", "-threads", str(_work_threads()), "-i", str(src), "-vn",
+        "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)],
+        timeout=1800, heavy=True)
     if not ok or not wav.exists():
         await send_as(orch, cid, f"⚠️ 音声を取り出せませんでした: {log[-200:]}")
         return []
     await send_as(
         orch, cid,
-        f"✍️ 文字起こしをしています（{_eta_hint('文字起こし')}）…"
+        f"✍️ 文字起こしをしています（{_eta_hint('文字起こし')}）。\n"
+        f"Macの力を使う処理なので、この間は返事が普段より遅くなります"
+        f"（CPUは{_work_threads()}本まで・優先度は下げてあるので、"
+        "話しかければ答えます）。"
     )
     started = time.time()
     base = workdir / "auto"
     ok, log = await _sh([
         _whisper_bin(), "-m", str(_whisper_model_path()), "-f", str(wav),
-        "-l", lang, "-osrt", "-of", str(base), "-pp", "false"], timeout=5400)
+        "-l", lang, "-osrt", "-of", str(base), "-pp", "false",
+        "-t", str(_work_threads())], timeout=5400, heavy=True)
     srt = Path(f"{base}.srt")
     if not ok or not srt.exists():
         await send_as(orch, cid, f"⚠️ 文字起こしに失敗しました: {log[-300:]}")
@@ -2910,8 +2915,18 @@ def _clip_font():
     return ""
 
 
-async def _sh(cmd, timeout=900):
-    """Mac上でコマンドを1つ実行して (成功か, 出力) を返す。"""
+# 重い処理に使うCPUの本数。全部使うとボット自身が返事を書けなくなる。
+# 事故：文字起こし中、「あとどのくらい？」「ログ送って」「再起動」の
+# どれにも反応しなくなった（処理は正常に進んでいた）。
+def _work_threads():
+    return max(1, (os.cpu_count() or 4) - 1)
+
+
+async def _sh(cmd, timeout=900, heavy=False):
+    """Mac上でコマンドを1つ実行して (成功か, 出力) を返す。
+    heavy=True の時は優先度を下げて動かす。ボットの返事を止めないため。"""
+    if heavy and shutil.which("nice"):
+        cmd = ["nice", "-n", "15", *cmd]
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     try:
@@ -2956,20 +2971,22 @@ async def _cut_one_clip(src, rows, clip, idx, workdir):
                  "OutlineColour=&H00000000,Outline=3,Shadow=0,Alignment=2,MarginV=140")
         vf += f",subtitles='{srt}':force_style='{style}'"
     ok, log = await _sh([
-        "ffmpeg", "-y", "-ss", str(clip["start"]), "-to", str(clip["end"]),
+        "ffmpeg", "-y", "-threads", str(_work_threads()),
+        "-ss", str(clip["start"]), "-to", str(clip["end"]),
         "-i", str(src), "-vf", vf, "-c:v", "libx264", "-preset", "veryfast",
         "-crf", "26", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
         str(out),
-    ])
+    ], heavy=True)
     if not ok or not out.exists():
         return None, log
     # Discordの上限に収まらなければ、もう一段圧縮してから諦める
     if out.stat().st_size > CLIP_MAX_MB * 1024 * 1024:
         small = workdir / f"clip{idx}_s.mp4"
         ok2, log2 = await _sh([
-            "ffmpeg", "-y", "-i", str(out), "-vf", "scale=720:1280",
+            "ffmpeg", "-y", "-threads", str(_work_threads()),
+            "-i", str(out), "-vf", "scale=720:1280",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
-            "-c:a", "aac", "-b:a", "96k", str(small)])
+            "-c:a", "aac", "-b:a", "96k", str(small)], heavy=True)
         if ok2 and small.exists():
             return small, ""
         return None, log2

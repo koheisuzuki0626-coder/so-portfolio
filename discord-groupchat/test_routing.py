@@ -644,6 +644,20 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 重い処理でボットが黙らないこと")
+    # 事故：文字起こし中にCPUを使い切り、「あとどのくらい？」「ログ送って」
+    # 「再起動」のどれにも反応しなくなった（処理自体は正常に進んでいた）
+    check("CPUを1本は空けておく",
+          bot._work_threads() <= max(1, (os.cpu_count() or 4) - 1), True)
+    check("1本以上は使う", bot._work_threads() >= 1, True)
+    _srcC = open(bot.__file__, encoding="utf-8").read()
+    check("重い処理は優先度を下げて動かす", '"nice", "-n"' in _srcC, True)
+    for _piece in ('"-t", str(_work_threads())',           # 文字起こし
+                   '"-threads", str(_work_threads())'):    # ffmpeg
+        check(f"CPUの本数を渡す（{_piece[:12]}…）", _piece in _srcC, True)
+    check("遅くなることを先に伝える",
+          "返事が普段より遅くなります" in _srcC, True)
+
     print("■ 『やって』が空振りしない／iCloudの共有リンクを正しく断る")
     # 事故：ボット自身が「始めていいなら『やって』と言って」と案内したのに、
     # 「やって」に受け皿が無く、同じ説明を繰り返す無限ループになった（2往復）。
