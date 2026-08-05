@@ -1332,7 +1332,9 @@ BOT_CAPABILITIES = (
     "・モーション転写／作り直し・修正\n"
     "・YouTubeリサーチ／自分のチャンネルの実績分析（週次レポート）／バズ度予測\n"
     "・参考動画からのスタイル学習／料金・残クレジットの照会\n"
-    "・長い動画からショートの切り抜き＝字幕を読んで見どころを選び、"
+    "・長い動画（1GBまで）からショートの切り抜き。素材はYouTubeのリンク・"
+    "動画の添付・直リンク・Macのファイルのパスのいずれでもよい。"
+    "字幕を読んで見どころを選び、"
     "Mac上のffmpegで縦型9:16に切り出して日本語字幕を焼き付ける。"
     "字幕が付いていない動画は、音声から文字起こしして字幕を自分で作る。"
     "生成モデルを使わないのでクレジットは消費しない\n"
@@ -1745,7 +1747,13 @@ async def web_search_context(query):
 
 
 # ---------- 添付ファイル処理（画像・動画・音声） ----------
+# AIに中身を読ませる（Geminiに丸ごと渡す）ときの上限。
+# ここを大きくしても、モデル側が受け取れないので意味がない。
 MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024  # 20MB
+# 素材として【扱う】ときの上限。切り抜き・編集・文字起こしは
+# ディスク上のファイルさえあればよいので、こちらは大きくてよい。
+# メモリに載せず、少しずつディスクへ書き出す。
+MAX_VIDEO_SIZE = int(os.getenv("MAX_VIDEO_MB", "1024")) * 1024 * 1024  # 既定1GB
 SUPPORTED_IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 SUPPORTED_VIDEO_TYPES = {".mp4", ".webm", ".mov", ".avi"}
 SUPPORTED_AUDIO_TYPES = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac"}
@@ -1766,6 +1774,40 @@ def _find_attachment(message, exts):
 # 一時画像ファイル保存先
 TEMP_IMAGE_DIR = Path(os.getenv("TEMP_IMAGE_DIR", "/tmp/discord_images"))
 TEMP_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+async def _download_to_file(url, dest, max_bytes=MAX_VIDEO_SIZE, chunk=1 << 20):
+    """URLの中身を【メモリに載せずに】ディスクへ書き出す。
+    丸ごと読み込む方式だと1GBの動画でメモリを食い潰すため、少しずつ書く。
+    返り値: (成功か, 説明)。"""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    got = 0
+    try:
+        timeout = aiohttp.ClientTimeout(total=3600, sock_read=120)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return False, f"取得に失敗しました（HTTP {resp.status}）"
+                declared = int(resp.headers.get("Content-Length") or 0)
+                if declared and declared > max_bytes:
+                    return False, (f"{declared / 1048576:.0f}MB あり、"
+                                   f"上限の{max_bytes / 1048576:.0f}MBを超えています")
+                with dest.open("wb") as f:
+                    async for part in resp.content.iter_chunked(chunk):
+                        got += len(part)
+                        if got > max_bytes:
+                            f.close()
+                            dest.unlink(missing_ok=True)
+                            return False, (f"上限の{max_bytes / 1048576:.0f}MBを"
+                                           "超えたので中断しました")
+                        f.write(part)
+    except Exception as e:  # noqa: BLE001
+        dest.unlink(missing_ok=True)
+        return False, f"取得中にエラー: {str(e)[:200]}"
+    if got == 0:
+        dest.unlink(missing_ok=True)
+        return False, "中身が空でした"
+    return True, f"{got / 1048576:.1f}MB"
 
 
 async def _download_file(url):
@@ -2934,30 +2976,91 @@ async def _cut_one_clip(src, rows, clip, idx, workdir):
     return out, ""
 
 
-async def _download_video(cid, url, dest):
-    """動画をMacに取得する。取れなければ理由を出して False。"""
+def _clip_source(message, content):
+    """切り抜きの素材がどこにあるかを決める。
+    (種類, 値) を返す。種類: "youtube" / "url" / "file"。
+    Discordの添付は25MB(無料)までしか送れないので、大きい動画は
+    Macのファイルのパスか、直リンクで渡してもらう。"""
+    m = _YT_LINK_RE.search(content or "")
+    if m:
+        return "youtube", m.group(0)
+    for a in (getattr(message, "attachments", None) or []):
+        if Path(a.filename).suffix.lower() in SUPPORTED_VIDEO_TYPES:
+            return "url", a.url
+    m = re.search(r"https?://\S+\.(?:mp4|mov|webm|m4v)(?:\?\S*)?", content or "", re.I)
+    if m:
+        return "url", m.group(0)
+    # Macのローカルパス（1GB級はこれが現実的。Discordには載らないため）
+    m = re.search(r"(~?/[^\s'\"]+\.(?:mp4|mov|webm|m4v|mkv))", content or "", re.I)
+    if m:
+        return "file", os.path.expanduser(m.group(1))
+    return "", ""
+
+
+async def _download_video(cid, url, dest, kind="youtube"):
+    """動画をMacに用意する。取れなければ理由を出して False。
+    kind="file" は既にMacにあるファイルなので、コピーせずそのまま使う。"""
+    if kind == "file":
+        src = Path(url)
+        if not src.exists():
+            await send_as(orch, cid, f"⚠️ ファイルが見つかりません: {url}")
+            return False
+        size = src.stat().st_size
+        if size > MAX_VIDEO_SIZE:
+            await send_as(
+                orch, cid,
+                f"⚠️ {size / 1048576:.0f}MB あり、上限の"
+                f"{MAX_VIDEO_SIZE / 1048576:.0f}MBを超えています。"
+            )
+            return False
+        await send_as(orch, cid, f"📁 Macのファイルを使います（{size / 1048576:.1f}MB）。")
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists():
+                dest.unlink()
+            dest.symlink_to(src)         # コピーしない（1GBを二重に置かない）
+        except Exception:  # noqa: BLE001
+            shutil.copy2(src, dest)
+        return True
+
+    if kind == "url":
+        await send_as(orch, cid, "⬇️ 動画を取得しています…")
+        ok, note = await _download_to_file(url, dest)
+        if ok:
+            await send_as(orch, cid, f"✅ 取得しました（{note}）。")
+            return True
+        await send_as(orch, cid, f"⚠️ 動画を取得できませんでした（{note}）。")
+        return False
+
     await send_as(orch, cid, "⬇️ 動画を取得しています…")
     ok, log = await _sh([
         "yt-dlp", "-f", "bv*[height<=1080]+ba/b[height<=1080]",
-        "--merge-output-format", "mp4", "-o", str(dest), url], timeout=1800)
+        "--merge-output-format", "mp4",
+        "--max-filesize", f"{MAX_VIDEO_SIZE // 1048576}M",
+        "-o", str(dest), url], timeout=3600)
     if ok and dest.exists():
+        await send_as(
+            orch, cid,
+            f"✅ 取得しました（{dest.stat().st_size / 1048576:.1f}MB）。")
         return True
     await send_as(
         orch, cid,
-        "⚠️ 動画を取得できませんでした。自分の動画であればYouTube Studioから"
-        f"ダウンロードしたファイルでも切り抜けます。\n詳細: {log[-300:]}"
+        "⚠️ 動画を取得できませんでした。Macにあるファイルなら"
+        "「/Users/…/movie.mp4 を切り抜いて」のようにパスで渡しても切り抜けます"
+        f"（{MAX_VIDEO_SIZE / 1048576:.0f}MBまで）。\n詳細: {log[-300:]}"
     )
     return False
 
 
-async def _run_clip_shorts(message, url, n=CLIP_DEFAULT_N):
+async def _run_clip_shorts(message, url, n=CLIP_DEFAULT_N, kind="youtube"):
     """長い動画を読み込み、切り抜きショートを作ってDiscordに投稿する。
+    素材はYouTube・直リンク・Discordの添付・Macのローカルファイルのいずれか。
     生成モデルを使わないので、クレジットは一切消費しない。"""
     cid = message.channel.id
     missing = _missing_clip_tools()
     if missing and not await _install_clip_tools(cid, missing):
         return
-    vid = _yt_video_id(url)
+    vid = _yt_video_id(url) if kind == "youtube" else ""
     CLIP_DIR.mkdir(parents=True, exist_ok=True)
     workdir = CLIP_DIR / str(int(time.time()))
     workdir.mkdir(parents=True, exist_ok=True)
@@ -2972,7 +3075,7 @@ async def _run_clip_shorts(message, url, n=CLIP_DEFAULT_N):
             "字幕が付いていない動画なので、**音声から字幕を作ります**"
             "（Mac上で処理・クレジットは使いません）。まず動画を取得します…"
         )
-        if not await _download_video(cid, url, src):
+        if not await _download_video(cid, url, src, kind):
             return
         rows = await _transcribe_local(cid, src, workdir)
         if not rows:
@@ -3002,7 +3105,7 @@ async def _run_clip_shorts(message, url, n=CLIP_DEFAULT_N):
     )
     await send_as(orch, cid, f"✂️ 切り抜く場所を決めました。\n{plan}\n\n動画を取得します…")
 
-    if not src.exists() and not await _download_video(cid, url, src):
+    if not src.exists() and not await _download_video(cid, url, src, kind):
         return
     await send_as(orch, cid, f"🎞 {len(clips)}本を切り出しています…")
     made = 0
@@ -3861,6 +3964,9 @@ _CLIP_INTENT_RE = re.compile(
     "短くして|分割して|ショートにして|切って|切り出|きりだ|抜き出して|ダイジェスト"
 )
 _YT_LINK_RE = re.compile(r"https?://(?:www\.|m\.)?(?:youtube\.com|youtu\.be)/\S+")
+# 動画ファイルの直リンク、またはMac上のパス（1GB級はDiscordに載らないため）
+_VIDEO_PATH_RE = re.compile(
+    r"https?://\S+\.(?:mp4|mov|webm|m4v)|~?/[^\s'\"]+\.(?:mp4|mov|webm|m4v|mkv)", re.I)
 
 # 役（クロード1/3）に意見を求める言い方。名前が出ただけでは呼ばない。
 _ASK_ROLE_RE = re.compile(
@@ -3998,6 +4104,14 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
             and not _CONTENT_Q_RE.search(content)   # 中身への質問は会話へ
             and not _looks_revise(content, has_last_gen)):
         return "status"
+    # ①.35 長い動画の切り抜き（素材を渡して「ショートにして」）。
+    #       完パケ編集より先に見る。編集ルートは Higgsfield のクラウドで
+    #       ffmpeg を回すが、切り抜きは Mac 上で完結しクレジットを使わない。
+    #       添付動画に「切り抜いて」と言われたら、こちらが本命。
+    if (_CLIP_INTENT_RE.search(content) and not _looks_like_question(content)
+            and (_YT_LINK_RE.search(content) or has_video_att
+                 or _VIDEO_PATH_RE.search(content))):
+        return "clip"
     # ※編集は作り直しより先に判定する。「もっと短くして」は作り直しではなく
     #   尺の編集だが、作り直しの語（もっと等）にも当たるため順序が効く。
     # ①.7 完パケ編集（既にある動画への後工程。新規生成とは別物）
@@ -4053,11 +4167,6 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
             return "design"
         if _BY_GEMINI_RE.search(content):
             return "image"
-    # ①.48 長い動画の切り抜き（リンクを渡して「ショートにして」）。
-    #      新規生成ではなく、既にある動画から切り出す作業。
-    if (_YT_LINK_RE.search(content) and _CLIP_INTENT_RE.search(content)
-            and not _looks_like_question(content)):
-        return "clip"
     # ①.5 ショート量産（「ショート作って」「今日のショート」等）
     if re.search("ショート|shorts?|ショート動画", content, re.I) and (
         _GEN_INTENT2_RE.search(content) or re.search("今日の|ネタ|企画|お願い", content)
@@ -7784,14 +7893,26 @@ async def _dispatch_message(message):
 
     if route == "clip":
         add_history(cid, message.author.display_name, content)
-        _m = _YT_LINK_RE.search(content)
+        _kind, _srcref = _clip_source(message, content)
+        if not _srcref:
+            await message.channel.send(
+                "切り抜く動画を教えてください。次のどれでも大丈夫です。\n"
+                "・YouTubeのリンク\n"
+                "・動画ファイルを添付（Discordの上限まで）\n"
+                f"・Macにあるファイルのパス（例: /Users/…/movie.mp4／"
+                f"{MAX_VIDEO_SIZE / 1048576:.0f}MBまで）"
+            )
+            return
         _n = re.search(r"(\d{1,2})\s*本", content)
         _num = min(int(_n.group(1)), 10) if _n else CLIP_DEFAULT_N
+        _where = {"youtube": "YouTube", "url": "リンク先",
+                  "file": "Macのファイル"}.get(_kind, "動画")
         _gate(message, cid,
-              f"長い動画からショートの切り抜き（{_num}本）",
+              f"長い動画からショートの切り抜き（{_num}本・素材: {_where}）",
               "字幕を読んで見どころを選び、Mac上で縦型9:16に切り出して"
-              "日本語字幕を焼き付けます。生成モデルは使いません",
-              lambda: _run_clip_shorts(message, _m.group(0), _num), "切り抜き制作",
+              "日本語字幕を焼き付けます。字幕が無ければ音声から文字起こしします。"
+              "生成モデルは使いません",
+              lambda: _run_clip_shorts(message, _srcref, _num, _kind), "切り抜き制作",
               "無料（クレジットは消費しません）",
               engine="クロード（字幕を読んで選定）＋Mac上のffmpeg（切り出し）")
         return

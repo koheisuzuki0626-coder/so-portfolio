@@ -1083,7 +1083,7 @@ async def run():
           "hf_generate" not in FIRED and "image_gen" not in FIRED, f"fired={FIRED}")
     _c6 = last_call("clip")
     if _c6:
-        check("本数の指定が伝わる", _c6[0][2], 3)
+        check("本数の指定が伝わる", _c6[0][2] == 3, _c6[0])
         check("動画のURLが伝わる", "abc12345678" in _c6[0][1], _c6[0][1])
 
     # --- ⑦ 字幕が無い動画は、その場で文字起こしして続行する ---
@@ -1094,7 +1094,7 @@ async def run():
         _called.append("captions")
         return []
 
-    async def _dl(cid, url, dest):
+    async def _dl(cid, url, dest, kind="youtube"):
         _called.append("download")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(b"x")
@@ -1134,7 +1134,8 @@ async def run():
               "download" in _called and "transcribe" in _called
               and _called.index("download") < _called.index("transcribe"), _called)
         check("文字起こしの結果で切りどころを選ぶ", "pick" in _called, _called)
-        check("同じ動画を二度落としに行かない", _called.count("download"), 1)
+        check("同じ動画を二度落としに行かない",
+              _called.count("download") == 1, _called)
     finally:
         (bot._fetch_captions_timed, bot._download_video, bot._transcribe_local,
          bot._pick_clip_ranges, bot._cut_one_clip,

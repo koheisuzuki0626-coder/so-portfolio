@@ -644,6 +644,43 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 1GBまでの動画を素材にできる")
+    check("素材の上限は1GB以上", bot.MAX_VIDEO_SIZE >= 1024 * 1024 * 1024, True)
+    check("AIに読ませる分の上限とは別",
+          bot.MAX_VIDEO_SIZE > bot.MAX_ATTACHMENT_SIZE, True)
+    _src8 = open(bot.__file__, encoding="utf-8").read()
+    check("メモリに丸ごと載せずに書き出す", "iter_chunked" in _src8, True)
+    check("上限を超えたら途中で止める", "超えたので中断しました" in _src8, True)
+    check("YouTube取得にも上限を渡す", "--max-filesize" in _src8, True)
+    # 素材の在りかを見分ける
+    class _A:
+        def __init__(self, fn, url):
+            self.filename, self.url = fn, url
+
+    class _M:
+        def __init__(self, atts=()):
+            self.attachments = list(atts)
+    _U = "https://www.youtube.com/watch?v=abc12345678"
+    check("YouTubeを見分ける", bot._clip_source(_M(), f"{_U} 切り抜いて")[0], "youtube")
+    check("添付動画を見分ける",
+          bot._clip_source(_M([_A("a.mp4", "https://cdn/a.mp4")]), "切り抜いて")[0], "url")
+    check("直リンクを見分ける",
+          bot._clip_source(_M(), "https://example.com/a.mp4 切り抜いて")[0], "url")
+    check("Macのパスを見分ける",
+          bot._clip_source(_M(), "/Users/kohei/Movies/long.mp4 を切り抜いて"),
+          ("file", "/Users/kohei/Movies/long.mp4"))
+    check("素材が無ければ空", bot._clip_source(_M(), "切り抜いて")[0], "")
+    # どの素材でも切り抜きに流れる
+    for _t, _f in ((f"{_U} ショートにして", {}),
+                   ("/Users/kohei/Movies/long.mp4 を切り抜いて", {}),
+                   ("https://example.com/a.mp4 を3本に切り抜いて", {}),
+                   ("これ切り抜いて", {"has_video_att": True, "has_attachments": True})):
+        check(f"{_t[:22]!r}… は切り抜きへ", bot.classify_route(_t, **_f), "clip")
+    # 既存の編集（尺・字幕・縦型化）は従来どおり
+    for _t in ("字幕入れて", "もっと短くして", "縦にして", "15秒にして"):
+        check(f"{_t!r} は編集のまま",
+              bot.classify_route(_t, has_last_gen=True), "edit")
+
     print("■ 字幕が無い動画は、その場で文字起こしして字幕を作る")
     _srt = ("1\n00:00:02,500 --> 00:00:05,700\nこれはテスト\n\n"
             "2\n00:00:06,000 --> 00:00:08,000\n次の場面です\n")
