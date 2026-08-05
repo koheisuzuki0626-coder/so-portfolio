@@ -1334,6 +1334,7 @@ BOT_CAPABILITIES = (
     "・参考動画からのスタイル学習／料金・残クレジットの照会\n"
     "・長い動画からショートの切り抜き＝字幕を読んで見どころを選び、"
     "Mac上のffmpegで縦型9:16に切り出して日本語字幕を焼き付ける。"
+    "字幕が付いていない動画は、音声から文字起こしして字幕を自分で作る。"
     "生成モデルを使わないのでクレジットは消費しない\n"
     "・自己改修・再起動・ログ共有／会話モデルの切替\n"
     "【どれで作るかの既定】\n"
@@ -2690,6 +2691,109 @@ async def _install_clip_tools(cid, missing):
     return True
 
 
+# ---------- 字幕が無い動画は、その場で文字起こしして字幕を作る ----------
+# whisper.cpp を Mac で動かす。API課金なし・Gemini無料枠にも依存しない
+# （Geminiは枠切れが頻繁で、そこに頼ると「字幕が取れません」で止まるため）。
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")   # tiny/base/small/medium
+WHISPER_DIR = HISTORY_DIR / "whisper"
+WHISPER_URL = ("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"
+               "ggml-{name}.bin")
+# 実測の目安（MacBook Air）：小さいほど速いが、日本語は small 以上でないと崩れる。
+WHISPER_BINS = ("whisper-cli", "whisper-cpp", "whisper")
+
+
+def _whisper_bin():
+    for b in WHISPER_BINS:
+        if shutil.which(b):
+            return b
+    return ""
+
+
+def _whisper_model_path():
+    return WHISPER_DIR / f"ggml-{WHISPER_MODEL}.bin"
+
+
+async def _ensure_whisper(cid):
+    """文字起こしの道具と模型を用意する（無ければ入れる）。"""
+    if not _whisper_bin():
+        await send_as(orch, cid, "🔧 文字起こしの道具（whisper.cpp）を入れます…")
+        await _run_claude_exec(
+            "このMacに whisper.cpp を入れて。Homebrew があれば "
+            "`brew install whisper-cpp`、無ければ Homebrew の導入から行う。"
+            "終わったら `which whisper-cli` で確認し、最後の行に OK か NG だけ書いて。",
+            timeout=900,
+        )
+        if not _whisper_bin():
+            await send_as(orch, cid, "⚠️ whisper.cpp を入れられませんでした。")
+            return False
+    model = _whisper_model_path()
+    if not model.exists() or model.stat().st_size < 1_000_000:
+        WHISPER_DIR.mkdir(parents=True, exist_ok=True)
+        await send_as(
+            orch, cid,
+            f"⬇️ 文字起こし用のモデル（{WHISPER_MODEL}）を1回だけ取得します"
+            "（数百MB・次回以降は不要）…"
+        )
+        ok, log = await _sh(
+            ["curl", "-fL", "--retry", "3", "-o", str(model),
+             WHISPER_URL.format(name=WHISPER_MODEL)], timeout=1800)
+        if not ok or not model.exists() or model.stat().st_size < 1_000_000:
+            model.unlink(missing_ok=True)
+            await send_as(orch, cid, f"⚠️ モデルを取得できませんでした: {log[-200:]}")
+            return False
+    return True
+
+
+_SRT_BLOCK_RE = re.compile(
+    r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*"
+    r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*\n(.*?)(?=\n\s*\n|\Z)", re.S)
+
+
+def _parse_srt(text):
+    """SRTを [(開始秒, 長さ秒, 本文)] にする（字幕取得と同じ形に揃える）。"""
+    rows = []
+    for m in _SRT_BLOCK_RE.finditer(text or ""):
+        h1, m1, s1, ms1, h2, m2, s2, ms2, body = m.groups()
+        st = int(h1) * 3600 + int(m1) * 60 + int(s1) + int(ms1) / 1000
+        en = int(h2) * 3600 + int(m2) * 60 + int(s2) + int(ms2) / 1000
+        line = " ".join(body.split())
+        if line:
+            rows.append((st, max(en - st, 0.5), line))
+    return rows
+
+
+async def _transcribe_local(cid, src, workdir, lang="ja"):
+    """動画から音声を抜いて文字起こしし、時刻つきの字幕行にして返す。"""
+    if not await _ensure_whisper(cid):
+        return []
+    wav = workdir / "audio.wav"
+    await send_as(orch, cid, "🎧 音声を取り出しています…")
+    ok, log = await _sh([
+        "ffmpeg", "-y", "-i", str(src), "-vn",
+        "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)], timeout=1800)
+    if not ok or not wav.exists():
+        await send_as(orch, cid, f"⚠️ 音声を取り出せませんでした: {log[-200:]}")
+        return []
+    await send_as(
+        orch, cid,
+        f"✍️ 文字起こしをしています（{_eta_hint('文字起こし')}）…"
+    )
+    started = time.time()
+    base = workdir / "auto"
+    ok, log = await _sh([
+        _whisper_bin(), "-m", str(_whisper_model_path()), "-f", str(wav),
+        "-l", lang, "-osrt", "-of", str(base), "-pp", "false"], timeout=5400)
+    srt = Path(f"{base}.srt")
+    if not ok or not srt.exists():
+        await send_as(orch, cid, f"⚠️ 文字起こしに失敗しました: {log[-300:]}")
+        return []
+    rows = _parse_srt(srt.read_text(encoding="utf-8", errors="replace"))
+    _record_task_time("文字起こし", time.time() - started)
+    if rows:
+        await send_as(orch, cid, f"✅ 文字起こし完了（{len(rows)}行）。")
+    return rows
+
+
 CLIP_PICK_PROMPT = (
     "あなたはショート動画の編集者。下は長い動画の字幕を時刻つきで並べたもの。\n"
     "ここから【単体で成立する】切り抜きを選ぶ。\n"
@@ -2830,6 +2934,22 @@ async def _cut_one_clip(src, rows, clip, idx, workdir):
     return out, ""
 
 
+async def _download_video(cid, url, dest):
+    """動画をMacに取得する。取れなければ理由を出して False。"""
+    await send_as(orch, cid, "⬇️ 動画を取得しています…")
+    ok, log = await _sh([
+        "yt-dlp", "-f", "bv*[height<=1080]+ba/b[height<=1080]",
+        "--merge-output-format", "mp4", "-o", str(dest), url], timeout=1800)
+    if ok and dest.exists():
+        return True
+    await send_as(
+        orch, cid,
+        "⚠️ 動画を取得できませんでした。自分の動画であればYouTube Studioから"
+        f"ダウンロードしたファイルでも切り抜けます。\n詳細: {log[-300:]}"
+    )
+    return False
+
+
 async def _run_clip_shorts(message, url, n=CLIP_DEFAULT_N):
     """長い動画を読み込み、切り抜きショートを作ってDiscordに投稿する。
     生成モデルを使わないので、クレジットは一切消費しない。"""
@@ -2838,16 +2958,30 @@ async def _run_clip_shorts(message, url, n=CLIP_DEFAULT_N):
     if missing and not await _install_clip_tools(cid, missing):
         return
     vid = _yt_video_id(url)
+    CLIP_DIR.mkdir(parents=True, exist_ok=True)
+    workdir = CLIP_DIR / str(int(time.time()))
+    workdir.mkdir(parents=True, exist_ok=True)
+    src = workdir / "src.mp4"
+
     await send_as(orch, cid, "📝 字幕を読み込んでいます…")
     rows = await _fetch_captions_timed(vid)
     if not rows:
+        # 字幕が無い動画はここで諦めていた。音声から自分で字幕を作る。
         await send_as(
             orch, cid,
-            "⚠️ この動画の字幕を取得できませんでした。"
-            "字幕（自動生成でも可）が公開されている動画なら、中身を読んで切り抜けます。\n"
-            "自分の動画なら、YouTube Studio で字幕をオンにしてから試してください。"
+            "字幕が付いていない動画なので、**音声から字幕を作ります**"
+            "（Mac上で処理・クレジットは使いません）。まず動画を取得します…"
         )
-        return
+        if not await _download_video(cid, url, src):
+            return
+        rows = await _transcribe_local(cid, src, workdir)
+        if not rows:
+            await send_as(
+                orch, cid,
+                "⚠️ 字幕を作れなかったので、切りどころを判断できません。"
+                "音声が入っている動画か確認してください。"
+            )
+            return
     total = int(rows[-1][0] + (rows[-1][1] or 0))
     await send_as(
         orch, cid,
@@ -2868,19 +3002,7 @@ async def _run_clip_shorts(message, url, n=CLIP_DEFAULT_N):
     )
     await send_as(orch, cid, f"✂️ 切り抜く場所を決めました。\n{plan}\n\n動画を取得します…")
 
-    CLIP_DIR.mkdir(parents=True, exist_ok=True)
-    workdir = CLIP_DIR / str(int(time.time()))
-    workdir.mkdir(parents=True, exist_ok=True)
-    src = workdir / "src.mp4"
-    ok, log = await _sh([
-        "yt-dlp", "-f", "bv*[height<=1080]+ba/b[height<=1080]",
-        "--merge-output-format", "mp4", "-o", str(src), url], timeout=1800)
-    if not ok or not src.exists():
-        await send_as(
-            orch, cid,
-            "⚠️ 動画を取得できませんでした。自分の動画であればYouTube Studioから"
-            f"ダウンロードしたファイルでも切り抜けます。\n詳細: {log[-300:]}"
-        )
+    if not src.exists() and not await _download_video(cid, url, src):
         return
     await send_as(orch, cid, f"🎞 {len(clips)}本を切り出しています…")
     made = 0

@@ -644,6 +644,27 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 字幕が無い動画は、その場で文字起こしして字幕を作る")
+    _srt = ("1\n00:00:02,500 --> 00:00:05,700\nこれはテスト\n\n"
+            "2\n00:00:06,000 --> 00:00:08,000\n次の場面です\n")
+    check("SRTを時刻つきに戻せる", bot._parse_srt(_srt),
+          [(2.5, 3.2, "これはテスト"), (6.0, 2.0, "次の場面です")])
+    check("字幕取得と同じ形になる（そのまま切り抜きに使える）",
+          bot._timed_transcript(bot._parse_srt(_srt)).startswith("[00:02]"), True)
+    check("改行入りの字幕を1行にまとめる",
+          bot._parse_srt("1\n00:00:01,000 --> 00:00:02,000\nあ\nい\n")[0][2], "あ い")
+    check("日本語が崩れないモデルを既定にする",
+          bot.WHISPER_MODEL in ("small", "medium", "large"), True)
+    check("モデルは1回だけ取得して使い回す",
+          str(bot._whisper_model_path()).endswith(f"ggml-{bot.WHISPER_MODEL}.bin"), True)
+    # 文字起こしも生成モデルを使わない（クレジットを消費しない）
+    _src7 = open(bot.__file__, encoding="utf-8").read()
+    _tr_fn = _src7[_src7.index("async def _transcribe_local"):
+                   _src7.index("CLIP_PICK_PROMPT")]
+    for _ng in ("_mcp_", "hf_wrapper", "gemini", "Gemini"):
+        check(f"文字起こしは {_ng} を使わない", _ng in _tr_fn, False)
+    check("所要時間は実測で答える", "_eta_hint('文字起こし')" in _src7, True)
+
     print("■ 画像を頼まれて動画を作らない／古い生成を結果にしない")
     # 事故：「この人で画像生成して」→「ヒッグスフィールドで」で
     # 動画ジョブ(seedance)が走った。媒体を発言だけで判定していたため。

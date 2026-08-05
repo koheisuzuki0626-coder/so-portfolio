@@ -1074,6 +1074,7 @@ async def run():
     # --- ⑥ 長い動画の切り抜きが、Higgsfieldに流れないこと ---
     install_stubs()
     bot._load_last_gen = lambda cid: None
+    _REAL_CLIP = bot._run_clip_shorts        # ⑦で本物を呼ぶので控えておく
     bot._run_clip_shorts = _rec("clip")
     _r6 = await drive(
         "https://www.youtube.com/watch?v=abc12345678 これ3本ショートにして")
@@ -1084,6 +1085,60 @@ async def run():
     if _c6:
         check("本数の指定が伝わる", _c6[0][2], 3)
         check("動画のURLが伝わる", "abc12345678" in _c6[0][1], _c6[0][1])
+
+    # --- ⑦ 字幕が無い動画は、その場で文字起こしして続行する ---
+    install_stubs()
+    _called = []
+
+    async def _no_caps(vid):
+        _called.append("captions")
+        return []
+
+    async def _dl(cid, url, dest):
+        _called.append("download")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"x")
+        return True
+
+    async def _tr(cid, src, workdir, lang="ja"):
+        _called.append("transcribe")
+        return [(0.0, 3.0, "こんにちは"), (3.0, 3.0, "本題に入ります"),
+                (6.0, 3.0, "結論はこうです")]
+
+    async def _pick(transcript, n):
+        _called.append("pick")
+        return [{"start": 0.0, "end": 20.0, "title": "本題",
+                 "hook": "結論から", "why": "単体で成立"}]
+
+    async def _cut(src, rows, clip, idx, workdir):
+        _called.append("cut")
+        return None, "（テストなので実際には切らない）"
+
+    _keep = (bot._fetch_captions_timed, bot._download_video,
+             bot._transcribe_local, bot._pick_clip_ranges, bot._cut_one_clip,
+             bot._missing_clip_tools)
+    try:
+        bot._fetch_captions_timed = _no_caps
+        bot._download_video = _dl
+        bot._transcribe_local = _tr
+        bot._pick_clip_ranges = _pick
+        bot._cut_one_clip = _cut
+        bot._missing_clip_tools = lambda: []
+        _msg7 = _FakeMessage("dummy")
+        try:
+            await _REAL_CLIP(_msg7, "https://youtu.be/abc12345678", 1)
+        except Exception as _e7:      # 途中で落ちても、どこまで進んだかを見る
+            print(f"    （切り抜きの実行で例外: {str(_e7)[:120]}）")
+        check("字幕が無ければ文字起こしに進む", "transcribe" in _called, _called)
+        check("文字起こしの前に動画を取得する",
+              "download" in _called and "transcribe" in _called
+              and _called.index("download") < _called.index("transcribe"), _called)
+        check("文字起こしの結果で切りどころを選ぶ", "pick" in _called, _called)
+        check("同じ動画を二度落としに行かない", _called.count("download"), 1)
+    finally:
+        (bot._fetch_captions_timed, bot._download_video, bot._transcribe_local,
+         bot._pick_clip_ranges, bot._cut_one_clip,
+         bot._missing_clip_tools) = _keep
 
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
