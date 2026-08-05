@@ -644,6 +644,41 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 直した内容が自動でDiscordに届くこと")
+    # 本人の指摘：「こっちで設定してることとdiscord上の挙動が違う」。
+    # 実際に何度も、修正が入る前の版を試して「まだ直ってない」となっていた。
+    check("既定は自動更新オン", bot._auto_update_on(), True)
+    _keep_au = bot.gen_settings.get("auto_update")
+    try:
+        bot.gen_settings["auto_update"] = False
+        check("止められる", bot._auto_update_on(), False)
+    finally:
+        bot.gen_settings["auto_update"] = _keep_au
+    for _t, _want in (("自動更新オフ", False), ("自動更新やめて", False),
+                      ("自動更新オン", True), ("自動更新して", True)):
+        check(f"{_t!r} → {_want}", bot._match_auto_update(_t), _want)
+    for _t in ("自動更新って何？", "自動でショート作って", "毎日7時にリサーチして"):
+        check(f"{_t!r} は切替にしない", bot._match_auto_update(_t), None)
+    # 作業中・確認待ちには入れ替わらない
+    _keep_bt, _keep_mj, _keep_pa = (bot._busy_tasks, bot._load_motion_job,
+                                    dict(bot._pending_approvals))
+    try:
+        bot._busy_tasks = lambda cid: []
+        bot._load_motion_job = lambda: None
+        bot._pending_approvals.clear()
+        check("手が空いていれば入れ替わってよい", bot._safe_to_restart(1), True)
+        bot._busy_tasks = lambda cid: [("切り抜き制作", 30)]
+        check("作業中は待つ", bot._safe_to_restart(1), False)
+        bot._busy_tasks = lambda cid: []
+        bot._pending_approvals[1] = (None, 1)
+        check("確認待ちも待つ", bot._safe_to_restart(1), False)
+    finally:
+        bot._busy_tasks, bot._load_motion_job = _keep_bt, _keep_mj
+        bot._pending_approvals.clear(); bot._pending_approvals.update(_keep_pa)
+    _srcF = open(bot.__file__, encoding="utf-8").read()
+    check("ログの1行目で新旧が分かる", "_freshness_note" in _srcF, True)
+    check("古ければ警告する", "件古い" in _srcF, True)
+
     print("■ 子プロセスが端末待ちで固まらないこと")
     # 事故：「🎧 音声を取り出しています…」から一切先へ進まなくなった。2回とも同じ場所。
     # バックグラウンドのボットの子プロセスが端末から読もうとすると

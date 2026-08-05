@@ -892,6 +892,20 @@ async def _autoshare_log(cid, why=""):
         pass
 
 
+async def _freshness_note():
+    """走っているコードが最新かどうかの一言。
+    「直したのに直っていない」の多くは、古い版のまま試していたことが原因。
+    ログの一行目で分かるようにしておく。"""
+    try:
+        has_new, n = await _remote_has_new_code()
+    except Exception:  # noqa: BLE001
+        return "（最新かどうか確認できず）"
+    if not has_new:
+        return "（最新）"
+    return (f"（⚠️ **{n}件古い**。未反映の修正があります"
+            f"{'／自動更新はオン' if _auto_update_on() else '／自動更新はオフ'}）")
+
+
 async def _share_debug_log(cid, limit=80):
     """直近の会話・エラー・生成状態をリポジトリに書き出してプッシュする。
     プッシュ後は Claude Code のチャット側から中身を直接読める。"""
@@ -901,7 +915,7 @@ async def _share_debug_log(cid, limit=80):
     lines = [
         "# Discord デバッグログ（自動共有）",
         f"- 書き出し: {now}",
-        f"- 実行中のコード: {head.strip()[:12]}",
+        f"- 実行中のコード: {head.strip()[:12]}{await _freshness_note()}",
         f"- チャンネル: {cid}",
         "",
         "## 生成の状態",
@@ -4163,6 +4177,20 @@ _HF_NAMED_RE = re.compile(
 def _hf_explicit_only():
     """ヒッグスフィールドを『明示的に頼まれた時だけ』に絞るか。"""
     return (gen_settings.get("hf_mode") or HF_MODE_DEFAULT) != "auto"
+
+
+_AUTO_UPDATE_RE = re.compile("自動(更新|アップデート|反映)|オートアップデート")
+_OFF_RE = re.compile("オフ|off|止め|やめ|停止|切っ|しないで|無効", re.I)
+
+
+def _match_auto_update(text):
+    """自動更新の切替。True=オン / False=オフ / None=関係ない発言。"""
+    t = text or ""
+    if not _AUTO_UPDATE_RE.search(t):
+        return None
+    if re.search("って何|とは|どうなって|どういう", t):
+        return None                      # 説明を求められているだけ
+    return not _OFF_RE.search(t)
 
 
 def _match_hf_mode(text):
@@ -7447,6 +7475,86 @@ async def _sync_to_origin():
     return ((f"最新コードを取得（{n}コミット）" if n else "既に最新") + extra + stashed)
 
 
+# ---------- 直した内容を自動で取り込む ----------
+# 本人の指摘：「こっちで設定してることとdiscord上の挙動が違う」。
+# 原因は単純で、直してもDiscordの側は古いコードのまま動いていたこと。
+# 実際に何度も、最新の修正が入る前の版を試して「まだ直ってない」となった。
+# 手で「再起動して」と言わせない。新しいコードが出たら自分で取り込む。
+AUTO_UPDATE_SEC = int(os.getenv("AUTO_UPDATE_SEC", "180"))
+
+
+def _auto_update_on():
+    return gen_settings.get("auto_update", True) and AUTO_UPDATE_SEC > 0
+
+
+async def _remote_has_new_code():
+    """GitHubに自分より新しいコードがあるか。(あるか, 件数) を返す。"""
+    rc, branch = await _git_self(["rev-parse", "--abbrev-ref", "HEAD"])
+    branch = branch.strip()
+    if rc != 0 or not branch:
+        return False, 0
+    rc, _ = await _git_self(["fetch", "origin", branch])
+    if rc != 0:
+        return False, 0
+    rc, out = await _git_self(
+        ["rev-list", "--count", f"HEAD..origin/{branch}"])
+    if rc != 0:
+        return False, 0
+    try:
+        n = int((out or "0").strip())
+    except ValueError:
+        return False, 0
+    return n > 0, n
+
+
+def _safe_to_restart(cid):
+    """いま入れ替わっても困らないか。作業中・確認待ちなら待つ。"""
+    if _busy_tasks(cid) or _load_motion_job():
+        return False
+    if _pending_approvals:
+        return False
+    return True
+
+
+async def _auto_update_loop():
+    """新しいコードが出ていたら、手が空いた時に自分で取り込んで入れ替わる。"""
+    while True:
+        await asyncio.sleep(AUTO_UPDATE_SEC)
+        try:
+            if not _auto_update_on():
+                continue
+            cid = (int(gen_settings.get("trend_cid") or 0)
+                   or TREND_CHANNEL_ID or _last_active_cid())
+            if not cid:
+                continue
+            has_new, n = await _remote_has_new_code()
+            if not has_new:
+                continue
+            if not _safe_to_restart(cid):
+                print("[auto_update] 作業中なので次の機会に回す")
+                continue
+            await send_as(
+                orch, cid,
+                f"🆕 新しい修正が{n}件届いていたので取り込みます"
+                "（数秒で戻ります／自動更新は「自動更新オフ」で止められます）。"
+            )
+            await _restart_self(cid, note="（自動更新）")
+        except Exception as e:  # noqa: BLE001
+            print(f"[auto_update] 失敗: {str(e)[:200]}")
+
+
+def _last_active_cid():
+    """直近に会話のあったチャンネル（自動更新の通知先）。"""
+    best, best_t = 0, 0.0
+    for cid, t in _last_seen_cid.items():
+        if t > best_t:
+            best, best_t = cid, t
+    return best
+
+
+_last_seen_cid = {}
+
+
 async def _restart_self(cid, note=""):
     """自分自身を再起動する（プロセスを入れ替え。Mac操作不要）。
     再起動前にGitHubの最新コードを自動で取り込む＝Discordだけで更新が完結する。"""
@@ -7733,6 +7841,7 @@ async def on_ready():
             print(f"[restart] 復帰通知失敗: {e}")
     if not _trend_task_started:
         _trend_task_started = True
+        _track(asyncio.create_task(_auto_update_loop()))
         _track(asyncio.create_task(_daily_trend_loop()))
         _track(asyncio.create_task(_gemini_recovery_loop()))
         _track(asyncio.create_task(_weekly_channel_loop()))
@@ -7892,6 +8001,7 @@ async def _dispatch_message(message):
     if not content and not message.attachments:
         return
     cid = message.channel.id
+    _last_seen_cid[cid] = time.time()   # 自動更新の通知先に使う
 
     # 初回のみ：導入前の過去ログをDiscordから取り込む（バックグラウンド）
     if cid not in _import_started:
@@ -8000,6 +8110,19 @@ async def _dispatch_message(message):
             "・無料です（YouTube APIとGeminiの無料枠のみ／クレジットは使いません）\n"
             "時刻を変えるなら「**毎日9時半にして**」、"
             "止めるなら「**毎日のリサーチやめて**」と送ってください。"
+        )
+        return
+    _au = _match_auto_update(content)
+    if _au is not None:
+        _fired(cid, "自動更新の切替", content)
+        gen_settings["auto_update"] = _au
+        _save_gen_settings()
+        add_history(cid, message.author.display_name, content)
+        await message.channel.send(
+            "🆕 修正が出たら**自動で取り込む**ようにしました"
+            f"（{AUTO_UPDATE_SEC // 60}分おきに確認・作業中は待ちます）。"
+            if _au else
+            "🆕 自動更新を**止めました**。反映したい時は「再起動して」と送ってください。"
         )
         return
     _hfm = _match_hf_mode(content)
