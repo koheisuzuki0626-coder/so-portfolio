@@ -3016,6 +3016,29 @@ def _ios_files_path(text):
     return os.path.expanduser("/".join([base, *segs, name]))
 
 
+# 「始めていいなら『やって』と言って」と案内しておきながら、
+# 「やって」に何の受け皿も無く、同じ説明を繰り返す無限ループになっていた。
+# 何が足りなくて始められないのかを覚えておき、「やって」で先に進める。
+_pending_do = {}
+PENDING_DO_SEC = 3600
+_BARE_GO_RE = re.compile(
+    r"^(やって|やろう|お願い(します)?|おねがい|進めて|すすめて|начать|"
+    r"始めて|はじめて|go|ゴー|実行|やっちゃって|よろしく)[。、!！\s]*$", re.I)
+# iCloudの「共有リンク」はブラウザで開くページなので、そのままでは取得できない。
+# ここを「リンクなら取りに行ける」と案内してしまい、貼っても何も起きなかった。
+_ICLOUD_LINK_RE = re.compile(r"https?://(?:www\.)?icloud\.com/iclouddrive/\S+", re.I)
+
+
+def _set_pending_do(cid, need, hint=""):
+    """『あと何があれば始められるか』を覚える。"""
+    _pending_do[cid] = {"need": need, "hint": hint, "t": time.time()}
+
+
+def _get_pending_do(cid):
+    d = _pending_do.get(cid)
+    return d if d and time.time() - d["t"] < PENDING_DO_SEC else None
+
+
 def _find_video_by_name(name, limit_dirs=(ICLOUD_ROOT, "~/Movies", "~/Downloads",
                                           "~/Desktop")):
     """同じ名前の動画をよくある場所から探す（深さは控えめ）。"""
@@ -6617,9 +6640,13 @@ def _drop_false_progress(text, cid):
     print(f"[reply] 動いていない作業の宣言を落とした: channel={cid}")
     # 落としただけだと「始まった」と読める文が残ることがあるので、
     # 実際には動いていないことを必ず明記する。
-    note = "（まだ実際には動かしていない。始めていいなら「やって」と言って）"
+    # 「『やって』と言って」とだけ書くと、言われた側に受け皿が無く
+    # 同じ説明を繰り返す無限ループになった（実際に2往復した）。
+    # 何が足りないかを覚えておき、「やって」に具体的に答えられるようにする。
+    _set_pending_do(cid, "何を・どの素材でやるか")
+    note = "（これはまだ実際には動かしていない）"
     if not out:
-        return "まだ何も動かしていないよ。始めていいなら「やって」と言って。"
+        return "まだ何も動かしていないよ。"
     return f"{out}\n{note}"
 
 
@@ -7831,6 +7858,39 @@ async def _dispatch_message(message):
             f"🔀 会話モデルを **{_mdl[1]}** にしました（次の発言から反映・再起動不要）。"
         )
         return
+    # iCloudの共有リンクは、そのままでは中身を取れない。
+    # 「リンクなら取りに行ける」と案内して貼ってもらい、何も起きなかった事故があった。
+    if _ICLOUD_LINK_RE.search(content) and not message.attachments:
+        _fired(cid, "iCloud共有リンク", content)
+        add_history(cid, message.author.display_name, content)
+        _set_pending_do(cid, "動画の場所", content)
+        await message.channel.send(
+            "そのiCloudのリンクは**ブラウザで開くページ**なので、中身を直接"
+            "取りに行けません（貼ってもらっても何も始められませんでした、ごめん）。\n"
+            "**iPhoneのファイルアプリの道順をそのまま貼ってください。**\n"
+            "・ファイルアプリでその動画を長押し → 「情報」→ 場所の欄を長押しでコピー\n"
+            "・または、動画を長押し →「情報」に出る\n"
+            "　`iCloud Drive ▸ マルサヂ ▸ AI ▸ 動画` のような行をそのまま貼る\n"
+            "（iCloud DriveはMacにも同期されているので、その道順から直接扱えます）"
+        )
+        return
+
+    # 「やって」だけの返事。何が足りなくて止まっているかを覚えているので、
+    # 同じ説明を繰り返さずに、先に進めるか・何が要るかをはっきり返す。
+    if _BARE_GO_RE.match(content.strip()):
+        _pend = _get_pending_do(cid)
+        if _pend:
+            _fired(cid, f"やって（{_pend['need']}待ち）", content)
+            add_history(cid, message.author.display_name, content)
+            await message.channel.send(
+                f"始めたいけど、**{_pend['need']}**がまだ分からないので動かせない。\n"
+                "動画の切り抜きなら、iPhoneのファイルアプリの道順"
+                "（`iCloud Drive ▸ …`）をそのまま貼るか、"
+                "動画をこのチャンネルに添付してください。\n"
+                "別の作業なら「◯◯して」と一言で言ってもらえれば、そこから始めます。"
+            )
+            return
+
     _trd = _match_trend_schedule(
         content, recent_topic=time.time() - _trend_talk.get(cid, 0) < 900)
     if _trd is not None:
@@ -8021,6 +8081,7 @@ async def _dispatch_message(message):
         add_history(cid, message.author.display_name, content)
         _kind, _srcref = _clip_source(message, content)
         if not _srcref:
+            _set_pending_do(cid, "動画の場所", content)
             await message.channel.send(
                 "切り抜く動画の場所を教えてください。次のどれでも大丈夫です。\n"
                 "・**YouTubeのリンク**\n"

@@ -1141,6 +1141,22 @@ async def run():
          bot._pick_clip_ranges, bot._cut_one_clip,
          bot._missing_clip_tools) = _keep
 
+    # --- ⑧ 「やって」が空振りしないこと（無限ループの再現）---
+    install_stubs()
+    bot._load_last_gen = lambda cid: None
+    bot._pending_do.clear()
+    _r8a = await drive("https://www.icloud.com/iclouddrive/06eXfAEzbeDWkouOAU5OK9V0Q")
+    check("iCloudの共有リンクは取りに行けないと言う",
+          any("ブラウザで開くページ" in t for t in _r8a["sent"]), _r8a["sent"][:1])
+    check("代わりの渡し方を示す",
+          any("ファイルアプリの道順" in t for t in _r8a["sent"]), _r8a["sent"][:1])
+    _r8b = await drive("やって")
+    check("『やって』に具体的に答える",
+          any("分からないので動かせない" in t for t in _r8b["sent"]), _r8b["sent"][:1])
+    check("『やって』で同じ説明を繰り返さない",
+          any("ブラウザで開くページ" in t for t in _r8b["sent"]), False)
+    bot._pending_do.clear()
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile

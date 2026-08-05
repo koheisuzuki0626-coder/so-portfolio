@@ -644,6 +644,38 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 『やって』が空振りしない／iCloudの共有リンクを正しく断る")
+    # 事故：ボット自身が「始めていいなら『やって』と言って」と案内したのに、
+    # 「やって」に受け皿が無く、同じ説明を繰り返す無限ループになった（2往復）。
+    check("『やって』を拾う", bool(bot._BARE_GO_RE.match("やって")), True)
+    for _t in ("お願い", "進めて", "始めて", "GO", "よろしく", "やって。"):
+        check(f"{_t!r} も拾う", bool(bot._BARE_GO_RE.match(_t)), True)
+    for _t in ("やっておいて意味ある？", "お願いしたいことがある", "やってみたけどダメ"):
+        check(f"{_t!r} は拾わない", bool(bot._BARE_GO_RE.match(_t)), False)
+    # 何が足りないかを覚えて、具体的に答えられること
+    _keep_pd = dict(bot._pending_do)
+    try:
+        bot._pending_do.clear()
+        check("覚えていなければ何も無い", bot._get_pending_do(3), None)
+        bot._set_pending_do(3, "動画の場所", "切り抜きたい")
+        check("足りないものを覚える", bot._get_pending_do(3)["need"], "動画の場所")
+        import time as _tm5
+        bot._pending_do[3]["t"] = _tm5.time() - bot.PENDING_DO_SEC - 10
+        check("古い記憶は使わない", bot._get_pending_do(3), None)
+    finally:
+        bot._pending_do.clear(); bot._pending_do.update(_keep_pd)
+    # iCloudの共有リンクは取りに行けないと正しく言う
+    check("iCloudの共有リンクを見分ける",
+          bool(bot._ICLOUD_LINK_RE.search(
+              "https://www.icloud.com/iclouddrive/06eXfAEzbeDWkouOAU5OK9V0Q")), True)
+    check("普通のリンクは巻き込まない",
+          bool(bot._ICLOUD_LINK_RE.search("https://example.com/a.mp4")), False)
+    _srcB = open(bot.__file__, encoding="utf-8").read()
+    check("取りに行けないと正しく案内する",
+          "ブラウザで開くページ" in _srcB, True)
+    check("できない案内文を残さない",
+          "始めていいなら「やって」と言って）" in _srcB, False)
+
     print("■ 動いていない作業を『やっている』と言わせない")
     # 事故：切り抜きが一度も起動していないのに4通続けて
     # 「このまま処理に入るね」「終わったタイミングで知らせる」
