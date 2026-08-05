@@ -644,6 +644,23 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ ボットが黙り込まない土台")
+    _srcG = open(bot.__file__, encoding="utf-8").read()
+    # iCloud配下の探索は巨大になり得る。そのまま回すとループが止まる。
+    check("ファイル探索は別スレッドへ逃がす",
+          "asyncio.to_thread(_find_video_sync" in _srcG, True)
+    check("探索に時間の区切りがある",
+          "timeout=60" in _srcG, True)
+    check("探索の呼び出しは待てる形",
+          "await _find_video_by_name(" in _srcG, True)
+    # 落ちた時にmacOS自身が起こし直す仕組みがある
+    import pathlib as _pl9
+    _auto = _pl9.Path(bot.__file__).parent / "install_autostart.sh"
+    check("常駐登録の手順を同梱する", _auto.exists(), True)
+    _txt = _auto.read_text(encoding="utf-8") if _auto.exists() else ""
+    check("ログイン時に起動する", "RunAtLoad" in _txt, True)
+    check("落ちても起こし直す", "KeepAlive" in _txt, True)
+
     print("■ 直した内容が自動でDiscordに届くこと")
     # 本人の指摘：「こっちで設定してることとdiscord上の挙動が違う」。
     # 実際に何度も、修正が入る前の版を試して「まだ直ってない」となっていた。

@@ -3102,9 +3102,8 @@ def _get_pending_do(cid):
     return d if d and time.time() - d["t"] < PENDING_DO_SEC else None
 
 
-def _find_video_by_name(name, limit_dirs=(ICLOUD_ROOT, "~/Movies", "~/Downloads",
-                                          "~/Desktop")):
-    """同じ名前の動画をよくある場所から探す（深さは控えめ）。"""
+def _find_video_sync(name, limit_dirs):
+    """同じ名前の動画をよくある場所から探す。"""
     for d in limit_dirs:
         root = Path(os.path.expanduser(d))
         if not root.exists():
@@ -3116,6 +3115,18 @@ def _find_video_by_name(name, limit_dirs=(ICLOUD_ROOT, "~/Movies", "~/Downloads"
         except Exception:  # noqa: BLE001
             continue
     return None
+
+
+async def _find_video_by_name(name, limit_dirs=(ICLOUD_ROOT, "~/Movies",
+                                                "~/Downloads", "~/Desktop")):
+    """同名の動画を探す。iCloud配下は巨大なことがあり、そのまま回すと
+    イベントループを止めてボットが黙り込む。別スレッドに逃がし、
+    時間も区切る（見つからなければ諦めて先へ進む方がよい）。"""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_find_video_sync, name, limit_dirs), timeout=60)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _clip_source(message, content):
@@ -3151,7 +3162,7 @@ async def _download_video(cid, url, dest, kind="youtube"):
         if not src.exists():
             # 名前が合っていれば場所違いのことが多いので、iCloudとホームを探す。
             # 「見つかりません」で終わると、やり取りが何往復も増える。
-            found = _find_video_by_name(src.name)
+            found = await _find_video_by_name(src.name)
             if found:
                 await send_as(orch, cid, f"📁 場所が違ったので探しました: {found}")
                 src = found
