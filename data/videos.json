@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-08-03T00:51:14.019Z",
+  "updatedAt": "2026-08-05T19:53:09.940Z",
   "channelId": "UCK-RAb4PrWVN4EXXPnbJ67w",
   "channelTitle": "ふぞろいの林檎たち",
   "videos": [
@@ -255,17 +255,6 @@
       "year": "2026",
       "url": "https://www.youtube.com/watch?v=4dQnBwL5qXM",
       "thumbnail": "https://i.ytimg.com/vi/4dQnBwL5qXM/hqdefault.jpg"
-    },
-    {
-      "id": "FZcy81vuD80",
-      "title": "いまさら自己紹介ビデオ",
-      "description": "",
-      "publishedAt": "2026-07-03T05:30:58.979Z",
-      "publishedRelative": "4 週間前",
-      "publishedIsApproximate": true,
-      "year": "2026",
-      "url": "https://www.youtube.com/watch?v=FZcy81vuD80",
-      "thumbnail": "https://i.ytimg.com/vi/FZcy81vuD80/hqdefault.jpg"
     }
   ]
 }
