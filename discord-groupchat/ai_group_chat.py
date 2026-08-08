@@ -3055,6 +3055,10 @@ def _ios_files_path(text):
     最後の区切りのあとは「動画の中の◯◯.mp4」のように
     フォルダ名とファイル名が助詞でつながっているので、そこで分ける。"""
     t = _BIDI_RE.sub("", text or "")
+    # iPhoneから貼ると折り返しの改行が入る。「動画\nの中の◯◯.mp4」のまま
+    # 読むとフォルダ名が落ち、実際に一階層ぶん違うパスを組み立てていた。
+    t = re.sub(r"\s*\n\s*", "", t)
+    t = t.replace("▸", "▸").replace("→", "▸").replace(">", "▸")
     m = _IOS_CRUMB_RE.search(t)
     if not m:
         return ""
@@ -3102,6 +3106,21 @@ def _get_pending_do(cid):
     return d if d and time.time() - d["t"] < PENDING_DO_SEC else None
 
 
+async def _spotlight_find(name):
+    """Spotlightで名前から探す（macOSなら一瞬で返る）。
+    全走査は数分かかり、時間切れで見つけられない事故が起きた。"""
+    if not shutil.which("mdfind"):
+        return None
+    ok, out = await _sh(["mdfind", "-name", name], timeout=30)
+    if not ok:
+        return None
+    for line in (out or "").splitlines():
+        hit = Path(line.strip())
+        if hit.name == name and hit.is_file():
+            return hit
+    return None
+
+
 def _find_video_sync(name, limit_dirs):
     """同じ名前の動画をよくある場所から探す。"""
     for d in limit_dirs:
@@ -3123,8 +3142,14 @@ async def _find_video_by_name(name, limit_dirs=(ICLOUD_ROOT, "~/Movies",
     イベントループを止めてボットが黙り込む。別スレッドに逃がし、
     時間も区切る（見つからなければ諦めて先へ進む方がよい）。"""
     try:
+        hit = await _spotlight_find(name)      # まずは一瞬で返る方法
+        if hit:
+            return hit
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         return await asyncio.wait_for(
-            asyncio.to_thread(_find_video_sync, name, limit_dirs), timeout=60)
+            asyncio.to_thread(_find_video_sync, name, limit_dirs), timeout=240)
     except Exception:  # noqa: BLE001
         return None
 

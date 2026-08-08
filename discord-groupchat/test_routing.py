@@ -644,6 +644,21 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 折り返された道順でも階層を落とさない")
+    # 事故：iPhoneから貼ると「動画\nの中の◯◯.mp4」と折り返され、
+    # フォルダ名「動画」が落ちて一階層ぶん違うパスを組み立てていた
+    _want = "com~apple~CloudDocs/マルサヂ/AI/動画/武士道：究極のサバイバル哲学.mp4"
+    for _t in (
+        "iCloud Drive ▸ マルサヂ ▸ AI ▸ 動画\nの中の武士道：究極のサバイバル哲学.mp4という動画をショートにして",
+        "iCloud Drive ▸ マルサヂ ▸ AI ▸ 動画\n→武士道：究極のサバイバル哲学.mp4",
+        "iCloud Drive ▸ マルサヂ ▸ AI ▸ 動画の中の武士道：究極のサバイバル哲学.mp4",
+    ):
+        check(f"{_t[:24]!r}… で階層が揃う",
+              bot._ios_files_path(_t).endswith(_want), True)
+    _srcI = open(bot.__file__, encoding="utf-8").read()
+    check("探索はSpotlightを先に使う", "_spotlight_find" in _srcI, True)
+    check("全走査の待ち時間を伸ばした", "timeout=240" in _srcI, True)
+
     print("■ 動画の渡し方（いちばん簡単な形も受け取る）")
     class _A2:
         def __init__(self, fn, url):
