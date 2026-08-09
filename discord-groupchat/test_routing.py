@@ -667,6 +667,33 @@ def run():
     check("『違う』だけでは作り直しにしない",
           bot.classify_route("デザインの話はしてないよ", **_L4), None)
 
+    print("■ 出来上がりは【本人の依頼】と突き合わせる")
+    # 事故：「この人の鼻を高くしてほしい」＋写真 に対し、英語プロンプトが
+    # 勝手に "a man" と書き、結果（女性＝写真どおり）を
+    # 「依頼の男性と異なる」と警告した。自分の創作を基準に誤判定していた。
+    _srcN = open(bot.__file__, encoding="utf-8").read()
+    check("元の依頼を保持する", "asked = request" in _srcN, True)
+    check("照合に元の依頼を渡す",
+          "_report_result(cid, asked, result" in _srcN, True)
+    check("完了監視でも元の依頼を使う",
+          'job0.get("asked") or job0.get("request"' in _srcN, True)
+    # ジョブ記録に両方入ること
+    import tempfile as _tf12, pathlib as _pl12
+    _keep_f = bot._MOTION_JOB_FILE
+    try:
+        with _tf12.TemporaryDirectory() as _d12:
+            bot._MOTION_JOB_FILE = _pl12.Path(_d12) / "job.json"
+            bot._save_motion_job(1, "A photorealistic portrait of a man",
+                                 asked="この人の鼻を高くしてほしい")
+            _j = bot._load_motion_job()
+            check("英語プロンプトも残す", "photorealistic" in _j["request"], True)
+            check("本人の依頼も残す", _j["asked"], "この人の鼻を高くしてほしい")
+            bot._save_motion_job(1, "犬の動画")
+            check("asked が無ければ依頼で埋める",
+                  bot._load_motion_job()["asked"], "犬の動画")
+    finally:
+        bot._MOTION_JOB_FILE = _keep_f
+
     print("■ 参照画像があるときは被写体を創作しない")
     # 事故：「この人の鼻を高くして」に対し
     # "A photorealistic close-up portrait of a man, ..." と被写体を創作し、

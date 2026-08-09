@@ -4759,10 +4759,14 @@ _MOTION_JOB_FILE = HISTORY_DIR / "pending_motion.json"
 
 
 def _save_motion_job(cid, request, model="kling3_0_motion_control",
-                     media_type="video", label="モーション動画"):
+                     media_type="video", label="モーション動画", asked=""):
+    # asked＝本人が実際に言った依頼。request は機械が作った英語プロンプト。
+    # 出来上がりの照合は asked と突き合わせないと、自分の創作を基準に
+    # 誤判定する（「a man と書いたのに女性だ」）。
     _write_json(_MOTION_JOB_FILE,
                 {"cid": cid, "submitted_at": time.time(),
-                 "request": request[:200], "model": model,
+                 "request": request[:200], "asked": (asked or request)[:200],
+                 "model": model,
                  "media_type": media_type, "label": label}, "gen")
 
 
@@ -5163,6 +5167,10 @@ async def _run_hf_generate(message, request, model, media_type, label,
             "・1本から切り出し等をしたい → リンクを**1本だけ**にして送り直してください"
         )
         return
+    # 出来上がりの照合は【本人の依頼】と突き合わせる。英語プロンプトは
+    # こちらが機械的に作ったものなので、それを基準にすると
+    # 「a man と書いたのに女性だ」のように、自分の創作を根拠に誤判定する。
+    asked = request
     # 添付があれば参照メディアとして渡す（画像・動画）
     refs = [
         a.url for a in message.attachments
@@ -5221,9 +5229,10 @@ async def _run_hf_generate(message, request, model, media_type, label,
         _clear_motion_job()
         _update_last_gen_url(cid, result)
         add_history(cid, "Orchestrator", f"（{disp}で生成した: {result}）")
-        await _report_result(cid, request, result, media_type, f"✅ できました！（{disp}）")
+        await _report_result(cid, asked, result, media_type, f"✅ できました！（{disp}）")
         return
-    _save_motion_job(cid, request, model=chosen, media_type=media_type, label=disp)
+    _save_motion_job(cid, request, model=chosen, media_type=media_type, label=disp,
+                     asked=asked)
     await send_as(
         orch, cid,
         f"⏳ {disp} で生成ジョブを投入しました。完成したらURLを自動投稿します"
@@ -6181,7 +6190,8 @@ async def _watch_motion_job(cid):
             _clear_motion_job()
             _update_last_gen_url(cid, vurl)
             add_history(cid, "Orchestrator", f"（{label}が完成: {vurl}）")
-            await _report_result(cid, job0.get("request", ""), vurl,
+            await _report_result(cid,
+                                 job0.get("asked") or job0.get("request", ""), vurl,
                                  media_type, f"✅ {label}ができました！")
             return
     # 30分たっても完成せず → 記録は残し、後で「できた？」で確認できるようにする
