@@ -644,6 +644,22 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 代打で答えた時に名乗りを変える（別人が混ざって見えないように）")
+    # 事故：クロードが週の上限に達し、Geminiが代わりに書いた返事が
+    # 「クロード2（PM）」名義で、しかも敬語＋箇条書き。同じ相手が急に
+    # 他人行儀になったように見えて会話が噛み合わなくなった。
+    check("代打の名乗りを持つ", bot.GEMINI_STANDIN != bot.CLAUDE2_NAME, True)
+    check("代打と分かる名前", "代打" in bot.GEMINI_STANDIN, True)
+    _n = bot._limit_note("You've hit your weekly limit · resets 12pm (Asia/Tokyo)")
+    check("上限だと伝える", "利用上限" in _n, True)
+    check("いつ戻るかを出す", "12pm" in _n, True)
+    check("理由が分からない時も代打だと言う",
+          "代わりに答えています" in bot._limit_note("timeout"), True)
+    _srcJ = open(bot.__file__, encoding="utf-8").read()
+    check("実際に書いた側で名乗る", '_who = _wrote.get("name")' in _srcJ, True)
+    check("代打の時だけ注記を足す",
+          'if _who == GEMINI_STANDIN:' in _srcJ, True)
+
     print("■ 折り返された道順でも階層を落とさない")
     # 事故：iPhoneから貼ると「動画\nの中の◯◯.mp4」と折り返され、
     # フォルダ名「動画」が落ちて一階層ぶん違うパスを組み立てていた

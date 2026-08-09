@@ -1171,6 +1171,9 @@ async def _reap(proc, timeout=5):
 # 「俺はGeminiじゃなくてクロード」のような混乱が起きるので、コード側で把握して
 # ラベルを付ける。ユーザーが「誰が答えたか」を見分けられるようにするため。
 _last_engine = {"name": ""}
+# 今の返事を実際に書いたのは誰か（_last_engine は裏方の処理に汚されるので別に持つ）
+_wrote = {"name": "", "why": ""}
+GEMINI_STANDIN = "Gemini（クロードの代打）"
 
 
 def _model_args():
@@ -6316,6 +6319,19 @@ async def ask_orchestrator(history):
     return reply or await _orchestrate(mode, lead, search, history, recall)
 
 
+_RESET_RE = re.compile(r"resets?\s+([^\n·]+)", re.I)
+
+
+def _limit_note(why):
+    """代打で答えた理由を一言で。いつ戻るかが分かれば待てる。
+    以前は『⚠️ 応答に失敗』とだけ出て、復帰の見込みが本文に埋もれていた。"""
+    m = _RESET_RE.search(why or "")
+    when = f"（{m.group(1).strip()}ごろ戻ります）" if m else ""
+    if re.search("limit|上限|quota", why or "", re.I):
+        return f"※クロードが利用上限のため、Geminiが代わりに答えています{when}。"
+    return "※クロードが応答できなかったので、Geminiが代わりに答えています。"
+
+
 async def _orchestrate(mode, lead, search, history, recall=False):
     # 必要ならWeb検索して文脈を用意（ボット自身が検索＝権限プロンプト不要）
     ctx = await web_search_context(_latest_user_msg(history)) if search else ""
@@ -6333,12 +6349,18 @@ async def _orchestrate(mode, lead, search, history, recall=False):
     if not _gemini_replies_on():
         mode, lead = "single", "claude"
 
+    # 実際にどちらが書いたかを残す。クロードが枠切れでGeminiに落ちた時、
+    # 文体が変わるのに「クロード2」と名乗っていて、同じ相手が急に
+    # 他人行儀になったように見えていた（噛み合わない一因）。
+    _wrote["name"] = CLAUDE2_NAME
+
     # ① 単発モード：簡単な要求は得意モデル1つで即答（コスト節約）
     if mode == "single":
         if lead == "gemini":
             try:
                 ans = await _gemini_call(_answer_prompt(ORCH_PERSONA, history, ctx))
                 if (ans or "").strip():
+                    _wrote["name"] = "Gemini"
                     return ans
                 # 安全フィルタ等で本文が空 → 無言にせずClaudeで答え直す
                 print("[orchestrate] Geminiが空応答 → Claudeへ")
@@ -6349,6 +6371,8 @@ async def _orchestrate(mode, lead, search, history, recall=False):
         except Exception as e:  # noqa: BLE001
             # Claudeがタイムアウト・上限などで落ちたらGeminiで応答（無応答を防ぐ）
             print(f"[orchestrate] Claude失敗 → Geminiへ: {str(e)[:150]}")
+            _wrote["name"] = GEMINI_STANDIN
+            _wrote["why"] = str(e)[:200]
             try:
                 return await _gemini_call(_answer_prompt(ORCH_PERSONA, history, ctx))
             except Exception as e2:  # noqa: BLE001
@@ -6639,9 +6663,13 @@ async def _handle_orchestrator(message, cid):
     # 出す声はオーケストレーターひとつなので、誰が書いたかで混乱しない。
     answer, reviewed = await _review_reply(answer, history)
     answer = _drop_false_progress(answer, cid)
+    # 実際に書いたのが誰かで名乗る。クロードが枠切れでGeminiが代打に入ると
+    # 文体が変わるので、「クロード2」と名乗ったままだと別人が混ざって見える。
+    _who = _wrote.get("name") or CLAUDE2_NAME
+    if _who == GEMINI_STANDIN:
+        answer += ("\n\n" + _limit_note(_wrote.get("why", "")))
     add_history(cid, "Orchestrator", answer)
-    await send_as(orch, cid, _with_speaker(
-        answer, CLAUDE2_NAME))
+    await send_as(orch, cid, _with_speaker(answer, _who))
 
 
 # ---------- 送信・進行 ----------
