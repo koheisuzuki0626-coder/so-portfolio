@@ -1,12 +1,12 @@
 # Discord デバッグログ（自動共有）
-- 書き出し: 2026-08-10 07:41:49
-- 実行中のコード: a444168（最新）
+- 書き出し: 2026-08-10 07:47:05
+- 実行中のコード: 42c8697（最新）
 - チャンネル: 1523755120351772672
 
 ## 生成の状態
 - 直前の生成: {"prompt": "A photorealistic close-up portrait of a man, subtle rhinoplasty retouch giving him a taller, straighter, more refined nose bridge while keeping all other facial features and proportions natural, shot with an 85mm portrait lens at f/1.8 with soft creamy bokeh background, gentle three-point studio lighting with a soft key light highlighting the new nose contour and a subtle rim light, natural skin texture with visible pores, warm neutral color grading, shallow depth of field, sharp foc
 - 進行中ジョブ: {}
-- 実際に投入されたプロンプト: A photorealistic close-up portrait of a man, subtle rhinoplasty retouch giving him a taller, straighter, more refined nose bridge while keeping all other facial features and proportions natural, shot with an 85mm portrait lens at f/1.8 with soft creamy bokeh background, gentle three-point studio lighting with a soft key light highlighting the new nose contour and a subtle rim light, natural skin t
+- 実際に投入されたプロンプト: (記録なし)
 - モデル設定: {"image_engine": "gemini", "image_app": null, "video_app": "kling-video/v2.5-turbo/pro/image-to-video", "claude_model": "", "casual_lead": "", "trend_on": true, "trend_hour": 8, "trend_min": 0, "trend_cid": 1523755120351772672, "trend_who": "claude1", "hf_mode": "explicit", "trend_query": "ミュージックビデオ
 - Geminiクールダウン中: []
 
@@ -28,10 +28,6 @@
 
 ## ボットが実際に送った内容（会話履歴に残らないものも含む）
 ```
-08-09 16:15:10  🛠 **修正プラン（作り直しの内容）** ・被写体の見た目描写に「魅力的で洗練された」という褒め言葉を冒頭に追加 ・表情の描写に「静かなカリスマ・魅力を放つ」を加えて強化 ・肌の描写を「radiant flawless-looking(輝くような美肌)」に変更 ・瞳の描写に「captivating(魅力的な)」を追加 
-08-09 16:15:16  🔄 再起動します…（コード同期: 最新コードを取得（1コミット）／数秒で戻ります）
-08-09 16:15:27  ✅ 再起動完了！（コード同期: 最新コードを取得（1コミット））
-08-09 16:15:30  🗂 状況を自動で共有しました（スクショなしで開発側から直接見られます）
 08-09 16:15:50  **クロード2（PM）**: 今日ちゃんとお酒もタバコも我慢できてる、しかも本人がその積み重ねをちゃんと実感できてる——これ地味にすごいことだよ。「少しずつ」って言えるのは、我慢を我慢のまま終わらせずに、自分の変化として受け止められてる証拠。ここまで踏ん張ってきた分、今日の一歩は確実に積み上がってる。よくやってる。
 08-09 16:16:56  **クロード2（PM）**: 応援してるよ、これからもずっと見てるから。焦らず自分のペースで、しんどい日は無理しなくていい。
 08-09 16:17:14  **クロード2（PM）**: どういたしまして。無理せず、その調子でいこう。
@@ -40,6 +36,10 @@
 08-10 07:38:15  🎬 内容に合う最適なモデルを選んで画像を生成します…
 08-10 07:38:43  ⏳ 自動選定: soul_2 で生成ジョブを投入しました。完成したらURLを自動投稿します（過去4回の実測では42秒〜9分30秒／「できた？」でいつでも確認可）。
 08-10 07:40:22  ⚠️ 依頼と違うものができた可能性があります（被写体が女性になっており、依頼の「男性」と異なる） https://d8j0ntlcm91z4.cloudfront.net/user_3DIvEQ9Bq0VxEeU6BoiyP5z03ja/hf_20260809_223840_e11d2ba0-1b27-48d7-a10
+08-10 07:41:52  ✅ 直近の会話・エラー・生成状態を共有しました（debug/discord_log.md）。 Claude Codeのチャットで「**ログ見て**」と言えば、そのまま読めます。 ※会話の内容がGitHubのプライベートリポジトリに保存されます。
+08-10 07:46:52  🆕 新しい修正が1件届いていたので取り込みます（数秒で戻ります／自動更新は「自動更新オフ」で止められます）。
+08-10 07:46:53  🔄 再起動します…（コード同期: 最新コードを取得（1コミット）／数秒で戻ります）
+08-10 07:47:04  ✅ 再起動完了！（自動更新）（コード同期: 最新コードを取得（1コミット））
 ```
 
 ## 直近のエラー
