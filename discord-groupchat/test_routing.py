@@ -644,6 +644,31 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 毎日のリサーチのジャンルを変えられること")
+    for _t, _want in (
+        ("リサーチはアート系にして", ("set", "アート系")),
+        ("毎日のリサーチのジャンルをスタイリッシュな映像にして",
+         ("set", "スタイリッシュな映像")),
+        ("リサーチをショート動画の演出に絞って", ("set", "ショート動画の演出")),
+        ("リサーチを急上昇に戻して", ("reset", "")),
+        ("ジャンル指定を解除して", ("reset", "")),
+    ):
+        check(f"{_t[:22]!r}… → {_want}", bot._match_trend_genre(_t), _want)
+    # 時刻・担当・オンオフはそれぞれの担当が拾うので、ジャンルにしない
+    for _t in ("毎日7時にリサーチして", "リサーチするのはクロード1にして",
+               "毎日のリサーチやめて", "自動リサーチいつやってる？",
+               "卵スープのレシピ教えて", "ジャンルの話をしてた"):
+        check(f"{_t!r} はジャンル設定にしない", bot._match_trend_genre(_t), None)
+    _srcK = open(bot.__file__, encoding="utf-8").read()
+    check("毎日の実行にジャンルを渡す",
+          'gen_settings.get("trend_query") or None' in _srcK, True)
+    check("毎日の実行では分析済みを飛ばす",
+          "skip_analyzed=True" in _srcK, True)
+    check("お題指定でも飛ばすかを選べる",
+          "def _run_trend_study(cid, query=None, skip_analyzed=None)" in _srcK
+          or "async def _run_trend_study(cid, query=None, skip_analyzed=None)" in _srcK,
+          True)
+
     print("■ 代打で答えた時に名乗りを変える（別人が混ざって見えないように）")
     # 事故：クロードが週の上限に達し、Geminiが代わりに書いた返事が
     # 「クロード2（PM）」名義で、しかも敬語＋箇条書き。同じ相手が急に

@@ -3532,7 +3532,7 @@ async def _apply_youtube_context(message, content):
     return content, bare_link
 
 
-async def _run_trend_study(cid, query=None):
+async def _run_trend_study(cid, query=None, skip_analyzed=None):
     """YouTube動画のリサーチ。query なし＝急上昇TOP100 / query あり＝そのお題で
     検索した人気動画。上位数本を視聴・分析 → レポート保存＆ダイジェスト投稿。"""
     channel = orch.get_channel(cid) or await orch.fetch_channel(cid)
@@ -3548,7 +3548,11 @@ async def _run_trend_study(cid, query=None):
 
     # 視聴対象：長すぎない動画を上位から選ぶ。急上昇モードは分析済みをスキップして
     # 毎日知見を蓄積、お題指定モードは目的優先で分析済みも対象にする。
-    analyzed = set() if query else _load_analyzed_ids()
+    # 毎日回す時は、前に見た動画を飛ばして知見を貯める。
+    # その場限りのお題指定では、目的優先で分析済みも対象にする。
+    if skip_analyzed is None:
+        skip_analyzed = not query
+    analyzed = _load_analyzed_ids() if skip_analyzed else set()
     candidates = [
         v for v in videos
         if v["id"] not in analyzed and 0 < v["duration"] <= TREND_MAX_MINUTES * 60
@@ -3777,6 +3781,40 @@ def _parse_jst_hour(text):
     return h, mi
 
 
+# 毎日のリサーチで何を見るか。空＝急上昇TOP100（既定）。
+_TREND_GENRE_RESET_RE = re.compile(
+    "急上昇(に|へ)?(戻|もど)|全部(に|へ)?(戻|もど)|ジャンル(の)?(指定)?(を)?"
+    "(外|はず|解除|やめ|なし)|絞(ら|り)(ない|なし|込まない)")
+# 「リサーチは◯◯にして」から ◯◯ を取り出す
+_TREND_GENRE_SET_RE = re.compile(
+    r"(?:毎日の|自動)?(?:リサーチ|調査|トレンド)"
+    r"(?:の(?:ジャンル|テーマ|内容|対象|条件))?\s*(?:は|を)\s*"
+    r"(.{1,40}?)\s*(?:に|で)?\s*"
+    r"(?:して|してほしい|絞って|しぼって|変えて|かえて|限定|にして)\s*[。、!！]?$"
+)
+
+
+def _match_trend_genre(text):
+    """毎日のリサーチのジャンル指定を読む。
+    ("set", お題) / ("reset", "") / None を返す。"""
+    t = (text or "").strip()
+    on_topic = bool(re.search("リサーチ|調査|トレンド|急上昇", t))
+    # 「ジャンル指定を解除して」のように、解除の言い方だけで通じる場合もある
+    if _TREND_GENRE_RESET_RE.search(t) and (on_topic or "ジャンル" in t):
+        return "reset", ""
+    if not on_topic:
+        return None
+    m = _TREND_GENRE_SET_RE.search(t)
+    if not m:
+        return None
+    genre = m.group(1).strip(" 　の,、")
+    # 時刻・担当・オンオフの指定はそれぞれ別の担当があるので、ここでは扱わない
+    if not genre or _parse_jst_hour(genre) or re.search(
+            "クロード|オン|オフ|停止|やめ|毎日|時$", genre):
+        return None
+    return "set", genre[:40]
+
+
 def _match_trend_schedule(text, recent_topic=False):
     """毎日の自動リサーチの設定変更を読む。
     返り値: ("on", 時, 分) / ("off", 0, 0) / ("ask", 0, 0) / ("who", 0, 0) / None
@@ -3826,9 +3864,14 @@ async def _daily_trend_loop():
             await send_as(
                 orch, cid,
                 f"📊 毎日の自動リサーチ（{now.strftime('%m/%d %H:%M')}）"
-                f"：{_wname}がYouTube急上昇TOP100を見てきます…"
+                f"：{_wname}が"
+                + (f"「{gen_settings['trend_query']}」で伸びている動画"
+                   if gen_settings.get("trend_query") else "YouTube急上昇TOP100")
+                + "を見てきます…"
             )
-            _spawn(_run_trend_study(cid), cid, "YouTubeリサーチ")
+            _spawn(_run_trend_study(cid, gen_settings.get("trend_query") or None,
+                                    skip_analyzed=True),
+                   cid, "YouTubeリサーチ")
         except Exception as e:  # noqa: BLE001
             print(f"[trend] 自動リサーチ失敗: {str(e)[:300]}")
 
@@ -8131,6 +8174,30 @@ async def _dispatch_message(message):
                 "別の作業なら「◯◯して」と一言で言ってもらえれば、そこから始めます。"
             )
             return
+
+    _tg = _match_trend_genre(content)
+    if _tg is not None:
+        _fired(cid, "リサーチのジャンル設定", content)
+        add_history(cid, message.author.display_name, content)
+        _act, _genre = _tg
+        if _act == "reset":
+            gen_settings["trend_query"] = ""
+            _save_gen_settings()
+            await message.channel.send(
+                "🔎 毎日のリサーチを**急上昇TOP100**（日本）に戻しました。"
+            )
+            return
+        gen_settings["trend_query"] = _genre
+        _save_gen_settings()
+        _on, _h, _m, _ = _trend_conf()
+        await message.channel.send(
+            f"🔎 毎日のリサーチを「**{_genre}**」で伸びている動画に変えました"
+            + (f"（毎日 {_h}:{_m:02d}）。\n" if _on else "（いまは停止中）。\n")
+            + "・直近90日の動画をこのお題で検索し、再生数の多い順に見ます\n"
+            "・前に分析した動画は飛ばすので、日を追うごとに知見が貯まります\n"
+            "・急上昇に戻すなら「**リサーチを急上昇に戻して**」"
+        )
+        return
 
     _trd = _match_trend_schedule(
         content, recent_topic=time.time() - _trend_talk.get(cid, 0) < 900)
