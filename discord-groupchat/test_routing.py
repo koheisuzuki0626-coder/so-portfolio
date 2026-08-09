@@ -667,6 +667,34 @@ def run():
     check("『違う』だけでは作り直しにしない",
           bot.classify_route("デザインの話はしてないよ", **_L4), None)
 
+    print("■ 参照画像があるときは被写体を創作しない")
+    # 事故：「この人の鼻を高くして」に対し
+    # "A photorealistic close-up portrait of a man, ..." と被写体を創作し、
+    # 出てきたのは女性だった。人物の描写が参照より強く効いてしまう。
+    import asyncio as _aio11
+    _keep_bg = bot._ai_text_bg
+    _seen = {}
+
+    async def _spy(prompt, tag="x"):
+        _seen["p"] = prompt
+        return "photorealistic portrait, 85mm lens"
+    try:
+        bot._ai_text_bg = _spy
+        _aio11.run(bot._refine_prompt("この人の鼻を高くして", "image", has_ref=True))
+        check("参照を指すよう指示する", "reference image" in _seen["p"], True)
+        check("見た目を描写させない", "描写してはいけない" in _seen["p"], True)
+        check("性別・年齢も禁止に含む", "性別" in _seen["p"], True)
+        _aio11.run(bot._refine_prompt("猫の画像", "image", has_ref=False))
+        check("参照が無ければ従来どおり描写させる",
+              "被写体・構図" in _seen["p"], True)
+        check("参照なしでは参照の指示を出さない",
+              "reference image" in _seen["p"], False)
+    finally:
+        bot._ai_text_bg = _keep_bg
+    _srcM = open(bot.__file__, encoding="utf-8").read()
+    check("生成側から参照の有無を渡す",
+          "has_ref=bool(refs)" in _srcM, True)
+
     print("■ 指している相手が分からないまま生成しない")
     # 事故：「この人の鼻を高くしてほしい」で参照画像が無く、汎用の
     # 「a man」で生成 → 出てきたのは女性。クレジットだけ消えた。
