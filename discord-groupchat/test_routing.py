@@ -644,6 +644,28 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 日常の『もっと〜て』を作り直しにしない")
+    # 事故：「今日はお酒我慢できてる！」→「もっと褒めて笑」が、4日前の
+    # 人物画像の作り直しと判定され、『肌・髪の描写に艶やかで美しい的な
+    # 賛辞を追加』という修正プランが出た。褒めてほしかっただけだった。
+    _L3 = {"has_last_gen": True}
+    for _t in ("もっと褒めて笑", "もっと褒めて", "もっと詳しく教えて",
+               "決めておいて", "まとめて送って", "そろそろやめておく"):
+        check(f"{_t!r} は作り直しにしない", bot.classify_route(_t), None)
+        check(f"{_t!r} は生成直後でも作り直しにしない",
+              bot.classify_route(_t, **_L3), None)
+    # 直前の生成があるときの手直しは従来どおり
+    for _t in ("もうちょい明るくして", "もう少し可愛い感じにして", "もっと短くして"):
+        check(f"{_t!r} は生成があれば手直し",
+              bot.classify_route(_t, **_L3) in ("revise", "edit", "design"), True)
+    # はっきり作り直しと分かる言い方は、記録が無くても通す
+    for _t in ("さっきのやつ作り直して", "もう一回お願い", "いまいちだからやり直して"):
+        check(f"{_t!r} は記録が無くても作り直し", bot.classify_route(_t), "revise")
+    # 曖昧な言い方は、直前の生成が無ければ通さない
+    check("曖昧な言い方は生成が要る", bot._looks_revise("もうちょい明るくして", False), False)
+    check("はっきりした言い方は生成が無くても通る",
+          bot._looks_revise("作り直して", False), True)
+
     print("■ 毎日のリサーチのジャンルを変えられること")
     for _t, _want in (
         ("リサーチはアート系にして", ("set", "アート系")),

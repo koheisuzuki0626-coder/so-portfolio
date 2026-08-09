@@ -5237,18 +5237,26 @@ _REVISE_WEAK_RE = re.compile(
     "さっきの(動画|画像|映像|やつ|の)|前の(動画|画像|映像|やつ)|"
     "少し変えて|ちょっと変えて|もうちょい|もうちょっと|もう少し|もっと"
 )
+# 「めて」は褒めて・決めて・まとめて・やめて…と当たりが広すぎた。
+# 「もっと褒めて笑」が画像の作り直しになった原因のひとつ。
 _CHANGE_VERB_RE = re.compile(
-    "して|しろ|変えて|かえて|直して|なおして|くして|にして|めて|"
+    "して|しろ|変えて|かえて|直して|なおして|くして|にして|"
     "してほしい|して欲しい|できる\?|できる？"
 )
 
 
 def _looks_revise(content, has_last_gen=True):
     """『前の生成を作り直したい』発言か。
-    has_last_gen=False（直前の生成が無い）なら、『足して』系は対象外にする。"""
+    はっきり作り直しと分かる言い方（作り直して・もう一回）だけは、
+    記録が無くてもHiggsfieldから前のプロンプトを回収できるので通す。
+    それ以外の曖昧な言い方は【直前の生成がある時だけ】。
+    事故：「もっと褒めて笑」が4日前の人物画像の作り直しになり、
+    『肌・髪の描写に艶やかで美しい的な賛辞を追加』という修正プランが出た。"""
     if _REVISE_STRONG_RE.search(content):
         return True
-    if has_last_gen and _REVISE_ADD_RE.search(content):
+    if not has_last_gen:
+        return False
+    if _REVISE_ADD_RE.search(content):
         return True
     return bool(_REVISE_WEAK_RE.search(content) and _CHANGE_VERB_RE.search(content))
 
