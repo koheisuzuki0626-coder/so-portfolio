@@ -4858,6 +4858,29 @@ async def _mcp_motion_control(image_url, video_url, request):
     return _extract_video_url(out) or True
 
 
+# Higgsfieldの成果物URLには hf_YYYYMMDD_HHMMSS が入る。
+# これを見れば「今回のものか」を機械的に判定できる。
+# プロンプトで「これより前は対象外」と伝えるだけでは守られず、
+# 実際に【6日前】の画像が「できました！」として出てきた。
+_HF_STAMP_RE = re.compile(r"hf_(\d{8})_(\d{6})")
+
+
+def _url_is_stale(url, since, slack_sec=600):
+    """URLに埋まった生成日時が、投入時刻より前なら True（今回のものではない）。
+    日時が読めない時は False（判定できないものは止めない）。"""
+    if not url or not since:
+        return False
+    m = _HF_STAMP_RE.search(url)
+    if not m:
+        return False
+    try:
+        made = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+        made = made.replace(tzinfo=timezone.utc).timestamp()
+    except Exception:  # noqa: BLE001
+        return False
+    return made < since - slack_sec
+
+
 async def _mcp_gen_status(media_type="video", model=None, since=None):
     """生成ジョブの完了確認（1回）。完了ならURL、処理中ならNone。全モデル共通。
     since（投入時刻）を渡すと、それより古い生成は今回のものではないとして無視する。
@@ -6182,6 +6205,10 @@ async def _watch_motion_job(cid):
             _clear_motion_job()
             await send_as(orch, cid, f"⚠️ 生成が失敗しました: {str(e)[:250]}")
             return
+        if vurl and _url_is_stale(vurl, token):
+            # 前の生成が履歴の先頭に残っているだけ。今回の完成ではない。
+            print(f"[gen] 古い生成を無視して待機継続: {vurl[-40:]}")
+            vurl = None
         if vurl:
             # 投入から完成までが本当の所要時間。ここで測ったものだけを
             # 次回以降の見積もりに使う（投入だけの数十秒を使うと嘘になる）
@@ -6874,7 +6901,10 @@ _PROGRESS_START_RE = re.compile(
     "処理に入る|処理を始め|処理進め|処理を進め|作業を始め|作業に入る|"
     "取りかかる|取り掛かる|始めるね|始めるよ|やっておく|やっとく|進めておく|"
     "処理が終わ|作業中|実行中|走らせて|動かして(る|いる)|生成して(る|いる)|"
-    "切り出して(る|いる)|作って(る|いる)"
+    "切り出して(る|いる)|作って(る|いる)|"
+    # 事故：何も動いていないのに「作り直すね。投げるから、ちょっと待ってて」
+    "作り直すね|作り直すよ|やり直すね|投げる|投入する|流しておく|"
+    "待ってて|待っててね|少し待って|しばらく待って"
 )
 # 「終わったら知らせる」と読める言い方（間に語が挟まっても拾う）。
 _NOTIFY_LATER_RE = re.compile(

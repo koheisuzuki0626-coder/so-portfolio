@@ -667,6 +667,41 @@ def run():
     check("『違う』だけでは作り直しにしない",
           bot.classify_route("デザインの話はしてないよ", **_L4), None)
 
+    print("■ 古い生成を『できました』と出さない（コード側で弾く）")
+    # 事故：08-10に投入したジョブの結果として、6日前(08-04)の画像URLが
+    # 「✅ できました！」で出てきた。プロンプトで「これより前は対象外」と
+    # 伝えるだけでは守られなかったので、URLの日時で機械的に判定する。
+    import time as _tm13
+    _now = _tm13.time()
+    check("6日前の生成は今回のものではない",
+          bot._url_is_stale("https://x/hf_20260804_201331_c161.png", _now), True)
+    check("さっきの生成は通す",
+          bot._url_is_stale("https://x/hf_20260810_075317_abcd.png", _now), False)
+    check("日時が読めなければ止めない",
+          bot._url_is_stale("https://x/plain.png", _now), False)
+    check("投入時刻が無ければ止めない",
+          bot._url_is_stale("https://x/hf_20260804_201331_c161.png", None), False)
+    _srcO = open(bot.__file__, encoding="utf-8").read()
+    check("監視側で弾く", "_url_is_stale(vurl, token)" in _srcO, True)
+
+    print("■ 『作り直すね、待ってて』も作り話として落とす")
+    # 事故：何も動いていないのに「作り直すね。ヒッグスフィールドに投げるから、
+    # ちょっと待ってて」と言い、実際には何も始まっていなかった
+    _keep_b2, _keep_j2 = bot._busy_tasks, bot._load_motion_job
+    try:
+        bot._busy_tasks = lambda cid: []
+        bot._load_motion_job = lambda: None
+        for _t in ("了解、作り直すね。ヒッグスフィールドに投げるから、ちょっと待ってて。",
+                   "やり直すね。少し待ってて。",
+                   "いま投入するから待っててね。"):
+            _o = bot._drop_false_progress(_t, 1)
+            check(f"{_t[:16]!r}… は言わせない", _o != _t, True)
+            check(f"{_t[:16]!r}… 動いていないと明記", "動かしていない" in _o, True)
+        check("普通の会話は触らない",
+              bot._drop_false_progress("今日はいい天気だね。", 1), "今日はいい天気だね。")
+    finally:
+        bot._busy_tasks, bot._load_motion_job = _keep_b2, _keep_j2
+
     print("■ 出来上がりは【本人の依頼】と突き合わせる")
     # 事故：「この人の鼻を高くしてほしい」＋写真 に対し、英語プロンプトが
     # 勝手に "a man" と書き、結果（女性＝写真どおり）を
