@@ -4016,7 +4016,11 @@ _STATUS_KW_RE = re.compile(
     # 「12:50に上限がリセットされて〜」と作り話をする事故が起きた
     "いつでき|いつ出来|いつ終わ|いつ仕上が|いつ届く|何時に終わ|"
     "見れる|見せて|見たい|"
-    "url|ＵＲＬ|どこ|ある\\?|ある？|ちょうだい|ください|"
+    # 「ください」は依頼形そのもので、進捗の語ではない。
+    # 「鼻の高さだけ変えてあとは顔のパーツに合わせてください」が
+    # 進捗確認になり、直しの指示が消えた。URLを求める言い方だけ拾う。
+    "url|ＵＲＬ|どこ|ある\\?|ある？|ちょうだい|"
+    "(送っ|見せ|出し|貼っ|上げ)て(ください|下さい)|"
     "あとどれ|どれくらい|どのくらい|どれぐらい|どのぐらい|何分|確認して", re.I
 )
 # ユーザー自身が「できた／うまくいった」と報告・お礼を言っている発言。
@@ -4394,8 +4398,13 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     #     「前の動画のこと覚えてる？」のような質問では発動しない
     # 「〜してくれる？」は問いかけの形をした依頼なので、?で終わっても通す。
     # これが無いと「武将も追記してくれる？」が会話に落ちて何も起きなかった。
+    # 出来上がりへの不満＋直しの指示は、丁寧形でも疑問形でも作り直し。
+    # 「顔が違うので、鼻の高さだけ変えて…ください」が進捗確認に化けていた。
+    _fix_now = bool(_RESULT_COMPLAINT_RE.search(content)
+                    and _CHANGE_VERB_RE.search(content))
     if (not has_attachments and _looks_revise(content, has_last_gen)
-            and (not _looks_like_question(content) or _wants_action(content))):
+            and (_fix_now or not _looks_like_question(content)
+                 or _wants_action(content))):
         # 作り直しでも「誰に作らせるか」の指定が最優先。
         # 「クロードで作り直して」を作風の指定と読んで Higgsfield に投げ、
         # 「Claude.ai風デザイン」の画像を生成してしまう事故が起きた。
@@ -5112,6 +5121,15 @@ async def _refine_prompt(request, media_type, style=""):
         return request
 
 
+# 「この人」「これ」など、手元の何かを指している言い方。
+# 指しているのに参照画像が無ければ、作る前に写真をもらう。
+_POINTS_AT_RE = re.compile(
+    "この人|この方|こいつ|この子|この写真|この画像|この動画|"
+    "これ(を|の|に|と|で)|さっきの(写真|画像|人)|"
+    "俺の|私の|わたしの|自分の(顔|写真|画像)"
+)
+
+
 async def _run_hf_generate(message, request, model, media_type, label,
                            aspect_ratio=None, refine=True):
     """Higgsfieldで生成→投入→完了監視→URL自動投稿（モーションと同じ堅牢さ）。
@@ -5144,6 +5162,19 @@ async def _run_hf_generate(message, request, model, media_type, label,
         if _prev_ref:
             refs = [_prev_ref]
             await send_as(orch, cid, "🖼 直前に送られた画像を参照として使います。")
+    # 「この人の鼻を高くして」のように誰か・何かを指しているのに参照が無いと、
+    # 別人が出来上がる。実際に「男性」の依頼で女性の画像が出て、
+    # クレジットだけ消えた。作る前に写真をもらう。
+    if not refs and _POINTS_AT_RE.search(request):
+        await send_as(
+            orch, cid,
+            "⚠️ 「この人」「これ」と言われていますが、**参照する画像がありません**"
+            "（直前に送られた画像も見当たりません）。\n"
+            "元になる写真をこのチャンネルに送ってから、もう一度言ってください。"
+            "このまま作ると別人ができて、クレジットだけ消えてしまいます。"
+        )
+        _set_pending_do(cid, "元になる写真", request)
+        return
     kind = "動画" if media_type == "video" else "画像"
     if refine:
         refined = await _refine_prompt(request, media_type)
@@ -5245,6 +5276,13 @@ _CHANGE_VERB_RE = re.compile(
 )
 
 
+# 出来上がりが違う、という訴え。直しの指示とセットで作り直しになる。
+_RESULT_COMPLAINT_RE = re.compile(
+    "違う|ちがう|別人|イメージと|思ってたのと|想像と|そうじゃな|"
+    "似てな|なってない|おかしい"
+)
+
+
 def _looks_revise(content, has_last_gen=True):
     """『前の生成を作り直したい』発言か。
     はっきり作り直しと分かる言い方（作り直して・もう一回）だけは、
@@ -5257,6 +5295,10 @@ def _looks_revise(content, has_last_gen=True):
     if not has_last_gen:
         return False
     if _REVISE_ADD_RE.search(content):
+        return True
+    # 「顔が違うので、鼻の高さだけ変えて…」のような、出来上がりへの
+    # 不満＋直しの指示。以前は進捗確認に化けて指示が消えていた。
+    if _RESULT_COMPLAINT_RE.search(content) and _CHANGE_VERB_RE.search(content):
         return True
     return bool(_REVISE_WEAK_RE.search(content) and _CHANGE_VERB_RE.search(content))
 

@@ -644,6 +644,43 @@ def run():
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
 
+    print("■ 直しの指示が進捗確認に化けないこと")
+    # 事故：「顔が違うので、鼻の高さだけ変えてあとは顔のパーツに合わせてください」が
+    # 進捗確認になり、直しの指示が消えた。原因は「ください」を進捗の語に
+    # 入れていたこと（〜してくださいは依頼形そのもの）。
+    _L4 = {"has_last_gen": True}
+    check("丁寧形の直し指示は作り直しへ",
+          bot.classify_route("顔が違うので、鼻の高さだけ変えてあとは顔のパーツに合わせてください",
+                             **_L4), "revise")
+    check("直前の生成が無ければ会話のまま",
+          bot.classify_route("顔が違うので、鼻の高さだけ変えてあとは顔のパーツに合わせてください"),
+          None)
+    for _t in ("猫の画像を作ってください", "もっと明るくしてください"):
+        check(f"{_t!r} は進捗確認にしない",
+              bot.classify_route(_t, **_L4) == "status", False)
+    # 結果を求める言い方は従来どおり進捗確認
+    for _t in ("送ってください", "URL見せてください", "できた？", "あとどれくらい？"):
+        check(f"{_t!r} は進捗確認", bot.classify_route(_t, **_L4), "status")
+    # 出来上がりへの不満＋直しの指示
+    check("『違う』＋直しで作り直しへ",
+          bot._looks_revise("顔が違うので鼻を変えて", True), True)
+    check("『違う』だけでは作り直しにしない",
+          bot.classify_route("デザインの話はしてないよ", **_L4), None)
+
+    print("■ 指している相手が分からないまま生成しない")
+    # 事故：「この人の鼻を高くしてほしい」で参照画像が無く、汎用の
+    # 「a man」で生成 → 出てきたのは女性。クレジットだけ消えた。
+    for _t in ("この人の鼻を高くしてほしい", "これを縦にして", "俺の顔を若くして",
+               "この写真をアニメ風に"):
+        check(f"{_t!r} は何かを指している", bool(bot._POINTS_AT_RE.search(_t)), True)
+    for _t in ("猫の画像を作って", "夕暮れの海の動画", "バズる動画作って"):
+        check(f"{_t!r} は指していない", bool(bot._POINTS_AT_RE.search(_t)), False)
+    _srcL = open(bot.__file__, encoding="utf-8").read()
+    check("参照が無ければ作る前に止める",
+          "参照する画像がありません" in _srcL, True)
+    check("何が足りないかを覚える",
+          '_set_pending_do(cid, "元になる写真"' in _srcL, True)
+
     print("■ 日常の『もっと〜て』を作り直しにしない")
     # 事故：「今日はお酒我慢できてる！」→「もっと褒めて笑」が、4日前の
     # 人物画像の作り直しと判定され、『肌・髪の描写に艶やかで美しい的な
