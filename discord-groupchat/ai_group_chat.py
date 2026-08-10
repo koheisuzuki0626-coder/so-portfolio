@@ -4156,6 +4156,47 @@ def _has_subject(text):
     return len(_strip_engine_words(text)) >= 2
 
 
+# 直近に頼まれた媒体（画像か動画か）。cid -> ("image"|"video", 時刻)
+# 事故：「画像で生成して」→「ヒッグスフィールドでやって」と続けた時、
+# 後の発言に媒体の語が無いので既定の動画になり、seedance で .mp4 が出た。
+# 直前に画像を頼まれていたなら画像のままにする。
+_last_media = {}
+MEDIA_KEEP_SEC = 3600
+_IMAGE_WORD_RE = re.compile("画像|イラスト|ロゴ|絵|写真|アイコン|サムネ|静止画")
+_VIDEO_WORD_RE = re.compile("動画|映像|ムービー|クリップ|ショート")
+_NOT_THAT_RE = "(じゃなくて|ではなく|でなく|じゃなく|ではない|じゃない)"
+
+
+def _said_media(text):
+    """発言が媒体をはっきり指しているか。指していなければ None。
+    「動画の生成じゃなくて画像の生成にして」は【画像】。打ち消しを先に見る。"""
+    t = text or ""
+    # 「動画の生成じゃなくて画像の生成にして」のように、語と打ち消しの間に
+    # 「の生成」が挟まる。間を許して見る。
+    if re.search(f"(動画|映像|ムービー)[^。、]{{0,6}}{_NOT_THAT_RE}", t):
+        return "image"
+    if re.search(f"(画像|静止画|写真)[^。、]{{0,6}}{_NOT_THAT_RE}", t):
+        return "video"
+    has_i, has_v = _IMAGE_WORD_RE.search(t), _VIDEO_WORD_RE.search(t)
+    if has_i and not has_v:
+        return "image"
+    if has_v and not has_i:
+        return "video"
+    return None
+
+
+def _remember_media(cid, mtype):
+    if mtype in ("image", "video"):
+        _last_media[cid] = (mtype, time.time())
+
+
+def _recent_media(cid):
+    v = _last_media.get(cid)
+    if v and time.time() - v[1] <= MEDIA_KEEP_SEC:
+        return v[0]
+    return None
+
+
 # 直近に送られた画像（cid -> (url, 時刻)）。写真を送った次の発言で
 # 「これで作って」と言われた時に、参照として引き継ぐために持つ。
 _last_ref = {}
@@ -4774,6 +4815,7 @@ async def _handle_image_request(cid, request, refine=True):
     日本語の会話文はそのまま渡すと『全然違う画像』になるため、必ず英語の
     描写プロンプトに変換してから生成し、使ったプロンプトも見せる（動画と同じ扱い）。"""
     original = request
+    _remember_media(cid, "image")
     if refine:
         refined = await _refine_prompt(request, "image")
         if refined and refined != request:
@@ -5201,6 +5243,38 @@ def _looks_english_prompt(text):
     return jp <= 2
 
 
+# 道具の名前が題材として絵に描かれてしまうのを防ぐ。
+# 事故：「ヒッグスフィールドで画像生成して」が Higgs field（物理）と解釈され、
+# 背景が宇宙・エネルギー粒子だらけの画像になった。ユーザーは
+# 「背景が宇宙になってる」と何度も直しを頼むことになった。
+_TOOL_IN_PROMPT_RE = re.compile("higgs|boson|particle\\s*physics", re.I)
+# 本当に素粒子の絵が欲しい時（この語があれば題材として扱う）
+_REALLY_PHYSICS_RE = re.compile("素粒子|物理|ヒッグス粒子|加速器|宇宙|銀河|星雲")
+
+
+def _drop_tool_words(request):
+    """依頼文から作り手（ヒッグスフィールド/クロード/Gemini）の指定を落とす。
+    残すと英語プロンプトに翻訳され、絵の題材になってしまう。"""
+    t = _ENGINE_WORD_RE.sub("", request or "")
+    return re.sub(r"^[\s、。,.！!？?で]+", "", t).strip() or (request or "")
+
+
+def _clean_tool_words(prompt, request):
+    """出来上がった英語プロンプトから、道具の名前に由来する描写を落とす。
+    本人が本当に宇宙・素粒子を頼んでいる時だけ残す。"""
+    if not prompt or not _TOOL_IN_PROMPT_RE.search(prompt):
+        return prompt
+    if _REALLY_PHYSICS_RE.search(request or ""):
+        return prompt
+    kept = [c for c in prompt.split(",")
+            if not _TOOL_IN_PROMPT_RE.search(c)
+            and not re.search(r"cosmic|nebula|galaxy|outer space|energy particle",
+                              c, re.I)]
+    out = ", ".join(x.strip() for x in kept if x.strip())
+    print(f"[refine_prompt] 道具の名前が題材になっていたので落とした: {prompt[:80]}")
+    return out or prompt
+
+
 async def _refine_prompt(request, media_type, style="", has_ref=False):
     """日本語の依頼（会話文含む）を、具体的な英語の映像/画像生成プロンプトに変換。
     既に英語プロンプトならそのまま返す。生成物が『全然違う』のを防ぐ核心工程。
@@ -5210,6 +5284,9 @@ async def _refine_prompt(request, media_type, style="", has_ref=False):
     出てきたのは【女性】だった。人物の描写が参照より強く効いてしまう。"""
     if _looks_english_prompt(request):
         return request.strip()
+    # 「ヒッグスフィールドで」は作り手の指定であって題材ではない。
+    # 残したまま英訳すると Higgs field（物理）の絵になる。
+    request = _drop_tool_words(request)
     kind = "video" if media_type == "video" else "image"
     sp = _style_snippet(800)
     ref_rule = (
@@ -5240,7 +5317,7 @@ async def _refine_prompt(request, media_type, style="", has_ref=False):
         for ln in out.splitlines():
             ln = ln.strip().strip('"' + "'`")
             if len(ln) >= 15 and _looks_english_prompt(ln):
-                return ln
+                return _clean_tool_words(ln, request)
         print(f"[refine_prompt] 英語プロンプトが得られず原文使用: {out[:120]}")
         return request
     except Exception as e:  # noqa: BLE001
@@ -5263,6 +5340,7 @@ async def _run_hf_generate(message, request, model, media_type, label,
     model=None なら最適モデルを自動選定する。aspect_ratio='9:16'で縦型ショート。
     refine=True で日本語依頼を英語プロンプトに変換（既に整形済みならFalse）。"""
     cid = message.channel.id
+    _remember_media(cid, media_type)
     if not HF_AVAILABLE and not os.getenv("HIGGSFIELD_API_KEY"):
         await send_as(orch, cid, "⚠️ Higgsfield が使えません（APIキー/認証を確認してください）。")
         return
@@ -5500,6 +5578,15 @@ async def _run_revise(message, instruction):
         return
     base_prompt = last.get("prompt")
     media_type = last.get("media_type", "video")
+    # 「動画の生成じゃなくて画像の生成にして」は、プロンプトの直しではなく
+    # 媒体そのものの指示。前回の媒体を引き継ぐと、画像を頼んだのに動画が出る。
+    _said = _said_media(instruction)
+    if _said and _said != media_type:
+        media_type = _said
+        await send_as(
+            orch, cid,
+            f"🔀 {'画像' if _said == 'image' else '動画'}に切り替えて作り直します。")
+    _remember_media(cid, media_type)
     aspect_ratio = last.get("aspect_ratio")
     if not base_prompt:
         await send_as(orch, cid, "🔁 直前の生成を Higgsfield から探しています…")
@@ -7546,7 +7633,12 @@ async def _claude_exec_run(task, timeout, model=None):
         await _reap(proc)
         return "⚠️ 実行がタイムアウトしました。"
     if proc.returncode != 0:
-        return f"⚠️ 実行に失敗: {(err.decode() or '').strip()[:400]}"
+        # 事故：「⚠️ 実行に失敗:」と理由が空のまま届き、何が起きたか分からなかった。
+        # claude CLI は理由を標準出力側に出すことがあるので、両方を見る。
+        _why = ((err.decode() or "").strip()
+                or (out.decode() or "").strip()
+                or f"終了コード {proc.returncode}（出力なし）")
+        return f"⚠️ 実行に失敗: {_why[:400]}"
     return out.decode().strip() or "(完了・出力なし)"
 
 
@@ -8821,10 +8913,13 @@ async def _dispatch_message(message):
         # 動画か画像かは【補ったあとの依頼】で決める。発言だけで見ると
         # 「ヒッグスフィールドで」に媒体の語が無く、画像を頼まれたのに
         # 動画を作り始めていた（実際に seedance で動画ジョブが走った）。
-        mtype = ("image"
-                 if re.search("画像|イラスト|ロゴ|絵|写真|アイコン|サムネ", _hreq)
-                 and not re.search("動画|映像|ムービー|クリップ", content)
-                 else "video")
+        # 今の発言 → 補ったあとの依頼 → 直近に頼まれた媒体、の順に見る。
+        # 「ヒッグスフィールドでやって」だけでは媒体が分からないので、
+        # 直前に画像を頼まれていたなら画像のままにする（既定の動画に落とさない）。
+        mtype = (_said_media(content) or _said_media(_hreq)
+                 or _recent_media(cid)
+                 or (_load_last_gen(cid) or {}).get("media_type") or "video")
+        _remember_media(cid, mtype)
         _gate(message, cid,
               f"{'動画' if mtype == 'video' else '画像'}の生成（{_hreq[:50]}）",
               "内容に合う最適なモデルを自動で選び、"

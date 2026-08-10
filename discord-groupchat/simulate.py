@@ -1224,6 +1224,54 @@ async def run():
         bot._pending_approvals.pop(1234, None)
         bot._pending_do.clear()
 
+    # --- ⑪ 「ヒッグスフィールドで」が絵の題材になっていた（21:50の実例）---
+    #     「ヒッグスフィールドで画像生成して」が Higgs field（物理）と英訳され、
+    #     背景が宇宙・エネルギー粒子の画像になった。本人は何度も
+    #     「背景が宇宙になってる」と直しを頼むことになった。
+    install_stubs()
+    bot._load_last_gen = lambda cid: None
+    check("作り手の指定は題材から落とす",
+          "ヒッグス" not in bot._drop_tool_words(
+              "これの背景を自然な室内にして、ヒッグスフィールドで画像生成で"),
+          bot._drop_tool_words("これの背景を自然な室内にして、ヒッグスフィールドで画像生成で"))
+    check("依頼の中身は残す",
+          "室内" in bot._drop_tool_words(
+              "これの背景を自然な室内にして、ヒッグスフィールドで画像生成で"))
+    _dirty = ("the person in the reference image, cosmic energy particles, "
+              "higgs field ripples of light, soft daylight, photorealistic")
+    check("英訳に紛れ込んだ物理の描写を落とす",
+          not any(_w in bot._clean_tool_words(_dirty, "背景を自然にして").lower()
+                  for _w in ("higgs", "cosmic")),
+          bot._clean_tool_words(_dirty, "背景を自然にして"))
+    check("本当に宇宙を頼まれた時は落とさない",
+          "cosmic" in bot._clean_tool_words(_dirty, "宇宙の背景で作って"),
+          bot._clean_tool_words(_dirty, "宇宙の背景で作って"))
+
+    # --- ⑫ 画像を頼んだのに動画が出た（19:25 と 21:52 の実例）---
+    #     「画像で生成して」→「ヒッグスフィールドでやって」と続けると、
+    #     後の発言に媒体の語が無いので既定の動画になり .mp4 が出ていた。
+    check("「動画じゃなくて画像」は画像",
+          bot._said_media("動画の生成じゃなくて画像の生成にして") == "image",
+          bot._said_media("動画の生成じゃなくて画像の生成にして"))
+    check("「画像じゃなくて動画」は動画",
+          bot._said_media("画像じゃなくて動画にして") == "video",
+          bot._said_media("画像じゃなくて動画にして"))
+    check("媒体を言っていなければ決めつけない",
+          bot._said_media("ヒッグスフィールドでやって") is None,
+          bot._said_media("ヒッグスフィールドでやって"))
+    install_stubs()
+    bot._last_media.clear()
+    # 直前に画像を作った状態（実際の流れと同じ。媒体の語は今の発言に無い）
+    bot._load_last_gen = lambda cid: {
+        "prompt": "higher nose bridge, portrait", "media_type": "image",
+        "label": "画像", "t": _tm4.time()}
+    await drive("ヒッグスフィールドでやって")
+    _c12 = last_call("hf_generate")
+    check("直前が画像なら『ヒッグスフィールドでやって』も画像のまま",
+          _c12 is not None and _c12[0][3] == "image",
+          _c12[0] if _c12 else f"fired={FIRED}")
+    bot._last_media.clear()
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile
