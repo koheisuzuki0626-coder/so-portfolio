@@ -210,6 +210,7 @@ def install_stubs(mcp_url=None):
     bot._run_ad_make = _rec("ad")
     bot._run_virality = _rec("virality")
     bot._run_style_learn = _rec("style_learn")
+    globals().setdefault("_REAL_IMAGE_REQ", bot._handle_image_request)
     bot._handle_image_request = _rec("image_gen")
     bot._share_debug_log = _rec_str("sharelog", "✅ 共有しました")
     bot._run_credits = _rec_str("credits", "💳 残クレジット: 1,200（スタブ）")
@@ -734,14 +735,14 @@ async def run():
     print("■ E2E: 画像プロンプトの英訳")
     used = {}
 
-    def _gen_img(prompt):
+    def _gen_img(prompt, ref_bytes=None, ref_mime="image/png"):
         used["prompt"] = prompt
         return b"PNG"
     install_stubs()
     bot._handle_image_request = _IMAGE_REQ
     bot._gemini_generate_image_sync = _gen_img
 
-    async def _refine(req, mtype, style=""):
+    async def _refine(req, mtype, style="", has_ref=False):
         return "a 30 year old japanese man cheering with a beer mug, victory"
     bot._refine_prompt = _refine
 
@@ -1337,6 +1338,68 @@ async def run():
           bool(bot._drop_false_progress(_fake, 1234).strip()),
           bot._drop_false_progress(_fake, 1234))
     bot._pending_do.clear()
+
+    # --- ⑯ 「無料枠は残っているのに作れない」の理由が見えなかった（23:32の実例）---
+    #     Geminiの画像生成が1秒で失敗し、理由は標準出力にしか出ていなかった。
+    #     モデルIDを1つに固定していたため、そのIDが使えないと詰んでいた。
+    install_stubs()
+    _tries = []
+
+    def _gen_img_fail(prompt, ref_bytes=None, ref_mime="image/png"):
+        raise RuntimeError("404 model not found")
+
+    _keep16 = bot._gemini_generate_image_sync
+    try:
+        bot._gemini_generate_image_sync = _gen_img_fail
+        _ch16 = _CHANNELS.setdefault(1234, _FakeChannel(1234))
+        _ch16.sent.clear()
+        await _REAL_IMAGE_REQ(1234, "猫の画像作って")
+        check("作れなかった理由を本人に見せる",
+              any("理由" in t and "404" in t for t in _ch16.sent),
+              _ch16.sent[-1:])
+        check("勝手にHiggsfieldへ切り替えない",
+              not any("Higgsfieldで生成します" in t for t in _ch16.sent),
+              _ch16.sent[-1:])
+    finally:
+        bot._gemini_generate_image_sync = _keep16
+    check("画像モデルは複数用意して順に試す",
+          len(bot.GEMINI_IMAGE_MODELS) >= 2, bot.GEMINI_IMAGE_MODELS)
+
+    # --- ⑰ 「この画像の背景を室内にして」で別人が出来ていた（23:38の実例）---
+    #     参照画像をGeminiに渡していなかったため、依頼者の写真と無関係な
+    #     「young man」の画像が作られていた。
+    install_stubs()
+    _seen = {}
+
+    def _gen_img_ref(prompt, ref_bytes=None, ref_mime="image/png"):
+        _seen["ref"] = ref_bytes
+        return b"PNG"
+
+    async def _fetch_ok(url, limit=None):
+        return b"REFBYTES", "image/jpeg"
+
+    _keep17 = (bot._gemini_generate_image_sync, bot._fetch_image_bytes)
+    try:
+        bot._gemini_generate_image_sync = _gen_img_ref
+        bot._fetch_image_bytes = _fetch_ok
+        bot._remember_ref(1234, "https://example.com/a.png")
+        await _REAL_IMAGE_REQ(1234, "この画像の背景を自然な室内にして")
+        check("元の画像をGeminiに渡す", _seen.get("ref") == b"REFBYTES", _seen)
+    finally:
+        (bot._gemini_generate_image_sync, bot._fetch_image_bytes) = _keep17
+        bot._last_ref.clear()
+    install_stubs()
+    _seen.clear()
+    try:
+        bot._gemini_generate_image_sync = _gen_img_ref
+        bot._fetch_image_bytes = _fetch_ok
+        bot._last_ref.clear()
+        await _REAL_IMAGE_REQ(1234, "猫の画像作って")
+        check("関係のない新規依頼には参照を付けない",
+              _seen.get("ref") is None, _seen)
+    finally:
+        (bot._gemini_generate_image_sync, bot._fetch_image_bytes) = _keep17
+        bot._last_ref.clear()
 
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()

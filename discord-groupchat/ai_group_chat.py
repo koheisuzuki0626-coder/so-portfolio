@@ -1988,23 +1988,78 @@ def _gen_settings_summary():
            else f"Higgsfield: {gen_settings['image_app'] or 'flux-pro/kontext/max（既定）'}")
     vid = gen_settings["video_app"] or "higgsfield 既定（dop）"
     return f"🎨 画像: {img}\n🎬 動画: {vid}"
-GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+# 画像生成に使うモデル。1つに固定していたため、そのIDが使えなくなった時に
+# 「無料枠は残っているのに作れない」状態になり、理由も出なかった。
+# 上から順に試し、通ったものを覚える。
+GEMINI_IMAGE_MODELS = [
+    m.strip() for m in os.getenv(
+        "GEMINI_IMAGE_MODEL",
+        "gemini-2.5-flash-image,"
+        "gemini-2.5-flash-image-preview,"
+        "gemini-2.0-flash-preview-image-generation",
+    ).split(",") if m.strip()
+]
+GEMINI_IMAGE_MODEL = GEMINI_IMAGE_MODELS[0]
+_gemini_image_ok = {"model": ""}      # 一度通ったモデルを次回から先に試す
 
 
-def _gemini_generate_image_sync(prompt):
-    """Gemini の画像生成モデルで画像を作り、PNGバイト列を返す。"""
-    resp = gemini_client.models.generate_content(
-        model=GEMINI_IMAGE_MODEL,
-        contents=prompt,
-    )
-    for cand in resp.candidates or []:
+def _image_from_resp(resp):
+    """Geminiの返答から画像バイト列を取り出す。無ければ None。"""
+    for cand in getattr(resp, "candidates", None) or []:
         content = getattr(cand, "content", None)
         for part in (getattr(content, "parts", None) or []):
             inline = getattr(part, "inline_data", None)
             data = getattr(inline, "data", None)
             if data:
                 return data
-    raise RuntimeError("Geminiが画像を返しませんでした")
+    return None
+
+
+def _gemini_generate_image_sync(prompt, ref_bytes=None, ref_mime="image/png"):
+    """Gemini の画像生成モデルで画像を作り、PNGバイト列を返す。
+    ref_bytes を渡すと、その画像を元にした編集（背景差し替え等）になる。
+    モデルIDは上から順に試す。全部だめなら、理由を全部まとめて投げる
+    （以前は理由が標準出力にしか出ず、『無料枠はあるのに作れない』の
+      原因がユーザーにも開発側にも分からなかった）。"""
+    contents = [prompt]
+    if ref_bytes:
+        contents = [_make_media_part(ref_bytes, ref_mime), prompt]
+    models = GEMINI_IMAGE_MODELS[:]
+    if _gemini_image_ok["model"] in models:      # 前に通ったものを先に試す
+        models.remove(_gemini_image_ok["model"])
+        models.insert(0, _gemini_image_ok["model"])
+    errs = []
+    for model in models:
+        try:
+            resp = gemini_client.models.generate_content(
+                model=model, contents=contents)
+            data = _image_from_resp(resp)
+            if data:
+                _gemini_image_ok["model"] = model
+                return data
+            errs.append(f"{model}: 画像が返らなかった")
+        except Exception as e:  # noqa: BLE001
+            errs.append(f"{model}: {str(e)[:160]}")
+    raise RuntimeError(" / ".join(errs) or "Geminiが画像を返しませんでした")
+
+
+async def _fetch_image_bytes(url, limit=12 << 20):
+    """画像URLを取得してバイト列とMIMEを返す。取れなければ (None, "")。"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=60)
+            ) as resp:
+                if resp.status != 200:
+                    return None, ""
+                mime = (resp.headers.get("Content-Type") or "image/png").split(";")[0]
+                data = await resp.content.read(limit + 1)
+                if len(data) > limit:
+                    return None, ""
+                return data, (mime if mime.startswith("image/") else "image/png")
+    except Exception as e:  # noqa: BLE001
+        print(f"[ref] 画像を取得できません: {str(e)[:120]}")
+        return None, ""
 
 
 async def send_image_bytes(cid, text, data, filename):
@@ -4845,15 +4900,31 @@ async def _handle_image_request(cid, request, refine=True):
     描写プロンプトに変換してから生成し、使ったプロンプトも見せる（動画と同じ扱い）。"""
     original = request
     _remember_media(cid, "image")
+    # 「この画像の背景を室内にして」は、元の写真を渡さないと別人が出来上がる。
+    # 事故：参照を渡さずに作り、依頼者の写真とは無関係な男性の画像になった。
+    ref_bytes, ref_mime = None, "image/png"
+    if _POINTS_AT_RE.search(request) or _looks_revise(request, True):
+        _ref_url = _recent_ref(cid)
+        if _ref_url:
+            ref_bytes, ref_mime = await _fetch_image_bytes(_ref_url)
+            if ref_bytes:
+                await send_as(orch, cid, "🖼 直前の画像を元にして直します。")
+            else:
+                print(f"[image_request] 参照画像を取得できません: {_ref_url[:80]}")
     if refine:
-        refined = await _refine_prompt(request, "image")
+        refined = await _refine_prompt(request, "image", has_ref=bool(ref_bytes))
         if refined and refined != request:
             request = refined
             await send_as(orch, cid, f"🖋 プロンプト: {request[:300]}")
     _save_last_gen(cid, request, "image", None, "画像")
-    await send_as(orch, cid, "🎨 Gemini で画像を生成中…（無料枠）")
+    await send_as(
+        orch, cid,
+        "🎨 Gemini で画像を生成中…（無料枠"
+        + ("・元の画像を使用" if ref_bytes else "") + "）")
+    _why = ""
     try:
-        data = await asyncio.to_thread(_gemini_generate_image_sync, request)
+        data = await asyncio.to_thread(
+            _gemini_generate_image_sync, request, ref_bytes, ref_mime)
         await send_image_bytes(
             cid, "✅ できました！イメージと違うところがあれば「〇〇を直して作り直して」と教えてください。",
             data, "image.png",
@@ -4861,13 +4932,19 @@ async def _handle_image_request(cid, request, refine=True):
         add_history(cid, "Orchestrator", f"（依頼「{original[:60]}」の画像をGeminiで生成して投稿した）")
         return
     except Exception as e:  # noqa: BLE001
-        print(f"[image_request] Gemini失敗: {str(e)[:200]}")
+        # 理由を標準出力にしか出しておらず、「無料枠は残っているのに作れない」の
+        # 原因が誰にも見えなかった。本人にも見せ、errors.log にも残す。
+        _why = str(e)[:300]
+        print(f"[image_request] Gemini失敗: {_why}")
+        _log_error("Gemini画像生成", e)
     # ここで黙ってHiggsfieldに切り替えていた＝頼んでいないクレジット消費。
     # 既定では切り替えず、どうするかを本人に選んでもらう。
     if _hf_explicit_only() and not _HF_NAMED_RE.search(original):
         await send_as(
             orch, cid,
-            "⚠️ Gemini（無料枠）で画像を作れませんでした。勝手にHiggsfieldへは"
+            "⚠️ Gemini（無料枠）で画像を作れませんでした。\n"
+            + (f"（理由: {_why}）\n" if _why else "")
+            + "勝手にHiggsfieldへは"
             "切り替えません（クレジットを使うため）。どちらか送ってください。\n"
             "・「**クロードで作って**」＝HTMLから書き出す（無料・文字や図に強い）\n"
             "・「**ヒッグスフィールドで作って**」＝生成モデルを使う（クレジット消費）"
