@@ -2077,6 +2077,11 @@ def _gemini_image_why_not():
     if not GEMINI_IMAGE_MODELS:
         return "使えるモデルがありません"
     if all(m in _gemini_bad_models for m in GEMINI_IMAGE_MODELS):
+        zero = [m for m in GEMINI_IMAGE_MODELS
+                if "割り当てが0" in _img_stat(m)["last"]]
+        if zero:
+            return ("いまのAPIキーのプランでは、画像生成の無料枠の割り当てが0です"
+                    "（使い切ったのではなく最初から使えません）")
         return "登録されているモデルIDが今のAPIに存在しません"
     return _cooldown_note(GEMINI_IMAGE_MODELS)
 
@@ -2111,6 +2116,27 @@ def _gemini_image_status():
     lines.append("※テキスト（会話・要約）の枠は別勘定なので、"
                  "画像がだめでも会話は続けられます。")
     return "\n".join(lines)
+
+
+# 「使い切った」と「そもそも割り当てが0」は別物。
+# 事故：今日はじめての生成なのに「無料枠を使い切りました」と出た。
+# 実際は、そのモデルの無料枠の割り当てが 0（有料プラン専用）だった。
+_ZERO_QUOTA_RE = re.compile(
+    r"quotaValue['\"]?\s*[:=]\s*['\"]?0\b|"
+    r"limit['\"]?\s*[:=]\s*['\"]?0\b", re.I)
+# 有料モデルを無料枠で呼んだ時に返る言い回し
+_PLAN_ONLY_RE = re.compile(
+    "check your plan and billing|billing details|"
+    "not available (on|for) the free|requires? billing", re.I)
+
+
+def _is_zero_quota_error(e):
+    """無料枠の割り当てが0（このプランでは最初から使えない）か。"""
+    m = str(e)
+    if _ZERO_QUOTA_RE.search(m):
+        return True
+    # 割り当ての数値が読めない時は、文面で判断する
+    return bool(_PLAN_ONLY_RE.search(m) and "FreeTier" in m)
 
 
 def _is_missing_model_error(e):
@@ -2200,6 +2226,13 @@ def _gemini_generate_image_sync(prompt, ref_bytes=None, ref_mime="image/png"):
                 st = _img_stat(model)
                 st["ng"] += 1
                 st["t"] = time.time()
+                # 割り当てが0＝待っても戻らない。使い切りとは別扱いにする。
+                if _is_zero_quota_error(e):
+                    _gemini_bad_models.add(model)
+                    st["last"] = "このプランでは使えない（無料枠の割り当てが0）"
+                    if _gemini_image_ok["model"] == model:
+                        _gemini_image_ok["model"] = ""
+                    break
                 # 404＝そのIDが無い。待っても戻らないので恒久的に外し、
                 # 代わりに使えるモデルをAPIの一覧から探す。
                 if _is_missing_model_error(e):
@@ -2224,15 +2257,22 @@ def _gemini_generate_image_sync(prompt, ref_bytes=None, ref_mime="image/png"):
                         _gemini_image_ok["model"] = ""
                 break
 
+    detail = " / ".join(errs)[:600]
     if last_err and _is_quota_error(last_err):
+        if all(m in _gemini_bad_models for m in GEMINI_IMAGE_MODELS):
+            raise GeminiQuotaExceeded(
+                "Gemini画像は、いまのAPIキーのプランでは無料枠の割り当てが"
+                "0のモデルしかありません（使い切ったのではなく最初から使えません）。"
+                f"\n内訳: {detail}"
+            )
         raise GeminiQuotaExceeded(
             "Gemini画像の無料枠が全モデルで上限に達しています。"
-            f"（{_cooldown_note(GEMINI_IMAGE_MODELS)}）"
+            f"（{_cooldown_note(GEMINI_IMAGE_MODELS)}）\n内訳: {detail}"
         )
     if not tried:
         raise GeminiQuotaExceeded(
             "Gemini画像は全モデルがクールダウン中です（無料枠切れ）。"
-            f"（{_cooldown_note(GEMINI_IMAGE_MODELS)}）"
+            f"（{_cooldown_note(GEMINI_IMAGE_MODELS)}）\n内訳: {detail}"
         )
     if last_err:
         raise last_err
@@ -5154,9 +5194,11 @@ async def _handle_image_request(cid, request, refine=True):
         if refined and refined != request:
             request = refined
             await send_as(orch, cid, f"🖋 プロンプト: {request[:300]}")
-        elif not _looks_english_prompt(request):
-            # 英訳はクロードにやらせている。クロード側が上限だと黙って
-            # 日本語のまま投入され、別物が出来ていた（実例: 「背景を室内にして」）。
+        # 英訳はクロードにやらせている。クロード側が上限だと黙って日本語のまま
+        # 投入され、別物が出来ていた（実例:「背景を室内にして」）。
+        # 「変わったか」で見ると、作り手の指定を落としただけでも変わって見えるので、
+        # 「英語になったか」で判断する。
+        if not _looks_english_prompt(request):
             await send_as(
                 orch, cid,
                 "⚠️ 英語プロンプトに直せませんでした"
@@ -5780,7 +5822,7 @@ async def _run_hf_generate(message, request, model, media_type, label,
         if refined != request:
             await send_as(orch, cid, f"🖋 プロンプト: {refined[:300]}")
             request = refined
-        elif not _looks_english_prompt(request):
+        if not _looks_english_prompt(request):
             await send_as(
                 orch, cid,
                 "⚠️ 英語プロンプトに直せませんでした"

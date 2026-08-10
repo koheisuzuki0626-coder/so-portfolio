@@ -1674,6 +1674,79 @@ async def run():
     finally:
         (bot._refine_prompt, bot._gemini_generate_image_sync) = _keep20
 
+    # --- ㉑ 「今日はじめてなのに枠が無い」（本人の指摘）---
+    #     使い切ったのではなく、そのモデルの無料枠の割り当てが0だった。
+    #     待っても戻らないので、「30分で戻ります」は嘘になる。
+    _z = ("429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': "
+          "'You exceeded your current quota, please check your plan and "
+          "billing details', 'details': [{'@type': 'QuotaFailure', "
+          "'violations': [{'quotaId': "
+          "'GenerateRequestsPerDayPerProjectPerModel-FreeTier', "
+          "'quotaValue': '0'}]}]}}")
+    check("割り当て0を見分ける", bot._is_zero_quota_error(_z), _z[:60])
+    check("使い切りと混同しない",
+          not bot._is_zero_quota_error(
+              "429 RESOURCE_EXHAUSTED quotaValue: '100' PerDay"),
+          True)
+    install_stubs()
+    _keep21 = (bot.GEMINI_IMAGE_MODELS[:], dict(bot._gemini_cooldown),
+               bot.gemini_client)
+
+    class _FakeZero:
+        def generate_content(self, model=None, contents=None):
+            raise RuntimeError(_z)
+
+    try:
+        bot.GEMINI_IMAGE_MODELS[:] = ["img-p"]
+        bot._gemini_cooldown.clear()
+        bot._gemini_bad_models.clear()
+        bot._gemini_img_stats.clear()
+        bot._gemini_img_discovered["done"] = True
+        bot.gemini_client = types.SimpleNamespace(models=_FakeZero())
+        _err21 = None
+        try:
+            _REAL_GEN_IMG("猫")
+        except Exception as _e:  # noqa: BLE001
+            _err21 = _e
+        check("割り当て0は待たずに外す", "img-p" in bot._gemini_bad_models,
+              bot._gemini_bad_models)
+        check("クールダウンで待たせない",
+              bot._gemini_cooldown.get("img-p", 0) <= _tm4.time(),
+              bot._gemini_cooldown)
+        check("「使い切った」と言わない",
+              "使い切ったのではなく" in str(_err21), str(_err21)[:120])
+        check("モデルごとの理由を残す", "内訳" in str(_err21), str(_err21)[:200])
+        check("案内でも正しい理由を言う",
+              "割り当てが0" in bot._gemini_image_why_not(),
+              bot._gemini_image_why_not())
+    finally:
+        (bot.GEMINI_IMAGE_MODELS[:], _cd21, bot.gemini_client) = _keep21
+        bot._gemini_cooldown.clear()
+        bot._gemini_cooldown.update(_cd21)
+        bot._gemini_bad_models.clear()
+        bot._gemini_img_stats.clear()
+        bot._gemini_img_discovered["done"] = False
+
+    # 英訳できなかった時は、作り手の指定を落としただけでも見逃さない
+    install_stubs()
+    _ch21 = _CHANNELS.setdefault(1234, _FakeChannel(1234))
+    _ch21.sent.clear()
+    _keep21b = (bot._refine_prompt, bot._gemini_generate_image_sync)
+    try:
+        async def _refine_strip(req, mtype, style="", has_ref=False):
+            return bot._drop_tool_words(req)      # 英訳できず、語を落としただけ
+
+        def _gen_ok2(prompt, ref_bytes=None, ref_mime="image/png"):
+            return b"PNG"
+        bot._refine_prompt = _refine_strip
+        bot._gemini_generate_image_sync = _gen_ok2
+        await _REAL_IMAGE_REQ(1234, "geminiで背景を室内に変えて")
+        check("語を落としただけを英訳成功と誤認しない",
+              any("英語プロンプトに直せませんでした" in t for t in _ch21.sent),
+              _ch21.sent[:3])
+    finally:
+        (bot._refine_prompt, bot._gemini_generate_image_sync) = _keep21b
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile
