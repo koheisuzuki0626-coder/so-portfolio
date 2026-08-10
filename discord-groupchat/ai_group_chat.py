@@ -5759,16 +5759,40 @@ _POINTS_AT_RE = re.compile(
 # 生成が通らなかった理由のうち、こちらでは直せないもの（アカウント側の上限）。
 # 「投入に失敗」とだけ出しても何をすればいいか分からない。何が起きたのかと、
 # 次にできることを一緒に出す。
+# 言い方が毎回変わる（「本日の生成上限」「日次生成制限に達しています」
+# 「日次生成制限に達しました（グレース期間）」）。語を1つずつ足すのをやめ、
+# 「上限/制限」＋「達した・超えた」という形で受ける。
 _LIMIT_ERR_RE = re.compile(
-    "生成上限|上限に達|利用上限|クレジットが不足|残高|"
+    "(上限|制限|リミット)[^。\n]{0,10}(に達|を超|オーバー|に到達)|"
+    "生成上限|生成制限|日次制限|利用上限|クレジットが不足|残高が|"
+    "プランを(更新|アップグレード)|グレース期間|"
     "limit (reached|exceeded)|quota|insufficient|out of credit|rate.?limit",
     re.I)
+
+
+# Higgsfieldの日次上限に当たった時刻。次に頼まれた時、走らせる前に知らせる。
+# 事故：同じ上限に何度もぶつかり、そのたびに数十秒待たされていた。
+_hf_limit = {"t": 0.0, "why": ""}
+
+
+def _hf_limit_note():
+    """今日すでに日次上限に当たっているなら、その一言。無ければ空。"""
+    t = _hf_limit.get("t") or 0
+    if not t:
+        return ""
+    # 日次の上限なので、日付が変わるまでは同じ結果になる可能性が高い
+    if datetime.fromtimestamp(t, JST).date() != datetime.now(JST).date():
+        return ""
+    when = datetime.fromtimestamp(t, JST).strftime("%H:%M")
+    return (f"⚠️ 今日は {when} にHiggsfieldの日次上限で失敗しています。"
+            "今も同じ可能性が高いです（試すこと自体はできます）")
 
 
 def _gen_fail_note(err):
     """生成が投入できなかった時の知らせ。上限なら対処も添える。"""
     err = (err or "").strip()
     if _LIMIT_ERR_RE.search(err):
+        _hf_limit.update({"t": time.time(), "why": err[:200]})
         return (
             "🚫 **Higgsfield側の上限で生成できませんでした。**\n"
             f"（返ってきた理由: {err[:150]}）\n"
@@ -5854,6 +5878,7 @@ async def _run_hf_generate(message, request, model, media_type, label,
     except Exception as e:  # noqa: BLE001
         await send_as(orch, cid, _gen_fail_note(str(e)))
         return
+    _hf_limit.update({"t": 0.0, "why": ""})   # 通ったので上限の記憶は消す
     # 「もう一回作り直して」で引き継げるよう、今回のプロンプトを保存
     _save_last_gen(cid, request, media_type, aspect_ratio, label)
     # 依頼と実際に渡されたプロンプトが別物なら、黙って進めず知らせる
@@ -9445,7 +9470,8 @@ async def _dispatch_message(message):
         model, mtype, label = _match_gen_model(content)
         add_history(cid, message.author.display_name, content)
         _gate(message, cid, f"{label}で{'動画' if mtype == 'video' else '画像'}を生成",
-              "依頼を英語プロンプトに整えてから生成し、完成したらURLを投稿します",
+              "依頼を英語プロンプトに整えてから生成し、完成したらURLを投稿します"
+              + (f"\n{_hf_limit_note()}" if _hf_limit_note() else ""),
               lambda: _run_hf_generate(message, content, model, mtype, label),
               "動画/画像生成", "Higgsfieldのクレジットを消費します",
               engine=_engine_label_hf(label, "動画" if mtype == "video" else "画像"))
@@ -9469,7 +9495,8 @@ async def _dispatch_message(message):
         _gate(message, cid,
               f"{'動画' if mtype == 'video' else '画像'}の生成（{_hreq[:50]}）",
               "内容に合う最適なモデルを自動で選び、"
-              "英語プロンプトに整えてから生成します",
+              "英語プロンプトに整えてから生成します"
+              + (f"\n{_hf_limit_note()}" if _hf_limit_note() else ""),
               lambda: _run_hf_generate(message, _hreq, None, mtype, "自動選定"),
               "動画/画像生成", "Higgsfieldのクレジットを消費します",
               engine=_engine_label_hf("自動選定",

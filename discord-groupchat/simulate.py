@@ -1795,6 +1795,32 @@ async def run():
           == "背景を自然な室内に変えて",
           bot._drop_tool_words("背景を自然な室内に変えて、ヒッグスフィールドで"))
 
+    # --- ㉓ 上限の言い方が変わって、専用の知らせが出ていなかった（08:17の実例）---
+    #     「本日の生成上限に達しています」は拾えたが、
+    #     「日次生成制限に達しています」は素通りして生の英語まじりが出ていた。
+    for _e in ("ERROR: 日次生成制限に達しています。制限のリセット後または"
+               "プランを更新してください",
+               "ERROR: 日次生成制限に達しました（グレース期間）。",
+               "ERROR: 本日の生成上限（グレース期間分）に達しています",
+               "ERROR: daily limit exceeded"):
+        bot._hf_limit.update({"t": 0.0, "why": ""})
+        check(f"上限だと分かる: {_e[:16]}…",
+              "Higgsfield側の上限" in bot._gen_fail_note(_e),
+              bot._gen_fail_note(_e)[:60])
+    bot._hf_limit.update({"t": 0.0, "why": ""})
+    check("上限以外はそのまま出す",
+          "タイムアウト" in bot._gen_fail_note("claude CLI実行失敗: タイムアウト"),
+          bot._gen_fail_note("claude CLI実行失敗: タイムアウト"))
+    check("上限以外で上限の記憶を作らない", not bot._hf_limit["t"], bot._hf_limit)
+    # 一度当たったら、次に頼まれた時点で先に知らせる
+    bot._gen_fail_note("ERROR: 日次生成制限に達しています")
+    check("今日すでに上限なら先に知らせる",
+          "日次上限で失敗しています" in bot._hf_limit_note(), bot._hf_limit_note())
+    check("いつ失敗したかを言う", ":" in bot._hf_limit_note(), bot._hf_limit_note())
+    bot._hf_limit.update({"t": 0.0, "why": ""})
+    check("当たっていなければ何も言わない", bot._hf_limit_note() == "",
+          bot._hf_limit_note())
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile
