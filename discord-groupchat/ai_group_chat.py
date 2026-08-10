@@ -4011,7 +4011,11 @@ _PLAN_TRIGGER_RE = re.compile(
 
 # ---------- ルーティング判定（純粋関数・テスト対象） ----------
 _STATUS_KW_RE = re.compile(
-    "できた|できてる|出来て|完成|終わった|終わってる|どうなった|状況|進捗|まだ|"
+    # 「〜できたら」「〜終わったら」は条件の言い方で、進捗の問いではない。
+    # 事故：「もしあっちに新しい人ができたら本当に別れないといけない」が
+    # 進捗確認になった（別れ話をしている最中だった）。
+    "できた(?!ら|り)|できてる|出来て(?!たら)|完成|終わった(?!ら|り)|終わってる|"
+    "どうなった|状況|進捗|まだ|"
     # 「いつできる？」を入れ忘れていたため会話に落ち、AIが
     # 「12:50に上限がリセットされて〜」と作り話をする事故が起きた
     "いつでき|いつ出来|いつ終わ|いつ仕上が|いつ届く|何時に終わ|"
@@ -4362,8 +4366,12 @@ def classify_route(content, *, has_attachments=False, has_video_att=False,
     # 実行中の作業があれば「まだ？」「あと何分？」だけでも状態確認につなぐ。
     # これが無いとAIに流れ、実行中だと知らないAIが
     # 「その機能自体が無い」と作り話をする事故が実際に起きた。
+    # 「まだ」「できた」だけを頼りにすると、身の上話まで進捗確認になる。
+    # 生成の話だと分かる語があるか、進捗を聞く短い一言の時だけにする。
+    _short_ask = len(_strip_media_context(content).strip()) <= 20
     status_ctx = _STATUS_CTX_RE.search(content) or (
         (has_job or has_last_gen or has_running) and status_kw
+        and (_short_ask or _STATUS_CTX_RE.search(content))
     )
     if (not has_attachments and status_kw and status_ctx
             # 「できた！ありがとー」のような報告・お礼は進捗の質問ではない
