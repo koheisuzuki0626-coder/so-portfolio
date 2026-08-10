@@ -2001,6 +2001,17 @@ GEMINI_IMAGE_MODELS = [
 ]
 GEMINI_IMAGE_MODEL = GEMINI_IMAGE_MODELS[0]
 _gemini_image_ok = {"model": ""}      # 一度通ったモデルを次回から先に試す
+_gemini_img_rr = {"i": 0}             # ラウンドロビン用インデックス
+
+
+def _cooldown_note(models):
+    """クールダウン中のモデルが、あと何分で戻るかの一言。"""
+    now = time.time()
+    left = [max(0, _gemini_cooldown.get(m, 0) - now) for m in models]
+    left = [x for x in left if x > 0]
+    if not left:
+        return "枠が戻るまで少し待ってください"
+    return f"あと約{math.ceil(min(left) / 60)}分で自動的に戻ります"
 
 
 def _image_from_resp(resp):
@@ -2018,28 +2029,72 @@ def _image_from_resp(resp):
 def _gemini_generate_image_sync(prompt, ref_bytes=None, ref_mime="image/png"):
     """Gemini の画像生成モデルで画像を作り、PNGバイト列を返す。
     ref_bytes を渡すと、その画像を元にした編集（背景差し替え等）になる。
-    モデルIDは上から順に試す。全部だめなら、理由を全部まとめて投げる
-    （以前は理由が標準出力にしか出ず、『無料枠はあるのに作れない』の
-      原因がユーザーにも開発側にも分からなかった）。"""
+
+    無料枠の扱いはテキスト側（_gemini_contents_sync）と同じ方針にそろえてある:
+      ・枠切れのモデルはクールダウンして次のモデルへローテーション（時間で自動復帰）
+      ・毎回ちがうモデルから始めて負荷を分散する
+      ・分あたり制限なら少し待って同じモデルで1度だけ再挑戦
+      ・全部だめなら GeminiQuotaExceeded（＝無料枠切れとして扱える）
+    クールダウンの記録はテキスト側と同じ _gemini_cooldown を共有するので、
+    「ログ送って」の『Geminiクールダウン中』にそのまま出る。"""
     contents = [prompt]
     if ref_bytes:
         contents = [_make_media_part(ref_bytes, ref_mime), prompt]
-    models = GEMINI_IMAGE_MODELS[:]
-    if _gemini_image_ok["model"] in models:      # 前に通ったものを先に試す
-        models.remove(_gemini_image_ok["model"])
-        models.insert(0, _gemini_image_ok["model"])
-    errs = []
-    for model in models:
-        try:
-            resp = gemini_client.models.generate_content(
-                model=model, contents=contents)
-            data = _image_from_resp(resp)
-            if data:
-                _gemini_image_ok["model"] = model
-                return data
-            errs.append(f"{model}: 画像が返らなかった")
-        except Exception as e:  # noqa: BLE001
-            errs.append(f"{model}: {str(e)[:160]}")
+    n = len(GEMINI_IMAGE_MODELS)
+    if n == 0:
+        raise RuntimeError("GEMINI_IMAGE_MODELS が空です")
+    start = _gemini_img_rr["i"]
+    _gemini_img_rr["i"] = (start + 1) % n
+    order = [GEMINI_IMAGE_MODELS[(start + k) % n] for k in range(n)]
+    # 前に通ったモデルがあれば、そこから試す（毎回の空振りを避ける）
+    if _gemini_image_ok["model"] in order:
+        order.remove(_gemini_image_ok["model"])
+        order.insert(0, _gemini_image_ok["model"])
+
+    now = time.time()
+    last_err, tried, errs = None, False, []
+    for model in order:
+        if _gemini_cooldown.get(model, 0) > now:
+            errs.append(f"{model}: クールダウン中")
+            continue                      # 枠切れ中は次のモデルへ
+        tried = True
+        for attempt in range(2):
+            try:
+                resp = gemini_client.models.generate_content(
+                    model=model, contents=contents)
+                data = _image_from_resp(resp)
+                if data:
+                    _gemini_image_ok["model"] = model
+                    print(f"[image_gen] 成功: {model}")
+                    return data
+                errs.append(f"{model}: 画像が返らなかった")
+                break                     # 本文が空 → 次のモデルへ
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                errs.append(f"{model}: {str(e)[:120]}")
+                print(f"[image_gen] {model} 失敗: {str(e)[:200]}")
+                per_day = "PerDay" in str(e) or "PerProjectPerModel" in str(e)
+                if _is_quota_error(e) and not per_day and attempt == 0:
+                    time.sleep(_retry_delay(e))   # 分あたり制限 → 少し待つ
+                    continue
+                if per_day or not _is_quota_error(e):
+                    _gemini_cooldown[model] = time.time() + GEMINI_COOLDOWN_SEC
+                    if _gemini_image_ok["model"] == model:
+                        _gemini_image_ok["model"] = ""
+                break
+
+    if last_err and _is_quota_error(last_err):
+        raise GeminiQuotaExceeded(
+            "Gemini画像の無料枠が全モデルで上限に達しています。"
+            f"（{_cooldown_note(GEMINI_IMAGE_MODELS)}）"
+        )
+    if not tried:
+        raise GeminiQuotaExceeded(
+            "Gemini画像は全モデルがクールダウン中です（無料枠切れ）。"
+            f"（{_cooldown_note(GEMINI_IMAGE_MODELS)}）"
+        )
+    if last_err:
+        raise last_err
     raise RuntimeError(" / ".join(errs) or "Geminiが画像を返しませんでした")
 
 
@@ -4921,7 +4976,7 @@ async def _handle_image_request(cid, request, refine=True):
         orch, cid,
         "🎨 Gemini で画像を生成中…（無料枠"
         + ("・元の画像を使用" if ref_bytes else "") + "）")
-    _why = ""
+    _why, _quota = "", False
     try:
         data = await asyncio.to_thread(
             _gemini_generate_image_sync, request, ref_bytes, ref_mime)
@@ -4935,6 +4990,7 @@ async def _handle_image_request(cid, request, refine=True):
         # 理由を標準出力にしか出しておらず、「無料枠は残っているのに作れない」の
         # 原因が誰にも見えなかった。本人にも見せ、errors.log にも残す。
         _why = str(e)[:300]
+        _quota = isinstance(e, GeminiQuotaExceeded) or _is_quota_error(e)
         print(f"[image_request] Gemini失敗: {_why}")
         _log_error("Gemini画像生成", e)
     # ここで黙ってHiggsfieldに切り替えていた＝頼んでいないクレジット消費。
@@ -4942,12 +4998,16 @@ async def _handle_image_request(cid, request, refine=True):
     if _hf_explicit_only() and not _HF_NAMED_RE.search(original):
         await send_as(
             orch, cid,
-            "⚠️ Gemini（無料枠）で画像を作れませんでした。\n"
-            + (f"（理由: {_why}）\n" if _why else "")
-            + "勝手にHiggsfieldへは"
-            "切り替えません（クレジットを使うため）。どちらか送ってください。\n"
-            "・「**クロードで作って**」＝HTMLから書き出す（無料・文字や図に強い）\n"
-            "・「**ヒッグスフィールドで作って**」＝生成モデルを使う（クレジット消費）"
+            ("🕒 **Geminiの無料枠を使い切りました。**\n"
+             if _quota else "⚠️ Gemini（無料枠）で画像を作れませんでした。\n")
+            + (f"（{_why}）\n" if _quota else
+               (f"（理由: {_why}）\n" if _why else ""))
+            + ("使えるモデルは順番に試したうえで全部だめでした。"
+               "待てば自動で戻ります。急ぐなら:\n" if _quota else
+               "勝手にHiggsfieldへは"
+               "切り替えません（クレジットを使うため）。どちらか送ってください。\n")
+            + "・「**クロードで作って**」＝HTMLから書き出す（無料・文字や図に強い）\n"
+            + "・「**ヒッグスフィールドで作って**」＝生成モデルを使う（クレジット消費）"
         )
         return
     await send_as(orch, cid, "⚠️ Gemini画像が使えないため、Higgsfieldで生成します…")

@@ -91,6 +91,9 @@ _stub("aiohttp", ClientSession=object, ClientTimeout=lambda **k: None)
 
 import ai_group_chat as bot  # noqa: E402
 
+# 本物の実装を控えておく（スタブに差し替えたあとでも中身を検証するため）
+_REAL_GEN_IMG = bot._gemini_generate_image_sync
+
 # 実物の会話ハンドラ（install_stubs で記録用に差し替わる前に退避）。
 # 「判定＋返事の1回化」など、会話ハンドラ本体の挙動を検証するテストで使う。
 _HANDLE_ORCH = bot._handle_orchestrator
@@ -1364,6 +1367,55 @@ async def run():
         bot._gemini_generate_image_sync = _keep16
     check("画像モデルは複数用意して順に試す",
           len(bot.GEMINI_IMAGE_MODELS) >= 2, bot.GEMINI_IMAGE_MODELS)
+
+    # --- ⑯.5 画像モデルも無料枠切れでローテーションすること ---
+    #     テキスト側と同じ方針（枠切れはクールダウン→次のモデル→時間で復帰）。
+    install_stubs()
+    _asked = []
+    _keep_models = bot.GEMINI_IMAGE_MODELS[:]
+    _keep_cd = dict(bot._gemini_cooldown)
+    _keep_client = bot.gemini_client
+
+    class _FakeModels:
+        def generate_content(self, model=None, contents=None):
+            _asked.append(model)
+            if model == "img-a":          # 1つ目は無料枠切れ
+                raise RuntimeError("429 RESOURCE_EXHAUSTED quota PerDay")
+            return types.SimpleNamespace(candidates=[types.SimpleNamespace(
+                content=types.SimpleNamespace(parts=[types.SimpleNamespace(
+                    inline_data=types.SimpleNamespace(data=b"PNG"))]))])
+
+    try:
+        bot.GEMINI_IMAGE_MODELS[:] = ["img-a", "img-b"]
+        bot._gemini_cooldown.clear()
+        bot._gemini_image_ok["model"] = ""
+        bot._gemini_img_rr["i"] = 0
+        bot.gemini_client = types.SimpleNamespace(models=_FakeModels())
+        check("枠切れなら次のモデルで作る",
+              _REAL_GEN_IMG("猫") == b"PNG", _asked)
+        check("枠切れのモデルはクールダウンに入れる",
+              bot._gemini_cooldown.get("img-a", 0) > _tm4.time(),
+              bot._gemini_cooldown)
+        _asked.clear()
+        _REAL_GEN_IMG("犬")
+        check("次からは枠切れのモデルを試さない",
+              "img-a" not in _asked, _asked)
+        # 全部クールダウン → 無料枠切れとして扱う（他のエラーと混ぜない）
+        bot._gemini_cooldown["img-b"] = _tm4.time() + 600
+        _raised = None
+        try:
+            _REAL_GEN_IMG("鳥")
+        except Exception as _e:  # noqa: BLE001
+            _raised = _e
+        check("全部だめなら無料枠切れとして扱う",
+              isinstance(_raised, bot.GeminiQuotaExceeded), repr(_raised))
+        check("いつ戻るかを伝える", "分" in str(_raised), str(_raised))
+    finally:
+        bot.GEMINI_IMAGE_MODELS[:] = _keep_models
+        bot._gemini_cooldown.clear()
+        bot._gemini_cooldown.update(_keep_cd)
+        bot._gemini_image_ok["model"] = ""
+        bot.gemini_client = _keep_client
 
     # --- ⑰ 「この画像の背景を室内にして」で別人が出来ていた（23:38の実例）---
     #     参照画像をGeminiに渡していなかったため、依頼者の写真と無関係な
