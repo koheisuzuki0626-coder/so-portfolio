@@ -4464,6 +4464,12 @@ def classify_route(content, **kw):
     return route
 
 
+# 作り手を名指ししていても、生成ではない用事（調べ物・要約・文章）。
+_NOT_GEN_VERB_RE = re.compile(
+    "調べ|検索|要約|まとめて|翻訳|説明して|教えて|読んで|分析|"
+    "考えて|相談|聞いて|返事|文章|台本|コメント|意見")
+
+
 def _classify_route_raw(content, *, has_attachments=False, has_video_att=False,
                    has_image_att=False, has_job=False, has_last_gen=False,
                    after_credits=False, has_running=False, last_was_design=False):
@@ -4709,6 +4715,22 @@ def _classify_route_raw(content, *, has_attachments=False, has_video_att=False,
             return "motion"
         if _GEN_INTENT2_RE.search(content) or re.search("したい|やりたい|お願い", content):
             return "motion_ask"
+    # ④ 作り手を名指しした依頼は、必ずその作り手の生成へ。
+    #    他のどのルートにも当たらなかった時の最後の受け皿。
+    #    事故：「geminiで背景を普通の室内にして」が会話に落ち、
+    #    ボットは「生成の実行に許可が必要みたい」と作り話をして終わった。
+    #    名指しは本人の明確な意思表示なので、会話に落としてはいけない。
+    if (not has_attachments and _wants_action(content)
+            and not _looks_like_question(content)
+            # 「ジェミニで調べて」「ジェミニで要約して」は生成の依頼ではない
+            and not _NOT_GEN_VERB_RE.search(content)
+            # 何を作るかが書かれている時だけ。「ヒッグスフィールドで作って」だけなら
+            # 直前の依頼を引き継ぐ①.45に任せる（無ければ何も始めない）
+            and _has_subject(content)):
+        if _BY_HF_RE.search(content):
+            return "hf_auto"
+        if _BY_GEMINI_RE.search(content):
+            return "image"
     return None  # 決定的ルートに該当せず → AI(_plan)へ
 
 
@@ -7122,12 +7144,14 @@ _NOTIFY_LATER_RE = re.compile(
 
 
 # 内部の状態についての作り話。確認待ちが無いのにこう言うのは全部でたらめ。
+# 言い方は毎回変わる（「許可が下りてない」→「許可が必要みたい」）ので、
+# 語を1つずつ潰さず「許可・権限まわりの否定/推量」という形で受ける。
 _FAKE_STATE_RE = re.compile(
-    "許可(が|は)?(下り|おり|降り)て(ない|いない|なかった)|"
-    "承認(が|は)?(下り|おり|降り)て(ない|いない|なかった)|"
-    "生成ボタン|実行ボタン|"
-    "権限(が|は)?(ない|なかった|通ってない)|"
-    "(通ってなくて|通っていなくて)"
+    "(許可|承認|権限)[^。\n]{0,12}"
+    "(下り|おり|降り|必要|通って|足りて|得られ|もらえ)"
+    "[^。\n]{0,10}(ない|いない|なかった|みたい|ようだ|らしい|そう)|"
+    "(この場|こっち|ここ)では[^。\n]{0,14}(動かせ|実行でき|できな|通せ)|"
+    "生成ボタン|実行ボタン|(通ってなくて|通っていなくて)"
 )
 
 

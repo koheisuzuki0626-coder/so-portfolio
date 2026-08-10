@@ -1281,9 +1281,15 @@ async def run():
                              has_last_gen=True) == "hf_auto",
           bot.classify_route("この画像の背景を室内の背景にして、ヒッグスフィールドで",
                              has_last_gen=True))
-    check("直前の生成が無ければ勝手に始めない",
-          bot.classify_route("この画像の背景を室内の背景にして、ヒッグスフィールドで")
-          is None)
+    # 作り手の名指しだけで中身が無い時は、直前の依頼が無ければ何も始めない
+    check("中身が無ければ勝手に始めない",
+          bot.classify_route("ヒッグスフィールドで作って") is None,
+          bot.classify_route("ヒッグスフィールドで作って"))
+    # 中身が書かれていれば、直前の生成が無くても名指しされた作り手へ通す
+    # （参照が要る依頼なら、生成前に写真を求める別のガードが受け止める）
+    check("中身があれば名指しされた作り手へ",
+          bot.classify_route("geminiで背景を普通の室内にして") == "image",
+          bot.classify_route("geminiで背景を普通の室内にして"))
     # 参照が引き継がれないと、人物の消えた「部屋だけ」の画像になる
     bot._last_ref.clear()
     _msg13 = _FakeMessage("この画像の背景を室内にして")
@@ -1313,10 +1319,20 @@ async def run():
     # --- ⑮ 内部の状態について作り話をしない（23:14の実例）---
     install_stubs()
     bot._pending_approvals.pop(1234, None)
+    # 言い方は毎回変わったので（「下りてない」→「必要みたい」）、形で受ける
+    for _fake in ("生成の許可が下りてないみたい。ここから普通に進められるよ。",
+                  "生成の実行に許可が必要みたい。この場では動かせないので通常フローで。",
+                  "実際の生成ボタンを押すところは通ってなくて、まだ動いてない。"):
+        check(f"確認待ちが無いのに内部の状態を作り話しない: {_fake[:14]}…",
+              not any(_w in bot._drop_false_progress(_fake, 1234)
+                      for _w in ("許可", "生成ボタン", "動かせない")),
+              bot._drop_false_progress(_fake, 1234))
     _fake = "生成の許可が下りてないみたい。ここから普通に進められるよ。"
-    check("確認待ちが無いのに『許可が下りてない』と言わない",
-          "許可" not in bot._drop_false_progress(_fake, 1234),
-          bot._drop_false_progress(_fake, 1234))
+    check("道具の説明としての『許可』は落とさない",
+          "許可" in bot._drop_false_progress(
+              "ヒッグスフィールドのアカウントは管理者の許可で使えるようになるよ。", 1234),
+          bot._drop_false_progress(
+              "ヒッグスフィールドのアカウントは管理者の許可で使えるようになるよ。", 1234))
     check("落としたあとも何か返す",
           bool(bot._drop_false_progress(_fake, 1234).strip()),
           bot._drop_false_progress(_fake, 1234))
