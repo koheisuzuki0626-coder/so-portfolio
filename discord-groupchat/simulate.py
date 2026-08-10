@@ -203,6 +203,12 @@ def last_call(label):
 def install_stubs(mcp_url=None):
     FIRED.clear()
     CALLS.clear()
+    # テストの失敗を本物の errors.log に書かない。起動時セルフテストで
+    # simulate.py が走るため、実在しないエラーが「直近のエラー」に並び、
+    # 不具合調査を誤らせた（実際に「404 model not found」が2件紛れた）。
+    import tempfile as _tf0
+    import pathlib as _pl0
+    bot.ERROR_LOG = _pl0.Path(_tf0.mkdtemp()) / "errors.log"
     bot.CONFIRM_BEFORE_WORK = False   # 確認は専用テストで検証する
     for ch in _CHANNELS.values():
         ch.sent.clear()   # 前のテストの送信内容が混ざらないように
@@ -1575,6 +1581,53 @@ async def run():
     check("エラーは急ぎ扱いにする",
           bot.AUTOLOG_URGENT_SEC < bot.AUTOLOG_PERIOD_SEC,
           (bot.AUTOLOG_URGENT_SEC, bot.AUTOLOG_PERIOD_SEC))
+
+    # --- ⑲ 使えないと分かっている手を勧めない（本人の指摘）---
+    #     「geminiで画像生成できないのに案内してくる」。
+    #     Higgsfieldが上限の時に必ず「Geminiで作って」と勧めていた。
+    install_stubs()
+    _keep19 = (bot.GEMINI_IMAGE_MODELS[:], dict(bot._gemini_cooldown))
+    try:
+        bot.GEMINI_IMAGE_MODELS[:] = ["img-a"]
+        bot._gemini_cooldown.clear()
+        bot._gemini_bad_models.clear()
+        check("使えるなら使えると答える", bot._gemini_image_usable(), True)
+        _note_ok = bot._gen_fail_note("ERROR: 本日の生成上限に達しています")
+        check("使える時はGeminiを勧める", "Geminiで画像生成して" in _note_ok, _note_ok)
+        # 全部だめな状態にする
+        bot._gemini_bad_models.add("img-a")
+        check("だめなら使えないと答える", not bot._gemini_image_usable(), False)
+        _note_ng = bot._gen_fail_note("ERROR: 本日の生成上限に達しています")
+        check("使えない時はGeminiを勧めない",
+              "Geminiで画像生成して" not in _note_ng, _note_ng)
+        check("代わりに今できる手を出す", "クロードで作って" in _note_ng, _note_ng)
+        check("なぜ使えないかを言う",
+              "存在しません" in _note_ng or "分" in _note_ng, _note_ng)
+        # 画像の依頼そのものも、整形まで走らせずに先に断る
+        _ch19 = _CHANNELS.setdefault(1234, _FakeChannel(1234))
+        _ch19.sent.clear()
+        _refined = []
+
+        async def _refine19(req, mtype, style="", has_ref=False):
+            _refined.append(req)
+            return req
+        _keep_ref19 = bot._refine_prompt
+        bot._gemini_img_discovered["done"] = True
+        try:
+            bot._refine_prompt = _refine19
+            await _REAL_IMAGE_REQ(1234, "猫の画像作って")
+        finally:
+            bot._refine_prompt = _keep_ref19
+        check("作れない時はプロンプト整形まで走らせない", not _refined, _refined)
+        check("作れないことを先に伝える",
+              any("いまGeminiでは画像を作れません" in t for t in _ch19.sent),
+              _ch19.sent[-1:])
+    finally:
+        bot.GEMINI_IMAGE_MODELS[:] = _keep19[0]
+        bot._gemini_cooldown.clear()
+        bot._gemini_cooldown.update(_keep19[1])
+        bot._gemini_bad_models.clear()
+        bot._gemini_img_discovered["done"] = False
 
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()

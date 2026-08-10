@@ -2061,6 +2061,26 @@ def _discover_gemini_image_models():
     return found
 
 
+def _gemini_image_usable():
+    """いま Gemini で画像を作れる見込みがあるか。
+    存在しないIDと枠切れ中を除いて、試せるモデルが1つでも残っているか。
+    これを見ずに「Geminiで作って」と案内していたため、
+    使えないと分かっている手を勧めてしまっていた（本人の指摘）。"""
+    now = time.time()
+    return any(m not in _gemini_bad_models
+               and _gemini_cooldown.get(m, 0) <= now
+               for m in GEMINI_IMAGE_MODELS)
+
+
+def _gemini_image_why_not():
+    """使えない理由の一言（案内文に添えるため）。"""
+    if not GEMINI_IMAGE_MODELS:
+        return "使えるモデルがありません"
+    if all(m in _gemini_bad_models for m in GEMINI_IMAGE_MODELS):
+        return "登録されているモデルIDが今のAPIに存在しません"
+    return _cooldown_note(GEMINI_IMAGE_MODELS)
+
+
 def _gemini_image_status():
     """画像生成モデルが今どうなっているかを一覧で返す。
     「ローテーションできてるのか分からない」を、送れば見える状態にする。"""
@@ -5096,6 +5116,24 @@ async def _handle_image_request(cid, request, refine=True):
     描写プロンプトに変換してから生成し、使ったプロンプトも見せる（動画と同じ扱い）。"""
     original = request
     _remember_media(cid, "image")
+    # 使えないと分かっているのにプロンプト整形（数十秒）まで走らせてから
+    # 失敗していた。先に確かめて、無理なら今できる手を出す。
+    if not _gemini_image_usable():
+        # 全部「存在しないID」なら、一覧を引き直せば復活する見込みがある
+        if all(m in _gemini_bad_models for m in GEMINI_IMAGE_MODELS):
+            _gemini_img_discovered["done"] = False
+            await asyncio.to_thread(_discover_gemini_image_models)
+    if not _gemini_image_usable():
+        await send_as(
+            orch, cid,
+            "🚫 **いまGeminiでは画像を作れません。**\n"
+            f"（{_gemini_image_why_not()}）\n"
+            "使える手はこちらです。\n"
+            "・「**クロードで作って**」＝HTMLから書き出す（無料・文字や図に強い）\n"
+            "・「**ヒッグスフィールドで作って**」＝生成モデルを使う（クレジット消費）\n"
+            "状況は「**画像モデルどうなってる**」で見られます。"
+        )
+        return
     # 「この画像の背景を室内にして」は、元の写真を渡さないと別人が出来上がる。
     # 事故：参照を渡さずに作り、依頼者の写真とは無関係な男性の画像になった。
     ref_bytes, ref_mime = None, "image/png"
@@ -5664,8 +5702,12 @@ def _gen_fail_note(err):
             f"（返ってきた理由: {err[:150]}）\n"
             "これはコードの不具合ではなく、アカウントの生成枠の問題です。\n"
             "・枠が戻るまで待つ（日をまたぐと戻ることが多い）\n"
-            "・急ぐなら「**Geminiで画像生成して**」と送ってください"
-            "（無料枠なのでクレジットを使いません）"
+            + ("・急ぐなら「**Geminiで画像生成して**」と送ってください"
+               "（無料枠なのでクレジットを使いません）"
+               if _gemini_image_usable() else
+               "・Geminiの画像生成も今は使えません"
+               f"（{_gemini_image_why_not()}）。"
+               "文字や図が主役なら「**クロードで作って**」は今すぐ使えます（無料）")
         )
     return f"⚠️ 生成の投入に失敗: {err[:250]}"
 
@@ -9290,7 +9332,8 @@ async def _dispatch_message(message):
             return
         _gate(message, cid, f"画像の生成（{_gen_subject(content)[:40]}）",
               "Geminiの無料枠で画像を生成します"
-              "（使えない場合はHiggsfieldの最適モデルに切り替え）",
+              + ("" if _gemini_image_usable() else
+                 f"（⚠️ いまGeminiは使えません: {_gemini_image_why_not()}）"),
               lambda: _handle_image_request(cid, content), "画像生成",
               "原則無料（Geminiの無料枠）", engine=ENGINE_GEMINI_IMG)
         return
