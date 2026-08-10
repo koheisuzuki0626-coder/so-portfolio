@@ -7473,6 +7473,11 @@ async def send_as(bot, channel_id, text, view=None):
     """長い本文は切り捨てず、分割して全部送る。
     ボタン(view)は最後の塊に付ける（読み終わった位置に出す）。"""
     _mark_sent(channel_id, text)
+    # ユーザーの画面にエラーが出たら、例外として記録されていなくても
+    # すぐログを共有する。「なんかエラーでた」と言われた時点で開発側が
+    # 中身を読めるようにするため（記録の無い⚠️で見えない時間があった）。
+    if str(text or "").lstrip()[:1] in ("\u26a0", "\U0001f6ab", "\U0001f6d1"):
+        _mark_activity(channel_id, urgent=True)   # ⚠ / 🚫 / 🛑
     channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
     parts = _chunks(text)
     for i, part in enumerate(parts):

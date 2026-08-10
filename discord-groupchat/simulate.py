@@ -1581,6 +1581,17 @@ async def run():
     check("エラーは急ぎ扱いにする",
           bot.AUTOLOG_URGENT_SEC < bot.AUTOLOG_PERIOD_SEC,
           (bot.AUTOLOG_URGENT_SEC, bot.AUTOLOG_PERIOD_SEC))
+    # 例外として記録されない⚠️（生成の投入失敗など）でも急ぎ扱いにする。
+    # 「なんかエラーでた」と言われた時点でログが古く、中身を読めなかった。
+    for _t, _want in (("⚠️ 生成の投入に失敗", True), ("🚫 上限です", True),
+                      ("🛑 やめました", True), ("✅ できました！", False),
+                      ("ふつうの返事だよ", False)):
+        bot._activity.update({"n": 0, "shared_n": 0, "cid": None,
+                              "urgent": False})
+        await bot.send_as(bot.orch, 1234, _t)
+        check(f"{_t[:8]!r} の急ぎ扱い={_want}",
+              bot._activity["urgent"] == _want, bot._activity)
+    bot._activity.update({"n": 0, "shared_n": 0, "cid": None, "urgent": False})
 
     # --- ⑲ 使えないと分かっている手を勧めない（本人の指摘）---
     #     「geminiで画像生成できないのに案内してくる」。
