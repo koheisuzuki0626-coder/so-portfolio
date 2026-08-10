@@ -5199,11 +5199,7 @@ async def _handle_image_request(cid, request, refine=True):
         # 「変わったか」で見ると、作り手の指定を落としただけでも変わって見えるので、
         # 「英語になったか」で判断する。
         if not _looks_english_prompt(request):
-            await send_as(
-                orch, cid,
-                "⚠️ 英語プロンプトに直せませんでした"
-                "（クロード側の利用上限の可能性）。日本語のまま渡すので、"
-                "出来上がりが依頼とずれることがあります。")
+            await send_as(orch, cid, _refine_fail_note())
     _save_last_gen(cid, request, "image", None, "画像")
     await send_as(
         orch, cid,
@@ -5656,11 +5652,18 @@ _TOOL_IN_PROMPT_RE = re.compile("higgs|boson|particle\\s*physics", re.I)
 _REALLY_PHYSICS_RE = re.compile("素粒子|物理|ヒッグス粒子|加速器|宇宙|銀河|星雲")
 
 
+# 英訳できなかった理由。「直せませんでした」だけでは何が起きたか分からず、
+# クロードの上限なのか、返答が英語でなかったのかが切り分けられなかった。
+_refine_fail = {"why": ""}
+
+
 def _drop_tool_words(request):
     """依頼文から作り手（ヒッグスフィールド/クロード/Gemini）の指定を落とす。
     残すと英語プロンプトに翻訳され、絵の題材になってしまう。"""
     t = _ENGINE_WORD_RE.sub("", request or "")
-    return re.sub(r"^[\s、。,.！!？?で]+", "", t).strip() or (request or "")
+    t = re.sub(r"^[\s、。,.！!？?で]+", "", t)
+    # 「背景を室内に変えて、ヒッグスフィールドで」→ 末尾に「、」が残っていた
+    return re.sub(r"[\s、。,.]+$", "", t).strip() or (request or "")
 
 
 def _clean_tool_words(prompt, request):
@@ -5677,6 +5680,16 @@ def _clean_tool_words(prompt, request):
     out = ", ".join(x.strip() for x in kept if x.strip())
     print(f"[refine_prompt] 道具の名前が題材になっていたので落とした: {prompt[:80]}")
     return out or prompt
+
+
+def _refine_fail_note():
+    """英訳できなかったことの知らせ。理由が分かっていれば必ず添える。"""
+    why = _refine_fail.get("why") or ""
+    return (
+        "⚠️ 英語プロンプトに直せませんでした。日本語のまま渡すので、"
+        "出来上がりが依頼とずれることがあります。\n"
+        + (f"（理由: {why[:200]}）" if why else "（理由は取れませんでした）")
+    )
 
 
 async def _refine_prompt(request, media_type, style="", has_ref=False):
@@ -5713,6 +5726,7 @@ async def _refine_prompt(request, media_type, style="", has_ref=False):
         + (f"\n学習済みスタイルの傾向（合う範囲で反映）:\n{sp}" if sp else "")
         + f"\n依頼: {request}"
     )
+    _refine_fail["why"] = ""
     try:
         out = _strip_cli_boilerplate((await _ai_text_bg(ask, "refine_prompt")).strip())
         # 先頭行を無条件に採るとCLIの前置きがそのまま入る。実際に
@@ -5722,10 +5736,14 @@ async def _refine_prompt(request, media_type, style="", has_ref=False):
             ln = ln.strip().strip('"' + "'`")
             if len(ln) >= 15 and _looks_english_prompt(ln):
                 return _clean_tool_words(ln, request)
+        _refine_fail["why"] = f"返答が英語のプロンプトではありませんでした: {out[:120]}"
         print(f"[refine_prompt] 英語プロンプトが得られず原文使用: {out[:120]}")
+        _log_error("プロンプトの英訳", RuntimeError(_refine_fail["why"]))
         return request
     except Exception as e:  # noqa: BLE001
+        _refine_fail["why"] = str(e)[:200]
         print(f"[refine_prompt] 失敗、原文使用: {str(e)[:120]}")
+        _log_error("プロンプトの英訳", e)
         return request
 
 
@@ -5823,11 +5841,7 @@ async def _run_hf_generate(message, request, model, media_type, label,
             await send_as(orch, cid, f"🖋 プロンプト: {refined[:300]}")
             request = refined
         if not _looks_english_prompt(request):
-            await send_as(
-                orch, cid,
-                "⚠️ 英語プロンプトに直せませんでした"
-                "（クロード側の利用上限の可能性）。日本語のまま渡すので、"
-                "出来上がりが依頼とずれることがあります。")
+            await send_as(orch, cid, _refine_fail_note())
     await send_as(
         orch, cid,
         f"🎬 {label}で{kind}を生成します…" if model

@@ -93,6 +93,7 @@ import ai_group_chat as bot  # noqa: E402
 
 # 本物の実装を控えておく（スタブに差し替えたあとでも中身を検証するため）
 _REAL_GEN_IMG = bot._gemini_generate_image_sync
+_REAL_REFINE = bot._refine_prompt
 
 # 実物の会話ハンドラ（install_stubs で記録用に差し替わる前に退避）。
 # 「判定＋返事の1回化」など、会話ハンドラ本体の挙動を検証するテストで使う。
@@ -1682,6 +1683,9 @@ async def run():
         check("英訳できなかったことを知らせる",
               any("英語プロンプトに直せませんでした" in t for t in _ch20.sent),
               _ch20.sent[:2])
+        check("なぜ直せなかったかを添える",
+              any("理由" in t for t in _ch20.sent
+                  if "英語プロンプトに直せませんでした" in t), _ch20.sent[:2])
     finally:
         (bot._refine_prompt, bot._gemini_generate_image_sync) = _keep20
 
@@ -1757,6 +1761,39 @@ async def run():
               _ch21.sent[:3])
     finally:
         (bot._refine_prompt, bot._gemini_generate_image_sync) = _keep21b
+
+    # --- ㉒ 「英語プロンプトに直せませんでした」の理由が分からなかった ---
+    #     上限なのか、返答が英語でなかったのかを切り分けられず、
+    #     推測で「クロード側の利用上限の可能性」と書いていた。
+    _keep22 = bot._ai_text_bg
+    try:
+        async def _ai_ng(prompt, tag=""):
+            raise RuntimeError("Claude Code サブスクの利用上限に達しています")
+        bot._ai_text_bg = _ai_ng
+        bot._refine_fail["why"] = ""
+        _out = await _REAL_REFINE("背景を室内にして", "image")
+        check("英訳できなければ原文を返す", _out == "背景を室内にして", _out)
+        check("理由を控えておく", "利用上限" in bot._refine_fail["why"],
+              bot._refine_fail["why"])
+        check("知らせに理由を入れる", "利用上限" in bot._refine_fail_note(),
+              bot._refine_fail_note())
+
+        async def _ai_ja(prompt, tag=""):
+            return "背景を室内にした画像です"      # 英語になっていない
+        bot._ai_text_bg = _ai_ja
+        bot._refine_fail["why"] = ""
+        await _REAL_REFINE("背景を室内にして", "image")
+        check("英語でない返答も理由として区別する",
+              "英語のプロンプトではありません" in bot._refine_fail["why"],
+              bot._refine_fail["why"])
+    finally:
+        bot._ai_text_bg = _keep22
+        bot._refine_fail["why"] = ""
+    # 作り手の指定を落とした後に「、」が残っていた
+    check("落としたあとの句読点を残さない",
+          bot._drop_tool_words("背景を自然な室内に変えて、ヒッグスフィールドで")
+          == "背景を自然な室内に変えて",
+          bot._drop_tool_words("背景を自然な室内に変えて、ヒッグスフィールドで"))
 
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
