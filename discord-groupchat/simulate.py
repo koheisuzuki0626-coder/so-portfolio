@@ -1272,6 +1272,56 @@ async def run():
           _c12[0] if _c12 else f"fired={FIRED}")
     bot._last_media.clear()
 
+    # --- ⑬ 生成物に返信して直しを頼んだのに会話に落ちた（23:13の実例）---
+    #     「この画像の背景を室内の背景にして、ヒッグスフィールドで」が
+    #     どの機能にも流れず、ボットは「許可が下りてないみたい」と作り話をした。
+    install_stubs()
+    check("生成物への返信の直し依頼はヒッグスフィールドへ",
+          bot.classify_route("この画像の背景を室内の背景にして、ヒッグスフィールドで",
+                             has_last_gen=True) == "hf_auto",
+          bot.classify_route("この画像の背景を室内の背景にして、ヒッグスフィールドで",
+                             has_last_gen=True))
+    check("直前の生成が無ければ勝手に始めない",
+          bot.classify_route("この画像の背景を室内の背景にして、ヒッグスフィールドで")
+          is None)
+    # 参照が引き継がれないと、人物の消えた「部屋だけ」の画像になる
+    bot._last_ref.clear()
+    _msg13 = _FakeMessage("この画像の背景を室内にして")
+    _keep13 = bot._describe_media_url
+    try:
+        async def _no_desc(url, ch=None):
+            return ""
+        bot._describe_media_url = _no_desc
+        await bot._apply_media_url_context(
+            _msg13,
+            "この画像の背景を室内にして https://example.com/a/hf_20260810_x.png",
+            1234)
+    finally:
+        bot._describe_media_url = _keep13
+    check("返信で指された画像を参照として覚える",
+          bot._recent_ref(1234) is not None, bot._last_ref.get(1234))
+    bot._last_ref.clear()
+
+    # --- ⑭ 上限で生成できない時に、何をすればいいか分かること ---
+    _note = bot._gen_fail_note("ERROR: 本日の生成上限（グレース期間分）に達しています")
+    check("上限だと分かる言い方にする", "上限" in _note and "不具合ではなく" in _note, _note)
+    check("代わりの手（無料枠）を示す", "Gemini" in _note, _note)
+    check("上限以外はそのまま理由を出す",
+          "タイムアウト" in bot._gen_fail_note("claude CLI実行失敗: タイムアウト"),
+          bot._gen_fail_note("claude CLI実行失敗: タイムアウト"))
+
+    # --- ⑮ 内部の状態について作り話をしない（23:14の実例）---
+    install_stubs()
+    bot._pending_approvals.pop(1234, None)
+    _fake = "生成の許可が下りてないみたい。ここから普通に進められるよ。"
+    check("確認待ちが無いのに『許可が下りてない』と言わない",
+          "許可" not in bot._drop_false_progress(_fake, 1234),
+          bot._drop_false_progress(_fake, 1234))
+    check("落としたあとも何か返す",
+          bool(bot._drop_false_progress(_fake, 1234).strip()),
+          bot._drop_false_progress(_fake, 1234))
+    bot._pending_do.clear()
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile

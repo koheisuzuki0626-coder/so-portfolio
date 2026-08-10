@@ -2649,6 +2649,13 @@ async def _apply_media_url_context(message, content, cid):
             urls = [url]
     if not urls:
         return content
+    # 生成物に返信して「この画像の背景を室内にして」と頼まれた時、
+    # そのURLを参照として覚えておかないと、人物の消えた別物ができる。
+    # 事故：返信で頼んだのに参照が無く、人のいない部屋だけの画像になった。
+    for _u in urls[:2]:
+        if re.search(r"\.(png|jpe?g|webp|gif)(\?|$)", _u, re.I):
+            _remember_ref(cid, _u)
+            break
     async with message.channel.typing():
         for url in urls[:2]:
             desc = await _describe_media_url(url, message.channel)
@@ -5334,6 +5341,30 @@ _POINTS_AT_RE = re.compile(
 )
 
 
+# 生成が通らなかった理由のうち、こちらでは直せないもの（アカウント側の上限）。
+# 「投入に失敗」とだけ出しても何をすればいいか分からない。何が起きたのかと、
+# 次にできることを一緒に出す。
+_LIMIT_ERR_RE = re.compile(
+    "生成上限|上限に達|利用上限|クレジットが不足|残高|"
+    "limit (reached|exceeded)|quota|insufficient|out of credit|rate.?limit",
+    re.I)
+
+
+def _gen_fail_note(err):
+    """生成が投入できなかった時の知らせ。上限なら対処も添える。"""
+    err = (err or "").strip()
+    if _LIMIT_ERR_RE.search(err):
+        return (
+            "🚫 **Higgsfield側の上限で生成できませんでした。**\n"
+            f"（返ってきた理由: {err[:150]}）\n"
+            "これはコードの不具合ではなく、アカウントの生成枠の問題です。\n"
+            "・枠が戻るまで待つ（日をまたぐと戻ることが多い）\n"
+            "・急ぐなら「**Geminiで画像生成して**」と送ってください"
+            "（無料枠なのでクレジットを使いません）"
+        )
+    return f"⚠️ 生成の投入に失敗: {err[:250]}"
+
+
 async def _run_hf_generate(message, request, model, media_type, label,
                            aspect_ratio=None, refine=True):
     """Higgsfieldで生成→投入→完了監視→URL自動投稿（モーションと同じ堅牢さ）。
@@ -5400,7 +5431,7 @@ async def _run_hf_generate(message, request, model, media_type, label,
             request, model, media_type, refs, aspect_ratio=aspect_ratio
         )
     except Exception as e:  # noqa: BLE001
-        await send_as(orch, cid, f"⚠️ 生成の投入に失敗: {str(e)[:250]}")
+        await send_as(orch, cid, _gen_fail_note(str(e)))
         return
     # 「もう一回作り直して」で引き継げるよう、今回のプロンプトを保存
     _save_last_gen(cid, request, media_type, aspect_ratio, label)
@@ -5476,6 +5507,9 @@ _REVISE_ADD_RE = re.compile(
 )
 _REVISE_WEAK_RE = re.compile(
     "さっきの(動画|画像|映像|やつ|の)|前の(動画|画像|映像|やつ)|"
+    # 生成物に返信して「この画像の背景を室内にして」と言うのは、
+    # どれを直すかの最も明確な指定。これを拾えず会話に落ちていた。
+    "この(画像|写真|動画|映像|やつ)|それの|これの|"
     "少し変えて|ちょっと変えて|もうちょい|もうちょっと|もう少し|もっと"
 )
 # 「めて」は褒めて・決めて・まとめて・やめて…と当たりが広すぎた。
@@ -7087,6 +7121,16 @@ _NOTIFY_LATER_RE = re.compile(
 )
 
 
+# 内部の状態についての作り話。確認待ちが無いのにこう言うのは全部でたらめ。
+_FAKE_STATE_RE = re.compile(
+    "許可(が|は)?(下り|おり|降り)て(ない|いない|なかった)|"
+    "承認(が|は)?(下り|おり|降り)て(ない|いない|なかった)|"
+    "生成ボタン|実行ボタン|"
+    "権限(が|は)?(ない|なかった|通ってない)|"
+    "(通ってなくて|通っていなくて)"
+)
+
+
 def _drop_false_progress(text, cid):
     """何も動いていないのに『処理を始めた／終わったら知らせる』と書いた文を落とす。
     プロンプトで禁じても守られなかったので、コード側で必ず落とす
@@ -7101,8 +7145,14 @@ def _drop_false_progress(text, cid):
     except Exception:  # noqa: BLE001
         return text
     parts = re.split(r"(?<=[。\n])", text)
+    # 確認待ちが無いのに「許可が下りてない」「生成ボタンが押されてない」など、
+    # 内部の状態を作り話で説明した文も落とす。
+    # 事故：何も動いていない時に「生成の許可が下りてないみたい」と言い、
+    # 「なんで許可おりてないの？」と聞かれて、さらに作り話を重ねた。
+    _no_pending = not _pending_approvals.get(cid)
     kept = [p for p in parts
-            if not (_PROGRESS_START_RE.search(p) or _NOTIFY_LATER_RE.search(p))]
+            if not (_PROGRESS_START_RE.search(p) or _NOTIFY_LATER_RE.search(p)
+                    or (_no_pending and _FAKE_STATE_RE.search(p)))]
     if len(kept) == len(parts):
         return text              # 何も落ちていない＝作業の宣言はしていない
     out = "".join(kept).strip()
