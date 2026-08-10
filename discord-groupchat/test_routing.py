@@ -667,6 +667,42 @@ def run():
     check("『違う』だけでは作り直しにしない",
           bot.classify_route("デザインの話はしてないよ", **_L4), None)
 
+    print("■ ボットの独り言をプロンプトとして投入しない")
+    # 事故：投入されたプロンプトが
+    # 「このタスクはDiscordボット内部からの依頼(claude -p呼び出し)で、
+    #  コードを書き換える作業ではなく、プロンプト変換だけなので…」
+    # だった。先頭行を無条件に採っていたためCLIの前置きが入った。
+    import asyncio as _aio14
+    _keep_bg2 = bot._ai_text_bg
+
+    async def _meta(prompt, tag="x"):
+        return ("このタスクはDiscordボット内部からの依頼(claude -p呼び出し)です。\n"
+                "photorealistic portrait of the person in the reference image, "
+                "85mm lens, soft window light")
+
+    async def _junk(prompt, tag="x"):
+        return "このタスクは内部からの依頼なので、そのまま出力します。"
+    try:
+        bot._ai_text_bg = _meta
+        _out = _aio14.run(bot._refine_prompt("鼻を高くして", "image"))
+        check("前置きを飛ばして英語の行を採る",
+              _out.startswith("photorealistic"), True)
+        check("前置きを混ぜない", "Discordボット" in _out, False)
+        bot._ai_text_bg = _junk
+        check("英語が得られなければ原文を使う",
+              _aio14.run(bot._refine_prompt("鼻を高くして", "image")), "鼻を高くして")
+    finally:
+        bot._ai_text_bg = _keep_bg2
+    # 直前の生成を「今回の完成」と取り違える幅を狭める
+    import time as _tm14
+    _now2 = _tm14.time()
+    check("数分前の生成は今回のものではない",
+          bot._url_is_stale("https://x/hf_20260810_102000_a.png",
+                            _now2, slack_sec=120)
+          or bot._url_is_stale("https://x/hf_20260101_000000_a.png", _now2), True)
+    check("許容幅は2分以内",
+          bot._url_is_stale.__defaults__[0] <= 120, True)
+
     print("■ 身の上話を進捗確認にしない")
     # 事故：元カノと別れた話の最中に
     # 「でももしあっちに新しい人ができたら本当に別れないといけない」が
@@ -695,8 +731,12 @@ def run():
     _now = _tm13.time()
     check("6日前の生成は今回のものではない",
           bot._url_is_stale("https://x/hf_20260804_201331_c161.png", _now), True)
+    # 「今まさに出来たもの」は、実行時のUTC時刻から作って判定する
+    # （日付を固定で書くと、実行日によって結果が変わってしまう）
+    import datetime as _dt13
+    _stamp = _dt13.datetime.now(_dt13.timezone.utc).strftime("%Y%m%d_%H%M%S")
     check("さっきの生成は通す",
-          bot._url_is_stale("https://x/hf_20260810_075317_abcd.png", _now), False)
+          bot._url_is_stale(f"https://x/hf_{_stamp}_abcd.png", _now), False)
     check("日時が読めなければ止めない",
           bot._url_is_stale("https://x/plain.png", _now), False)
     check("投入時刻が無ければ止めない",

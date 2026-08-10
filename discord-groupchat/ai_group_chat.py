@@ -4873,7 +4873,7 @@ async def _mcp_motion_control(image_url, video_url, request):
 _HF_STAMP_RE = re.compile(r"hf_(\d{8})_(\d{6})")
 
 
-def _url_is_stale(url, since, slack_sec=600):
+def _url_is_stale(url, since, slack_sec=120):
     """URLに埋まった生成日時が、投入時刻より前なら True（今回のものではない）。
     日時が読めない時は False（判定できないものは止めない）。"""
     if not url or not since:
@@ -5160,10 +5160,16 @@ async def _refine_prompt(request, media_type, style="", has_ref=False):
         + f"\n依頼: {request}"
     )
     try:
-        out = (await _ai_text_bg(ask, "refine_prompt")).strip()
-        line = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
-        line = line.strip('"' + "'`")
-        return line or request
+        out = _strip_cli_boilerplate((await _ai_text_bg(ask, "refine_prompt")).strip())
+        # 先頭行を無条件に採るとCLIの前置きがそのまま入る。実際に
+        # 「このタスクはDiscordボット内部からの依頼(claude -p呼び出し)で…」
+        # が画像プロンプトとして投入された。英語の描写になっている行を選ぶ。
+        for ln in out.splitlines():
+            ln = ln.strip().strip('"' + "'`")
+            if len(ln) >= 15 and _looks_english_prompt(ln):
+                return ln
+        print(f"[refine_prompt] 英語プロンプトが得られず原文使用: {out[:120]}")
+        return request
     except Exception as e:  # noqa: BLE001
         print(f"[refine_prompt] 失敗、原文使用: {str(e)[:120]}")
         return request
