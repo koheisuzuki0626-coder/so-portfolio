@@ -1428,6 +1428,21 @@ def run():
         check(f"{_t!r} は作業の依頼", bot._wants_action(_t), True)
     check("勝手に始まると困る種類だけ門を通す",
           set(bot._ACTION_KINDS), {"selffix", "exec", "video", "image"})
+    # 質問で終わる文は聞いているだけ。ただし「〜てくれる？」は依頼。
+    for _t in ("クロードコードって使ってる？", "動画作れるの？", "これできますか"):
+        check(f"{_t!r} は質問（依頼ではない）", bot._wants_action(_t), False)
+    for _t in ("動画作ってくれる？", "サムネ直してもらえる？", "調べてくれない？"):
+        check(f"{_t!r} は依頼のまま", bot._wants_action(_t), True)
+    # 何を直すか書かれていない希望は、始めずに聞き返す（対象は道具の名前だけ）
+    for _t in ("クロードコードで直したい", "claude codeで修正したい", "変えたい"):
+        check(f"{_t!r} は対象不明なので始めない", bot._wants_action(_t), False)
+    for _t in ("コード直したい", "ロゴ作りたい", "サムネを変えたい"):
+        check(f"{_t!r} は対象があるので依頼", bot._wants_action(_t), True)
+    # 例外（はっきり頼んでいれば通す）が、元のガードを無効化していないこと
+    check("説明の質問は、頼む形が無ければ通さない",
+          bot._wants_action("相関図の作り方が知りたい"), False)
+    check("説明を聞きつつ頼んでいれば通す",
+          bot._wants_action("相関図の作り方を踏まえて相関図作って"), True)
 
     print("■ 『〜って何？』で機能を起動しない _EXPLAIN_Q_RE")
     # 実例：「実績ってどうやって見るの」で実績分析が、

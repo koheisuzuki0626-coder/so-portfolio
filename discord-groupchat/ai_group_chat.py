@@ -3968,22 +3968,48 @@ def _match_casual_lead(text):
 # 事故：「クロードコードって便利だよね」のような雑談から、コード修正の
 # 実行プラン（承認ダイアログ）が立ち上がっていた。話題に出しただけの語を
 # 依頼と取り違えないよう、依頼の【形】を要求する。
+# 依頼の「文法」。動詞を並べて当てる方式では、言い方を1つ増やすたびに
+# 取りこぼす。日本語で人にものを頼む形そのものを見る。
 _ORDER_RE = re.compile(
-    # 文末が依頼形（「〜して」「〜してくれる？」「〜してほしい」）
-    "(して|してくれ|して下さ|してくださ|しといて|しておいて)"
-    "(ほしい|欲しい|くれ|ください|下さい|よ|ね|て|る|る？|る\?)?[。、!！]?$|"
-    # 依頼の言い切り
-    "お願い|頼む|頼める|やって|やっといて|"
-    # 具体的な動作の命令形
-    "作って|つくって|作成して|生成して|描いて|書いて|直して|なおして|修正して|"
-    "変えて|かえて|変更して|追加して|足して|消して|削除して|実行して|走らせて|"
-    "入れて|出して|調べて|探して|止めて|再起動|更新して|送って|見せて|教えて"
+    # 〜て / 〜てください / 〜てほしい / 〜てくれる？ / 〜といて
+    # 〜て（文末でも、読点や続きがあっても依頼は依頼）
+    "[ぁ-んァ-ヶ一-龥ー]て(ください|下さい|ほしい|欲しい|くれ|くんない|"
+    "もらえ|いただけ|ね|よ|)[。、,!！?？]*($|[^いるたなかもの])|"
+    "[ぁ-んァ-ヶ一-龥ー]て(ください|下さい|ほしい|欲しい|くれ|)[。、!！?？]*$|"
+    "て(ください|下さい|ほしい|欲しい|くれる|くれない|もらえる|もらえない)|"
+    "といて|とい(て|た)|ておいて|"
+    # 〜たい / 〜が欲しい（日本語では依頼として通じる）
+    "たい(な|んだけど|んだよね|)[。、!！?？]*$|たいんだけど|"
+    "(が|を|)(欲しい|ほしい)|"
+    # 言い切りの依頼
+    "お願い|頼む|頼める|やって|やろう|"
+    # 命令形
+    "(作|直|変|消|足|入|出|送|見せ|調べ|止め|上げ|下げ)れ[。、!！]*$"
 )
 
 
-# 依頼の形を要求する分類（勝手に始まると困るもの）。
-# restart / talk / profile / trend は害が小さいので対象外にしない。
+# _plan() の分類のうち、依頼の形を要求するもの（勝手に始まると困る作業）。
+# restart / talk / profile / trend は害が小さいので対象外。
 _ACTION_KINDS = ("selffix", "exec", "video", "image")
+
+
+# はっきり頼んでいる形。これがあれば、説明を求める言い方や
+# 「〜って」を含んでいても依頼として通す。
+# 事故：「相関図の作り方を踏まえて相関図作って」が、文中の「の作り方」だけを見て
+# 説明の質問と判定され、制作が始まらなかった。
+_STRONG_ORDER_RE = re.compile(
+    "ください|下さい|ほしい|欲しい|お願い|頼む|頼める|"
+    "て(くれ|くんない|もらえ|いただけ|ちょうだい)|"
+    "といて|ておいて|やって|やっとい|"
+    # 文末の「〜て」（「相関図作って」「コード直して」）
+    "[ぁ-んァ-ヶ一-龥ー]て[。、!！]*$"
+)
+# 質問の終わり方。頼んでいるのではなく聞いている。
+_QUESTION_END_RE = re.compile("[?？]$|の[?？]?$|ですか[。?？]*$|ますか[。?？]*$")
+# 何を直すのかが書かれていない修正の希望。道具の名前しか書かれていない
+# 「クロードコードで直したい」で、対象不明のまま確認画面を出さないため。
+_VAGUE_FIX_RE = re.compile(
+    "^(直し|なおし|修正し|変更し|変え|改善し|いじり|触り)たい[。！!]*$")
 
 
 def _wants_action(text):
@@ -3993,9 +4019,30 @@ def _wants_action(text):
     t = _strip_media_context(text or "").strip()
     if not t:
         return False
+    # 「顔が違うので、鼻だけ変えてください」は打ち消しではなく直しの依頼。
+    # 「違う」を打ち消しとして先に弾くと、直しの指示が会話に落ちる。
+    if _RESULT_COMPLAINT_RE.search(t) and _CHANGE_VERB_RE.search(t):
+        return True
     if (_NEGATION_RE.search(t) or _USER_REPORT_RE.search(t)
             or _NOT_NOW_RE.search(t)):
         return False                      # 打ち消し・お礼・継続のお願い
+    # はっきり頼んでいない時だけ、話題として触れただけの言い方を落とす。
+    # 「〜って便利だよね」「〜って使ってる？」の「って」は引用の助詞であって
+    # 依頼の「〜て」ではない。独り言（〜わ／〜かな）も、質問も依頼ではない。
+    if not _STRONG_ORDER_RE.search(t):
+        if _EXPLAIN_Q_RE.search(t):
+            return False
+        if re.search("(よね|だよね|かな|のかな|わ|っけ)[。、!！?？]*$", t):
+            return False
+        if _QUESTION_END_RE.search(t):
+            return False
+        if _VAGUE_FIX_RE.search(_strip_engine_words(t)):
+            return False
+    # 「ヒッグスフィールドで」「クロードで」だけの言い直しは、
+    # 直前の依頼の作り手を変える指示。文法上は依頼の形をしていない。
+    if not _has_subject(t) and (_BY_HF_RE.search(t) or _BY_CLAUDE_RE.search(t)
+                                or _BY_GEMINI_RE.search(t)):
+        return True
     return bool(_ORDER_RE.search(t))
 
 
@@ -4084,7 +4131,11 @@ _BY_HF_RE = re.compile(
 # "Higgs boson field visualized as an endless dark cosmic void..." という
 # 素粒子物理の画像が生成された。指定語は題材ではない。
 _ENGINE_WORD_RE = re.compile(
-    r"(ヒッグスフィールド|ヒッグス|higgsfield|クロード|claude|くろーど|"
+    # 「クロードコード」は道具の名前。「クロード」だけ落とすと「コード」が
+    # 依頼の中身として残り、「クロードコードで直したい」が
+    # 『コードを直す依頼』に見えてしまう。長い名前から先に落とす。
+    r"(ヒッグスフィールド|ヒッグス|higgsfield|クロードコード|claude\s*code|"
+    r"クロード|claude|くろーど|"
     r"gemini|ジェミニ|じぇみに|html)\s*(?:で|に|を使って|使って|側で)?",
     re.I)
 _REQ_VERB_RE = re.compile(
@@ -4343,7 +4394,29 @@ def _match_gen_model(content):
     return None
 
 
-def classify_route(content, *, has_attachments=False, has_video_att=False,
+# 副作用のある作業＝実際に何かを作る・変える・消費するもの。
+# ここに入るルートは「依頼の形をしている時だけ」動かす。
+# 語が当たったら動く方式では、誤爆のたびに正規表現を狭める作業が終わらず、
+# 実際に「もっと褒めて笑」「クロードコードって便利だよね」
+# 「リサーチはクロード1にして」などが作業を起こしていた。
+ACT_ROUTES = frozenset({
+    "design", "image", "hf_auto", "hf_model", "revise", "edit", "short",
+    "ad", "motion", "style_learn", "clip", "virality",
+})
+
+
+def classify_route(content, **kw):
+    """発言の行き先を決める。副作用のある作業は依頼の形の時だけ通す。
+    ただしファイルを添付している時は、それ自体が『これで何かして』という
+    意思表示なので、言い方が短くても通す（「この動きで」＋動画 など）。"""
+    route = _classify_route_raw(content, **kw)
+    if (route in ACT_ROUTES and not kw.get("has_attachments")
+            and not _wants_action(content)):
+        return None          # 頼まれていない＝会話として扱う
+    return route
+
+
+def _classify_route_raw(content, *, has_attachments=False, has_video_att=False,
                    has_image_att=False, has_job=False, has_last_gen=False,
                    after_credits=False, has_running=False, last_was_design=False):
     """@メンションなし発言のルーティングを判定（AI(_plan)前の決定的ルートのみ）。

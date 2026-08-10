@@ -1187,6 +1187,43 @@ async def run():
         bot._pending_do.clear()
         bot._pending_approvals.pop(1234, None)
 
+    # --- ⑩ 話題に出しただけで作業が始まらないこと ---
+    #     本人の指摘：「ボットが意図せず動くのをやめたい」。
+    #     語が当たったら動く方式だと、雑談の中の「クロードコード」「動画」で
+    #     修正や生成が立ち上がっていた。依頼の【形】をしている時だけ通す。
+    install_stubs()
+    bot.CONFIRM_BEFORE_WORK = True
+    bot._load_last_gen = lambda cid: None
+    bot._pending_do.clear()
+    try:
+        for _say in ("クロードコードって便利だよね",
+                     "クロードコードって使ってる？",
+                     "さっきクロードコードで作業してた",
+                     "動画編集って難しいの？",
+                     "ロゴのデザインの話なんだけど"):
+            install_stubs()
+            _r10 = await drive(_say)
+            check(f"{_say!r} で作業が始まらない",
+                  not any(_f in FIRED for _f in ("hf_generate", "image_gen",
+                                                 "design", "selffix",
+                                                 "exec", "clip")),
+                  f"fired={FIRED}")
+            check(f"{_say!r} で確認画面を出さない",
+                  1234 not in bot._pending_approvals,
+                  bot._pending_approvals.get(1234))
+            check(f"{_say!r} は会話として返す",
+                  "orchestrator" in FIRED, f"fired={FIRED} sent={_r10['sent']}")
+        # 同じ語でも、頼まれた形なら通ること（守りが効きすぎていないか）
+        install_stubs()
+        await drive("かっこいい猫のロゴ画像作って")
+        check("頼まれた形なら通る",
+              any(_f in FIRED for _f in ("hf_generate", "image_gen")),
+              f"fired={FIRED}")
+    finally:
+        bot.CONFIRM_BEFORE_WORK = False
+        bot._pending_approvals.pop(1234, None)
+        bot._pending_do.clear()
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile
