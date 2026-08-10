@@ -1444,6 +1444,44 @@ def run():
     check("説明を聞きつつ頼んでいれば通す",
           bot._wants_action("相関図の作り方を踏まえて相関図作って"), True)
 
+    print("■ ここで決めたルールが、Discordの実行時にも効いていること")
+    # 本人の指摘：「ここで決めたルールがdiscordでは守られてない」。
+    # 文章（プロンプト）で守らせようとしたものは守られなかった。
+    # ルールごとに【コード上の守り手】を決め、無くなったらここで落とす。
+    _rules = [
+        ("勝手に始めない（依頼の形の時だけ動く）", lambda: bool(bot.ACT_ROUTES)),
+        ("作業の前に必ず確認する", lambda: bot.CONFIRM_BEFORE_WORK is True),
+        ("ヒッグスフィールドは名指しの時だけ",
+         lambda: bot.HF_MODE_DEFAULT == "explicit" and bot._hf_explicit_only()),
+        ("動いていないのに『やってる』と言わない",
+         lambda: callable(bot._drop_false_progress)),
+        ("内部の状態を作り話で説明しない",
+         lambda: bool(bot._FAKE_STATE_RE.search("許可が下りてないみたい"))),
+        ("ボットの話でない返事に運用の案内を混ぜない",
+         lambda: callable(bot._drop_ops_advice)),
+        ("できない・分からないで終わらせない",
+         lambda: "すでに動いている" in bot.BOT_CAPABILITIES),
+        ("作り手の名指しを最優先する",
+         lambda: bot._route_by_maker("geminiで作って") == "image"),
+        ("使えないと分かっている手を勧めない",
+         lambda: callable(bot._gemini_image_usable)),
+        ("頼まれなくてもログを共有する",
+         lambda: bot.AUTOLOG_URGENT_SEC < bot.AUTOLOG_PERIOD_SEC),
+    ]
+    for _name, _fn in _rules:
+        try:
+            _ok = bool(_fn())
+        except Exception as _e:  # noqa: BLE001
+            _ok, _name = False, f"{_name}（{type(_e).__name__}）"
+        check(f"守り手がある: {_name}", _ok, True)
+    # 実データを持っている質問を会話に落とさない（「情報が手元にありません」対策）
+    for _t in ("ヒッグスフィールドの制限はいつ解除される？",
+               "ヒッグスフィールドの上限いつ戻る？",
+               "画像生成の上限どうなってる？"):
+        check(f"{_t!r} は実データで答える", bot.classify_route(_t), "credits")
+    for _t in ("制限速度って何キロ？", "上司の制限がきつい"):
+        check(f"{_t!r} は普通の会話", bot.classify_route(_t), None)
+
     print("■ 『〜って何？』で機能を起動しない _EXPLAIN_Q_RE")
     # 実例：「実績ってどうやって見るの」で実績分析が、
     #       「クロード3ってどんな役割？」で複数視点の呼び出しが走っていた

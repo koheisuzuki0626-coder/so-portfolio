@@ -1470,9 +1470,6 @@ def topic_guide(context_text=""):
     return ops_guide(context_text) + fact_guide(context_text)
 
 
-# 後方互換（外部から参照された場合は全部入りを返す）
-BOT_OPS_GUIDE = TALK_RULES + OPS_RULES
-
 
 def peer_persona(me, partner, history=None):
     return (
@@ -2016,7 +2013,6 @@ GEMINI_IMAGE_MODELS = [
         "gemini-2.0-flash-preview-image-generation",
     ).split(",") if m.strip()
 ]
-GEMINI_IMAGE_MODEL = GEMINI_IMAGE_MODELS[0]
 _gemini_image_ok = {"model": ""}      # 一度通ったモデルを次回から先に試す
 _gemini_img_rr = {"i": 0}             # ラウンドロビン用インデックス
 # 存在しないモデルID（404）。クールダウンで待っても永遠に復活しないので、
@@ -3348,7 +3344,6 @@ ICLOUD_ROOT = "~/Library/Mobile Documents/com~apple~CloudDocs"
 _BIDI_RE = re.compile("[\u2066-\u2069\u200e\u200f]")
 _IOS_CRUMB_RE = re.compile(
     r"(iCloud\s*Drive|このiPhone内|iPhone内)((?:\s*▸\s*[^▸]+)+)", re.I)
-_VIDEO_EXT_RE = re.compile(r"\.(?:mp4|mov|m4v|webm|mkv)$", re.I)
 
 
 def _ios_files_path(text):
@@ -4781,6 +4776,20 @@ _NOT_GEN_VERB_RE = re.compile(
     "考えて|相談|聞いて|返事|文章|台本|コメント|意見")
 
 
+def _route_by_maker(content):
+    """「クロードで」「geminiで」「ヒッグスフィールドで」の名指しから行き先を決める。
+    本人が指定した以上、こちらの自動判定より優先する。
+    3か所に同じ分岐を書いていたので1つにまとめた（1か所直し忘れると、
+    名指しが無視されて別の作り手に流れる）。"""
+    if _BY_CLAUDE_RE.search(content):
+        return "design"
+    if _BY_GEMINI_RE.search(content):
+        return "image"
+    if _BY_HF_RE.search(content):
+        return "hf_auto"
+    return None
+
+
 def _classify_route_raw(content, *, has_attachments=False, has_video_att=False,
                    has_image_att=False, has_job=False, has_last_gen=False,
                    after_credits=False, has_running=False, last_was_design=False):
@@ -4854,12 +4863,9 @@ def _classify_route_raw(content, *, has_attachments=False, has_video_att=False,
         # 作り直しでも「誰に作らせるか」の指定が最優先。
         # 「クロードで作り直して」を作風の指定と読んで Higgsfield に投げ、
         # 「Claude.ai風デザイン」の画像を生成してしまう事故が起きた。
-        if _BY_CLAUDE_RE.search(content):
-            return "design"
-        if _BY_GEMINI_RE.search(content):
-            return "image"
-        if _BY_HF_RE.search(content):
-            return "hf_auto"
+        _maker = _route_by_maker(content)
+        if _maker:
+            return _maker
         # 直前がデザインなら、作り直しも同じ作り方（HTML）で行う。
         # 画像生成に投げると、せっかくの文字が崩れたものに置き換わってしまう。
         if last_was_design:
@@ -4947,6 +4953,12 @@ def _classify_route_raw(content, *, has_attachments=False, has_video_att=False,
     #      事業計画や一般の話にも使うので、生成の文脈があるときだけ拾う。
     if (not _GEN_ORDER_RE.search(content) and _looks_like_question(content)
             and (re.search("クレジット|残高|課金", content)
+                 # 「ヒッグスフィールドの制限はいつ解除される？」は、実データを
+                 # 持っている経路で答える。会話に流して
+                 # 「詳しい情報が手元にありません」と言わせない（実例）。
+                 or (re.search("上限|制限|リミット|枠", content)
+                     and re.search("higgsfield|ヒッグス|gemini|ジェミニ|生成|"
+                                   "画像|動画", content, re.I))
                  or (re.search("料金|価格|値段|費用|コスト|いくら|何円|なん円|"
                                "無料|有料|プラン", content)
                      and (_match_gen_model(content)
@@ -4980,12 +4992,9 @@ def _classify_route_raw(content, *, has_attachments=False, has_video_att=False,
     #       本人が指定した以上、こちらの自動判定より優先する。
     if (_GEN_INTENT2_RE.search(content) and not _looks_like_question(content)
             and _VISUAL_NOUN_RE.search(content)):
-        if _BY_CLAUDE_RE.search(content):
-            return "design"
-        if _BY_GEMINI_RE.search(content):
-            return "image"
-        if _BY_HF_RE.search(content):
-            return "hf_auto"
+        _maker = _route_by_maker(content)
+        if _maker:
+            return _maker
     # ①.9 デザイン制作（文字が主役のもの。画像生成AIは文字が苦手なので
     #      ClaudeにHTMLで組ませてスクリーンショットする）。
     #      「猫のイラスト作って」のような絵の依頼は従来どおり画像生成へ。
@@ -5042,10 +5051,9 @@ def _classify_route_raw(content, *, has_attachments=False, has_video_att=False,
             # 何を作るかが書かれている時だけ。「ヒッグスフィールドで作って」だけなら
             # 直前の依頼を引き継ぐ①.45に任せる（無ければ何も始めない）
             and _has_subject(content)):
-        if _BY_HF_RE.search(content):
-            return "hf_auto"
-        if _BY_GEMINI_RE.search(content):
-            return "image"
+        _maker = _route_by_maker(content)
+        if _maker in ("hf_auto", "image"):   # クロード指定はコード修正等と紛れる
+            return _maker
     return None  # 決定的ルートに該当せず → AI(_plan)へ
 
 
@@ -5506,12 +5514,19 @@ async def _run_credits(content, history=None):
         "いけない。料金の確認だけで、1クレジットも消費しないこと。\n"
         f"日本語で{REPLY_CHARS}字以内、箇条書きで簡潔に。前置き・説明は不要。"
     )
+    # こちらが実際に見た事実（今日すでに日次上限で弾かれている等）は、
+    # 問い合わせの結果より確かなので必ず添える。
+    # 事故：08:17に上限で失敗した直後に「制限はいつ解除される？」と聞かれ、
+    # 「詳しい情報が手元にありません」と答えていた。知っていたのに。
+    known = _hf_limit_note()
+    known = f"{known}\n（返ってきた理由: {_hf_limit['why'][:150]}）\n\n" if known else ""
     out = await _run_claude_exec(task, timeout=240)
     if not out or out.startswith("⚠️"):
-        return ("⚠️ Higgsfieldのクレジット情報を取得できませんでした。"
-                f"（{(out or '応答なし')[:150]}）")
+        return (known + "⚠️ Higgsfieldのクレジット情報を取得できませんでした。"
+                f"（{_claude_fail_note('クレジットの照会', out or '応答なし')}）")
     out = _strip_cli_boilerplate(out)
-    return "💳 " + out if out else "⚠️ クレジット情報を読み取れませんでした。"
+    return (known + "💳 " + out) if out else (
+        known + "⚠️ クレジット情報を読み取れませんでした。")
 
 
 # Discordの発言で使えるモデル名 → (MCPモデルID, 種別, 表示名)
@@ -6116,14 +6131,7 @@ async def _run_revise(message, instruction):
         "もう一度「〇〇を直して作り直して」と送ってください（5分で自動却下）。",
         view=PermissionView(fut, owner_id),
     )
-    try:
-        approved = await asyncio.wait_for(fut, timeout=310)
-    except asyncio.TimeoutError:
-        approved = False
-    finally:
-        _clear_pending(cid, fut)
-    if approved is SUPERSEDED:
-        approved = False      # 印を承認と取り違えて実行しないための保険
+    approved = await _await_approval(cid, fut)
     if not approved:
         await send_as(orch, cid, "🛑 作り直しをやめました（クレジットは消費していません）。")
         add_history(cid, "Orchestrator", "（修正プランが却下されたため作り直しを中止した）")
@@ -7431,13 +7439,7 @@ async def _handle_orchestrator(message, cid):
         _spawn(run_auto(cid, _latest_user_msg(history)), cid, "自動トーク")
         return
     if kind == "profile":
-        p = _load_profiles()
-        if p:
-            await send_long(message.channel, p, "🧠 ")
-        else:
-            await message.channel.send(
-                "まだプロファイルはありません（会話がたまると自動で作られます）。"
-            )
+        await _cmd_profile(message, cid, "")
         return
 
     # 通常会話（承認ダイアログは出さない）
@@ -8089,6 +8091,19 @@ def _clear_pending(cid, fut):
         del _pending_approvals[cid]
 
 
+async def _await_approval(cid, fut, timeout=310):
+    """確認の返事を待つ。同じ待ち方を4か所に書いていたのをまとめた。
+    SUPERSEDED（言い直しで置き換わった印）を承認と取り違えないための
+    保険もここに入れる。1か所でも書き忘れると、頼んでいない作業が走る。"""
+    try:
+        approved = await asyncio.wait_for(fut, timeout=timeout)
+    except asyncio.TimeoutError:
+        approved = False
+    finally:
+        _clear_pending(cid, fut)
+    return False if approved is SUPERSEDED else approved
+
+
 def _try_text_approval(cid, user_id, content):
     """承認待ちがあるとき、テキストの「許可/拒否」でも解決する。
     承認=True / 却下=False / 対象外=None を返す。"""
@@ -8258,14 +8273,7 @@ async def run_claude_agent(cid, task, owner_id):
         "**Mac上で実際に実行**します（本人のみ・5分で自動却下）。",
         view=PermissionView(fut, owner_id),
     )
-    try:
-        approved = await asyncio.wait_for(fut, timeout=310)
-    except asyncio.TimeoutError:
-        approved = False
-    finally:
-        _clear_pending(cid, fut)
-    if approved is SUPERSEDED:
-        approved = False      # 印を承認と取り違えて実行しないための保険
+    approved = await _await_approval(cid, fut)
     if not approved:
         return "🛑 却下されました。実行しません。"
 
@@ -8691,14 +8699,7 @@ async def _run_self_fix(cid, request, owner_id):
         "（❌または「拒否」で元のコードに戻します・5分で自動却下）",
         view=PermissionView(fut, owner_id),
     )
-    try:
-        approved = await asyncio.wait_for(fut, timeout=310)
-    except asyncio.TimeoutError:
-        approved = False
-    finally:
-        _clear_pending(cid, fut)
-    if approved is SUPERSEDED:
-        approved = False      # 印を承認と取り違えて実行しないための保険
+    approved = await _await_approval(cid, fut)
     if not approved:
         back = _restore_self(saved)
         await send_as(
