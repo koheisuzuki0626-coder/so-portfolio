@@ -1417,6 +1417,90 @@ async def run():
         bot._gemini_image_ok["model"] = ""
         bot.gemini_client = _keep_client
 
+    # --- ⑯.6 ローテーションの状況が見えること（本人の指摘）---
+    #     「geminiがローテーションできてるのかわからない」。
+    #     動いていても見る手段が無かった。送れば一覧が出るようにした。
+    install_stubs()
+    for _t in ("geminiがローテーションできてるのかわからない",
+               "geminiのモデルの状態は？", "画像モデルどうなってる",
+               "ローテーションできてる？"):
+        check(f"{_t!r} は画像モデルの状態を聞いている",
+              bot._asks_image_model_status(_t), _t)
+    for _t in ("画像生成のクレジットどうなってる", "veo3で動画作ると何クレジット？",
+               "geminiで画像作って"):
+        check(f"{_t!r} は状態確認にしない",
+              not bot._asks_image_model_status(_t), _t)
+    _keep_models2 = bot.GEMINI_IMAGE_MODELS[:]
+    _keep_cd2 = dict(bot._gemini_cooldown)
+    try:
+        bot.GEMINI_IMAGE_MODELS[:] = ["img-a", "img-b", "img-c"]
+        bot._gemini_cooldown.clear()
+        bot._gemini_bad_models.clear()
+        bot._gemini_img_stats.clear()
+        bot._gemini_bad_models.add("img-c")
+        bot._gemini_cooldown["img-b"] = _tm4.time() + 900
+        bot._gemini_image_ok["model"] = "img-a"
+        _st = bot._gemini_image_status()
+        check("使えるモデルが分かる", "✅ 使える" in _st, _st)
+        check("枠切れは残り時間が分かる", "分で復帰" in _st, _st)
+        check("存在しないIDは使わないと分かる", "存在しないID" in _st, _st)
+        check("いま何個使えるかを言う", "いま使えるのは 1個" in _st, _st)
+        _r = await drive("ローテーションできてる？")
+        check("Discordから見られる",
+              any("画像生成モデルの状態" in t for t in _r["sent"]), _r["sent"][-1:])
+    finally:
+        bot.GEMINI_IMAGE_MODELS[:] = _keep_models2
+        bot._gemini_cooldown.clear()
+        bot._gemini_cooldown.update(_keep_cd2)
+        bot._gemini_bad_models.clear()
+        bot._gemini_img_stats.clear()
+        bot._gemini_image_ok["model"] = ""
+
+    # --- ⑯.7 存在しないモデルID（404）は待たずに外すこと ---
+    #     実際に2つのIDが404で、30分待っても永遠に復活しない相手を
+    #     クールダウンで待っていた。
+    install_stubs()
+    _asked2 = []
+
+    class _Fake404:
+        def generate_content(self, model=None, contents=None):
+            _asked2.append(model)
+            if model == "img-x":
+                raise RuntimeError(
+                    "404 NOT_FOUND. {'error': {'code': 404, "
+                    "'message': 'models/img-x is not found'}}")
+            return types.SimpleNamespace(candidates=[types.SimpleNamespace(
+                content=types.SimpleNamespace(parts=[types.SimpleNamespace(
+                    inline_data=types.SimpleNamespace(data=b"PNG"))]))])
+
+    _keep_client2 = bot.gemini_client
+    try:
+        bot.GEMINI_IMAGE_MODELS[:] = ["img-x", "img-y"]
+        bot._gemini_cooldown.clear()
+        bot._gemini_bad_models.clear()
+        bot._gemini_image_ok["model"] = ""
+        bot._gemini_img_rr["i"] = 0
+        bot._gemini_img_discovered["done"] = True   # 一覧の問い合わせはしない
+        bot.gemini_client = types.SimpleNamespace(models=_Fake404())
+        check("404でも次のモデルで作れる", _REAL_GEN_IMG("猫") == b"PNG", _asked2)
+        check("404はクールダウンではなく除外", "img-x" in bot._gemini_bad_models,
+              bot._gemini_bad_models)
+        check("404を待ち時間として数えない",
+              bot._gemini_cooldown.get("img-x", 0) <= _tm4.time(),
+              bot._gemini_cooldown)
+        _asked2.clear()
+        _REAL_GEN_IMG("犬")
+        check("次からは404のモデルを呼ばない", "img-x" not in _asked2, _asked2)
+    finally:
+        bot.GEMINI_IMAGE_MODELS[:] = _keep_models2
+        bot._gemini_cooldown.clear()
+        bot._gemini_cooldown.update(_keep_cd2)
+        bot._gemini_bad_models.clear()
+        bot._gemini_img_stats.clear()
+        bot._gemini_image_ok["model"] = ""
+        bot._gemini_img_discovered["done"] = False
+        bot.gemini_client = _keep_client2
+
     # --- ⑰ 「この画像の背景を室内にして」で別人が出来ていた（23:38の実例）---
     #     参照画像をGeminiに渡していなかったため、依頼者の写真と無関係な
     #     「young man」の画像が作られていた。

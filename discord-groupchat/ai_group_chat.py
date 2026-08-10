@@ -2002,6 +2002,84 @@ GEMINI_IMAGE_MODELS = [
 GEMINI_IMAGE_MODEL = GEMINI_IMAGE_MODELS[0]
 _gemini_image_ok = {"model": ""}      # 一度通ったモデルを次回から先に試す
 _gemini_img_rr = {"i": 0}             # ラウンドロビン用インデックス
+# 存在しないモデルID（404）。クールダウンで待っても永遠に復活しないので、
+# 枠切れとは区別して恒久的に外す。待っても無駄な相手を待たないため。
+_gemini_bad_models = set()
+# モデルごとの成績（何回作れたか・最後に何が起きたか）。
+# 「ローテーションできてるのか分からない」を、見れば分かる状態にするため。
+_gemini_img_stats = {}
+_gemini_img_discovered = {"done": False}
+
+
+def _img_stat(model):
+    return _gemini_img_stats.setdefault(
+        model, {"ok": 0, "ng": 0, "last": "まだ使っていない", "t": 0})
+
+
+def _discover_gemini_image_models():
+    """APIに存在する画像生成モデルを問い合わせて候補に足す。
+    決め打ちのIDは提供側の都合で消える（実際に2つが404になった）。
+    一覧から拾えば、こちらを直さなくても回り続ける。"""
+    if _gemini_img_discovered["done"]:
+        return []
+    _gemini_img_discovered["done"] = True
+    found = []
+    try:
+        for m in gemini_client.models.list():
+            name = (getattr(m, "name", "") or "").replace("models/", "")
+            if not name or "image" not in name.lower():
+                continue
+            acts = [str(a).lower()
+                    for a in (getattr(m, "supported_actions", None) or [])]
+            if acts and not any("generatecontent" in a for a in acts):
+                continue
+            if name not in GEMINI_IMAGE_MODELS:
+                found.append(name)
+    except Exception as e:  # noqa: BLE001
+        print(f"[image_gen] モデル一覧を取得できません: {str(e)[:150]}")
+        return []
+    if found:
+        GEMINI_IMAGE_MODELS.extend(found)
+        print(f"[image_gen] 使えるモデルを見つけました: {found}")
+    return found
+
+
+def _gemini_image_status():
+    """画像生成モデルが今どうなっているかを一覧で返す。
+    「ローテーションできてるのか分からない」を、送れば見える状態にする。"""
+    now = time.time()
+    lines = ["🖼 **Gemini 画像生成モデルの状態**"]
+    for m in GEMINI_IMAGE_MODELS:
+        st = _img_stat(m)
+        if m in _gemini_bad_models:
+            state = "❌ 存在しないID（使いません）"
+        elif _gemini_cooldown.get(m, 0) > now:
+            state = f"🕒 枠切れ・あと約{math.ceil((_gemini_cooldown[m] - now) / 60)}分で復帰"
+        else:
+            state = "✅ 使える"
+        mark = "→ " if m == _gemini_image_ok["model"] else "   "
+        lines.append(f"{mark}`{m}`\n     {state}／成功{st['ok']}・失敗{st['ng']}"
+                     f"／直近: {st['last']}")
+    usable = [m for m in GEMINI_IMAGE_MODELS
+              if m not in _gemini_bad_models
+              and _gemini_cooldown.get(m, 0) <= now]
+    lines.append("")
+    if usable:
+        lines.append(f"いま使えるのは {len(usable)}個。上から順に試して、"
+                     "だめなら次へ回します。")
+    else:
+        lines.append("いま使えるモデルはありません。"
+                     f"{_cooldown_note(GEMINI_IMAGE_MODELS)}。"
+                     "急ぐなら「**ヒッグスフィールドで作って**」（クレジット消費）。")
+    lines.append("※テキスト（会話・要約）の枠は別勘定なので、"
+                 "画像がだめでも会話は続けられます。")
+    return "\n".join(lines)
+
+
+def _is_missing_model_error(e):
+    """そのモデルIDが存在しない（404）か。枠切れとは区別する。"""
+    m = str(e)
+    return "404" in m and ("NOT_FOUND" in m or "not found" in m.lower())
 
 
 def _cooldown_note(models):
@@ -2054,6 +2132,9 @@ def _gemini_generate_image_sync(prompt, ref_bytes=None, ref_mime="image/png"):
     now = time.time()
     last_err, tried, errs = None, False, []
     for model in order:
+        if model in _gemini_bad_models:
+            errs.append(f"{model}: 存在しないID")
+            continue                      # 待っても復活しないので飛ばす
         if _gemini_cooldown.get(model, 0) > now:
             errs.append(f"{model}: クールダウン中")
             continue                      # 枠切れ中は次のモデルへ
@@ -2065,20 +2146,43 @@ def _gemini_generate_image_sync(prompt, ref_bytes=None, ref_mime="image/png"):
                 data = _image_from_resp(resp)
                 if data:
                     _gemini_image_ok["model"] = model
+                    st = _img_stat(model)
+                    st["ok"] += 1
+                    st["last"], st["t"] = "成功", time.time()
                     print(f"[image_gen] 成功: {model}")
                     return data
                 errs.append(f"{model}: 画像が返らなかった")
+                st = _img_stat(model)
+                st["ng"] += 1
+                st["last"], st["t"] = "画像が返らなかった", time.time()
                 break                     # 本文が空 → 次のモデルへ
             except Exception as e:  # noqa: BLE001
                 last_err = e
                 errs.append(f"{model}: {str(e)[:120]}")
                 print(f"[image_gen] {model} 失敗: {str(e)[:200]}")
+                st = _img_stat(model)
+                st["ng"] += 1
+                st["t"] = time.time()
+                # 404＝そのIDが無い。待っても戻らないので恒久的に外し、
+                # 代わりに使えるモデルをAPIの一覧から探す。
+                if _is_missing_model_error(e):
+                    _gemini_bad_models.add(model)
+                    st["last"] = "存在しないID（404）"
+                    if _gemini_image_ok["model"] == model:
+                        _gemini_image_ok["model"] = ""
+                    for _new in _discover_gemini_image_models():
+                        if _new not in order:
+                            order.append(_new)
+                    break
                 per_day = "PerDay" in str(e) or "PerProjectPerModel" in str(e)
                 if _is_quota_error(e) and not per_day and attempt == 0:
+                    st["last"] = "分あたり制限（待って再挑戦）"
                     time.sleep(_retry_delay(e))   # 分あたり制限 → 少し待つ
                     continue
                 if per_day or not _is_quota_error(e):
                     _gemini_cooldown[model] = time.time() + GEMINI_COOLDOWN_SEC
+                    st["last"] = ("無料枠切れ" if _is_quota_error(e)
+                                  else f"失敗: {str(e)[:60]}")
                     if _gemini_image_ok["model"] == model:
                         _gemini_image_ok["model"] = ""
                 break
@@ -4475,6 +4579,26 @@ _HF_ON_RE = re.compile(
     re.I,
 )
 # ユーザーが名指ししたと言える語（これがあれば明示的に頼まれたとみなす）
+# 画像モデルの状況を聞いているか。正規表現1本にすると
+# 「画像生成のクレジットどうなってる」まで拾ってしまった（実際に誤爆）ので、
+# 料金の話を先に外し、モデルの話だと分かる時だけ通す。
+_STATUS_WORD_RE = re.compile(
+    "状態|状況|どうなって|回って|回せて|一覧|リスト|使える|残っ|"
+    "できてる|できている|わからない|分からない")
+_COST_WORD_RE = re.compile("クレジット|残高|料金|いくら|課金|値段|コスト")
+
+
+def _asks_image_model_status(text):
+    t = text or ""
+    if _COST_WORD_RE.search(t):
+        return False                       # 料金の話は別（credits へ）
+    if re.search("ローテ", t):
+        return True                        # この言葉はこの機能のことしか指さない
+    return bool(re.search("モデル", t)
+                and re.search("gemini|ジェミニ|画像", t, re.I)
+                and _STATUS_WORD_RE.search(t))
+
+
 _HF_NAMED_RE = re.compile(
     "ヒッグス|higgsfield|veo|kling|sora|seedance|seedream|nano\\s*banana|"
     "ナノバナナ|クリング|ソラ|シードランス", re.I,
@@ -4980,8 +5104,13 @@ async def _handle_image_request(cid, request, refine=True):
     try:
         data = await asyncio.to_thread(
             _gemini_generate_image_sync, request, ref_bytes, ref_mime)
+        # どのモデルで作れたかを毎回見せる。どれが生きているかが分かるので、
+        # 「ローテーションできてるのか分からない」状態にならない。
         await send_image_bytes(
-            cid, "✅ できました！イメージと違うところがあれば「〇〇を直して作り直して」と教えてください。",
+            cid,
+            "✅ できました！（"
+            + (_gemini_image_ok["model"] or "Gemini") + "）\n"
+            "イメージと違うところがあれば「〇〇を直して作り直して」と教えてください。",
             data, "image.png",
         )
         add_history(cid, "Orchestrator", f"（依頼「{original[:60]}」の画像をGeminiで生成して投稿した）")
@@ -8783,6 +8912,14 @@ async def _dispatch_message(message):
             f"🗣 雑談の返事は **{_lead[1]}** が担当します（次の発言から反映）。\n"
             "※作業（生成・デザイン・調査）の担当は依頼内容で決まるので変わりません。"
         )
+        return
+
+    # 画像モデルの状況を聞かれたら、一覧で見せる（ローテーションの見える化）。
+    # 「ローテーションできてるのか分からない」＝見る手段が無かった。
+    if _asks_image_model_status(content):
+        _fired(cid, "画像モデルの状態", content)
+        add_history(cid, message.author.display_name, content)
+        await send_as(orch, cid, _gemini_image_status())
         return
 
     if (_MODEL_ASK_RE.search(content) and not _NOT_GEN_MODEL_RE.search(content)
