@@ -207,6 +207,7 @@ def _has_summary(h):
 
 def add_history(cid, speaker, text):
     h = get_history(cid)
+    _mark_activity(cid)
     h.append((speaker, text))
     _append_jsonl(cid, speaker, text)
     # 直近枠から溢れた古い発言は「要約待ち」に回す（要約エントリは先頭に保持）
@@ -366,6 +367,21 @@ async def _recall_context(cid, question):
 ERROR_LOG = HISTORY_DIR / "errors.log"
 
 
+# 「Discordで何かあった」ことの印。定期共有ループがこれを見て、
+# 動きがあった時だけログをプッシュする（何も無い時は静かにしておく）。
+# 本人の希望：不具合をClaude Codeのチャットで報告した時に、
+# 「ログ送って」と言わなくても開発側が最新の状況を読めるようにするため。
+_activity = {"n": 0, "shared_n": 0, "cid": None, "urgent": False}
+
+
+def _mark_activity(cid=None, urgent=False):
+    _activity["n"] += 1
+    if cid:
+        _activity["cid"] = cid
+    if urgent:
+        _activity["urgent"] = True
+
+
 def _log_error(context, exc):
     """例外を errors.log に追記し、短い要約文字列を返す（ユーザー通知用）。"""
     tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
@@ -381,6 +397,7 @@ def _log_error(context, exc):
     except Exception as e:  # noqa: BLE001
         print(f"[error_log] 記録失敗: {e}")
     print(f"[ERROR] {context}: {exc}")
+    _mark_activity(None, urgent=True)   # エラーは早めに共有する
     return f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
@@ -8253,6 +8270,40 @@ def _safe_to_restart(cid):
     return True
 
 
+# 定期共有の間隔。動きがあった時だけ共有するので、静かな時は何も起きない。
+AUTOLOG_PERIOD_SEC = int(os.getenv("AUTOLOG_PERIOD_SEC", "600"))     # 既定10分
+AUTOLOG_URGENT_SEC = int(os.getenv("AUTOLOG_URGENT_SEC", "120"))     # エラー時
+
+
+async def _autolog_loop():
+    """Discordで動きがあったら、頼まれなくてもログを共有し続ける。
+
+    以前は「ログ送って」と言われた時にだけ共有していたので、Claude Codeの
+    チャットで不具合を報告した時点の状況が古いままだった（本人の希望で変更）。
+    静かな時は何もしない：前回の共有から新しい発言やエラーがある時だけ動く。"""
+    while True:
+        try:
+            urgent = _activity["urgent"]
+            await asyncio.sleep(AUTOLOG_URGENT_SEC if urgent
+                                else AUTOLOG_PERIOD_SEC)
+            if _activity["n"] == _activity["shared_n"]:
+                continue                     # 前回から何も起きていない
+            cid = (_activity["cid"] or _last_active_cid()
+                   or int(gen_settings.get("trend_cid") or 0)
+                   or TREND_CHANNEL_ID)
+            if not cid:
+                continue
+            if _busy_tasks(cid) or _pending_approvals:
+                continue                     # 作業中・確認待ちは邪魔しない
+            _activity["shared_n"] = _activity["n"]
+            _activity["urgent"] = False
+            res = await _share_debug_log(cid)
+            # 会話に割り込まないよう、定期の共有は黙って行う（結果は端末に出す）
+            print(f"[autolog] 定期共有: {str(res)[:80]}")
+        except Exception as e:  # noqa: BLE001
+            print(f"[autolog] 定期共有に失敗: {str(e)[:200]}")
+
+
 async def _auto_update_loop():
     """新しいコードが出ていたら、手が空いた時に自分で取り込んで入れ替わる。"""
     while True:
@@ -8579,6 +8630,7 @@ async def on_ready():
     if not _trend_task_started:
         _trend_task_started = True
         _track(asyncio.create_task(_auto_update_loop()))
+        _track(asyncio.create_task(_autolog_loop()))
         _track(asyncio.create_task(_daily_trend_loop()))
         _track(asyncio.create_task(_gemini_recovery_loop()))
         _track(asyncio.create_task(_weekly_channel_loop()))

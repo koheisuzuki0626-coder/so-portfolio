@@ -1537,6 +1537,45 @@ async def run():
         (bot._gemini_generate_image_sync, bot._fetch_image_bytes) = _keep17
         bot._last_ref.clear()
 
+    # --- ⑱ 「ログ送って」と言わなくても状況が読めること（本人の希望）---
+    #     Claude Codeのチャットで不具合を報告した時に、開発側が最新の状況を
+    #     読めるよう、動きがあれば黙って共有し続ける。
+    install_stubs()
+    _shared = []
+
+    async def _share(cid, limit=80):
+        _shared.append(cid)
+        return "✅ 共有しました"
+
+    _keep18 = (bot._share_debug_log, bot.AUTOLOG_PERIOD_SEC,
+               bot.AUTOLOG_URGENT_SEC)
+    try:
+        bot._share_debug_log = _share
+        bot.AUTOLOG_PERIOD_SEC = 0
+        bot.AUTOLOG_URGENT_SEC = 0
+        bot._activity.update({"n": 0, "shared_n": 0, "cid": 1234, "urgent": False})
+        bot._pending_approvals.pop(1234, None)
+        _t18 = asyncio.get_running_loop().create_task(bot._autolog_loop())
+        for _ in range(50):
+            await asyncio.sleep(0)
+        check("動きが無ければ共有しない", not _shared, _shared)
+        bot.add_history(1234, "kohei", "変な挙動なんだけど")
+        for _ in range(50):
+            await asyncio.sleep(0)
+        check("動きがあれば頼まれなくても共有する", bool(_shared), _shared)
+        _n = len(_shared)
+        for _ in range(50):
+            await asyncio.sleep(0)
+        check("同じ状態で共有を繰り返さない", len(_shared) == _n, _shared)
+        _t18.cancel()
+    finally:
+        (bot._share_debug_log, bot.AUTOLOG_PERIOD_SEC,
+         bot.AUTOLOG_URGENT_SEC) = _keep18
+        bot._activity.update({"n": 0, "shared_n": 0, "cid": None, "urgent": False})
+    check("エラーは急ぎ扱いにする",
+          bot.AUTOLOG_URGENT_SEC < bot.AUTOLOG_PERIOD_SEC,
+          (bot.AUTOLOG_URGENT_SEC, bot.AUTOLOG_PERIOD_SEC))
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile
