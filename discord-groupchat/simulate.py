@@ -1629,6 +1629,51 @@ async def run():
         bot._gemini_bad_models.clear()
         bot._gemini_img_discovered["done"] = False
 
+    # --- ⑳ デザインの書き出し失敗（00:37の実例）---
+    #     理由が英語のまま「You've hit your session limit」と出て、
+    #     コードの不具合なのかプラン側の上限なのか分からなかった。
+    _lim = bot._claude_fail_note(
+        "デザインの書き出し",
+        "⚠️ 実行に失敗: You've hit your session limit · resets 4am (Asia/Tokyo)")
+    check("クロードの利用上限だと分かる言い方にする",
+          "利用上限" in _lim and "不具合ではなく" in _lim, _lim)
+    check("いつ戻るかを伝える", "4am" in _lim, _lim)
+    check("上限以外はそのまま理由を出す",
+          "書き出し用のフォントがありません" in bot._claude_fail_note(
+              "デザインの書き出し", "ERROR: 書き出し用のフォントがありません"),
+          bot._claude_fail_note("デザインの書き出し",
+                                "ERROR: 書き出し用のフォントがありません"))
+    # 作り手の名指しは、直前がデザインでも勝つ（00:41の実例）
+    check("『geminiで』はデザインの続きより優先",
+          bot.classify_route("geminiで背景を室内にして",
+                             has_last_gen=True, last_was_design=True) == "image",
+          bot.classify_route("geminiで背景を室内にして",
+                             has_last_gen=True, last_was_design=True))
+    check("名指しが無ければデザインの続きのまま",
+          bot.classify_route("背景を室内にして",
+                             has_last_gen=True, last_was_design=True) == "design",
+          bot.classify_route("背景を室内にして",
+                             has_last_gen=True, last_was_design=True))
+    # 英訳できなかった時は黙って日本語を投入しない（04:02の実例）
+    install_stubs()
+    _ch20 = _CHANNELS.setdefault(1234, _FakeChannel(1234))
+    _ch20.sent.clear()
+    _keep20 = (bot._refine_prompt, bot._gemini_generate_image_sync)
+    try:
+        async def _refine_ng(req, mtype, style="", has_ref=False):
+            return req                      # 英訳できなかった（上限など）
+
+        def _gen_ok(prompt, ref_bytes=None, ref_mime="image/png"):
+            return b"PNG"
+        bot._refine_prompt = _refine_ng
+        bot._gemini_generate_image_sync = _gen_ok
+        await _REAL_IMAGE_REQ(1234, "背景を室内にして")
+        check("英訳できなかったことを知らせる",
+              any("英語プロンプトに直せませんでした" in t for t in _ch20.sent),
+              _ch20.sent[:2])
+    finally:
+        (bot._refine_prompt, bot._gemini_generate_image_sync) = _keep20
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile

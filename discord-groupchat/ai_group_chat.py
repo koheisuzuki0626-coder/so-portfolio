@@ -4837,6 +4837,10 @@ def _classify_route_raw(content, *, has_attachments=False, has_video_att=False,
             and not _NEGATION_RE.search(content)
             and not _USER_REPORT_RE.search(content)
             and len(content) <= 40
+            # 「geminiで背景を室内にして」は作り手の名指し。直前がデザインでも
+            # そちらが勝つ。名指しを無視してHTMLで作り直していた（実例）。
+            and not _BY_GEMINI_RE.search(content)
+            and not _BY_HF_RE.search(content)
             and _CHANGE_VERB_RE.search(content)
             and _DESIGN_TWEAK_RE.search(content)):
         return "design"
@@ -5150,6 +5154,14 @@ async def _handle_image_request(cid, request, refine=True):
         if refined and refined != request:
             request = refined
             await send_as(orch, cid, f"🖋 プロンプト: {request[:300]}")
+        elif not _looks_english_prompt(request):
+            # 英訳はクロードにやらせている。クロード側が上限だと黙って
+            # 日本語のまま投入され、別物が出来ていた（実例: 「背景を室内にして」）。
+            await send_as(
+                orch, cid,
+                "⚠️ 英語プロンプトに直せませんでした"
+                "（クロード側の利用上限の可能性）。日本語のまま渡すので、"
+                "出来上がりが依頼とずれることがあります。")
     _save_last_gen(cid, request, "image", None, "画像")
     await send_as(
         orch, cid,
@@ -5768,6 +5780,12 @@ async def _run_hf_generate(message, request, model, media_type, label,
         if refined != request:
             await send_as(orch, cid, f"🖋 プロンプト: {refined[:300]}")
             request = refined
+        elif not _looks_english_prompt(request):
+            await send_as(
+                orch, cid,
+                "⚠️ 英語プロンプトに直せませんでした"
+                "（クロード側の利用上限の可能性）。日本語のまま渡すので、"
+                "出来上がりが依頼とずれることがあります。")
     await send_as(
         orch, cid,
         f"🎬 {label}で{kind}を生成します…" if model
@@ -6332,7 +6350,8 @@ async def _run_design(message, request):
     url = _extract_video_url(out or "")
     last = (out or "").strip().splitlines()[-1:] or [""]
     if not url or last[0].upper().startswith("ERROR"):
-        await send_as(orch, cid, f"⚠️ デザインの書き出しに失敗しました: {(out or '')[-300:]}")
+        await send_as(orch, cid, _claude_fail_note(
+            "デザインの書き出し", (out or "")[-300:]))
         return
     _save_last_gen(cid, request, "image", f"{w}:{h}", f"デザイン（{label}）")
     _update_last_gen_url(cid, url)
@@ -8003,6 +8022,29 @@ def _try_text_approval(cid, user_id, content):
         fut.set_result(True)
         return True
     return None
+
+
+# Claude CLI（サブスク）の利用上限。英語のまま出しても何が起きたか伝わらない。
+_CLAUDE_LIMIT_RE = re.compile(
+    "session limit|usage limit|rate limit|quota|too many requests|"
+    "上限に達|利用制限", re.I)
+_CLAUDE_RESET_RE = re.compile(r"resets?\s+([0-9]{1,2}(?::[0-9]{2})?\s*[ap]m)", re.I)
+
+
+def _claude_fail_note(what, err):
+    """クロード側の失敗を、何が起きたか分かる言い方にする。"""
+    err = (err or "").strip()
+    if _CLAUDE_LIMIT_RE.search(err):
+        m = _CLAUDE_RESET_RE.search(err)
+        when = f"（**{m.group(1)}** ごろに戻ります）" if m else ""
+        return (
+            f"🚫 **クロードの利用上限に達したため、{what}ができませんでした。**{when}\n"
+            "これはコードの不具合ではなく、Claudeの契約プラン側の上限です。"
+            "上限が戻れば、そのまま同じ言い方でやり直せます。\n"
+            "急ぐなら「**ヒッグスフィールドで作って**」（生成モデル・クレジット消費）"
+            "も使えます。"
+        )
+    return f"⚠️ {what}に失敗しました: {err[:300]}"
 
 
 async def _run_claude_exec(task, timeout=600, model=None):
