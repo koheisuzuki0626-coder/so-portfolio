@@ -8104,6 +8104,120 @@ async def _await_approval(cid, fut, timeout=310):
     return False if approved is SUPERSEDED else approved
 
 
+# ---------- 分からないことは、始める前に聞き返す ----------
+# 本人の希望：「いちいち細かく与件を伝えられないから、不明点はあっちから聞いて」。
+# 何を聞くかはコード側で決める（AIに任せると毎回ちがう質問をして煩わしい）。
+# 【原則】答えが依頼文から読み取れるものは聞かない。多くても2つまで。
+# 「おまかせ」で必ず抜けられる（聞き返しが行き止まりにならないように）。
+CLARIFY_ON = os.getenv("CLARIFY", "1") not in ("0", "false", "False")
+CLARIFY_MAX = 2
+CLARIFY_WAIT = 300
+
+# 種別 -> [(名前, 質問文, すでに書かれていると判断する言い方)]
+CLARIFY_SLOTS = {
+    "video": [
+        ("用途", "何に使う動画ですか？（例: YouTubeショート／広告／個人用）",
+         "ショート|shorts|youtube|ユーチューブ|広告|ＣＭ|CM|PV|SNS|tiktok|"
+         "ティックトック|インスタ|reel|個人用|自分用|練習"),
+        ("向きと長さ", "縦型・横型どちらですか？だいたいの長さも（例: 縦・15秒）",
+         "縦|横|9:16|16:9|1:1|スクエア|[0-9]+\\s*秒|[0-9]+\\s*分"),
+    ],
+    "image": [
+        ("用途", "何に使う画像ですか？（例: YouTubeサムネ／SNS投稿／資料）",
+         "サムネ|thumbnail|youtube|ユーチューブ|SNS|投稿|資料|アイコン|バナー|"
+         "壁紙|印刷|プロフ|ヘッダー|個人用|自分用"),
+        ("雰囲気", "雰囲気の希望はありますか？（例: 実写風／イラスト／モノクロ）",
+         "実写|写真|フォト|リアル|イラスト|アニメ|3D|CG|モノクロ|白黒|水彩|"
+         "油絵|レトロ|かっこい|かわい|おしゃれ|シンプル|ポップ|かっこ良"),
+    ],
+    "design": [
+        ("用途とサイズ",
+         "何に使いますか？（例: YouTubeサムネ 1280x720／A4のチラシ）",
+         "サムネ|バナー|ポスター|チラシ|フライヤー|スライド|名刺|表紙|"
+         "A4|B5|[0-9]{3,4}\\s*[x×]\\s*[0-9]{3,4}"),
+        ("入れる文字", "入れる文字（見出し）は決まっていますか？",
+         "「|『|\"|文字|見出し|タイトル|テキスト|コピー|キャッチ"),
+    ],
+}
+_CLARIFY_SKIP_RE = re.compile(
+    "おまかせ|お任せ|まかせ|よしなに|適当|なんでも|どっちでも|なんでもいい|"
+    "いい感じ|お好きに|決めて|そっちで")
+# 聞き返しをやめたい時の言い方（コード側で持つ。プロンプトでは守られない）
+_CLARIFY_OFF_RE = re.compile("聞き返(し|さ)ないで|質問(し|さ)ないで|確認(は|を)?(減ら|少な)")
+
+
+# 依頼が「薄い」と判断する長さ（作り手の指定と依頼の動詞を除いた中身）。
+# 「夕暮れの海辺を歩く猫の画像作って」まで聞き返すと、うるさいだけで
+# 本人の手間が増える。中身が書かれていない時だけ聞く。
+CLARIFY_THIN = int(os.getenv("CLARIFY_THIN", "8"))
+
+
+def _is_thin_request(request):
+    """何を作るかがほとんど書かれていない依頼か。"""
+    return len(_strip_engine_words(request or "")) < CLARIFY_THIN
+
+
+def _missing_slots(kind, request):
+    """依頼文から読み取れない項目だけを返す（最大2つ）。
+    ちゃんと書かれている依頼には何も聞かない（聞き返しは薄い依頼のときだけ）。"""
+    if not CLARIFY_ON:
+        return []
+    text = request or ""
+    if _CLARIFY_SKIP_RE.search(text):
+        return []                       # 「おまかせで」と言われている
+    if not _is_thin_request(text):
+        return []                       # 中身が書かれている＝聞く必要がない
+    out = []
+    for name, question, known in CLARIFY_SLOTS.get(kind, []):
+        if not re.search(known, text, re.I):
+            out.append((name, question))
+    return out[:CLARIFY_MAX]
+
+
+_pending_clarify = {}          # cid -> (future, owner_id)
+
+
+def _try_text_clarify(cid, user_id, content):
+    """聞き返しの返事を受け取る。受け取ったら True。"""
+    entry = _pending_clarify.get(cid)
+    if not entry:
+        return False
+    fut, owner_id = entry
+    if fut.done() or (owner_id and user_id != owner_id):
+        return False
+    _pending_clarify.pop(cid, None)
+    fut.set_result(content or "")
+    return True
+
+
+async def _ask_clarify(message, cid, slots):
+    """足りない点を聞いて、返事を待つ。
+    返り値: 補足の文字列 / "" （おまかせ・時間切れ）/ None （やめる）。"""
+    owner_id = getattr(message.author, "id", None)
+    fut = asyncio.get_running_loop().create_future()
+    _pending_clarify[cid] = (fut, owner_id)
+    lines = "\n".join(f"・{q}" for _, q in slots)
+    await send_as(
+        orch, cid,
+        "❓ **始める前に、ここだけ教えてください**\n" + lines +
+        "\n\nまとめて1行で書いてもらえれば大丈夫です。"
+        "決まっていなければ「**おまかせ**」でこちらで決めます"
+        "（「やめて」で中止／5分で自動的におまかせ扱い）。"
+    )
+    try:
+        ans = await asyncio.wait_for(fut, timeout=CLARIFY_WAIT)
+    except asyncio.TimeoutError:
+        _pending_clarify.pop(cid, None)
+        return ""
+    ans = (ans or "").strip()
+    if re.search("やめて|中止|キャンセル|やっぱいい|やらなくていい", ans):
+        await send_as(orch, cid, "🛑 やめました。")
+        return None
+    if _CLARIFY_SKIP_RE.search(ans) or not ans:
+        return ""
+    return ans
+
+
 def _try_text_approval(cid, user_id, content):
     """承認待ちがあるとき、テキストの「許可/拒否」でも解決する。
     承認=True / 却下=False / 対象外=None を返す。"""
@@ -8236,19 +8350,33 @@ async def _confirm_then(message, cid, summary, plan, factory, cost="", engine=""
         await factory()
 
 
-def _gate(message, cid, summary, plan, factory, label, cost="", engine=""):
-    """確認つきで作業を起動する（呼び出し側は1行で済む）。"""
-    async def _go():
-        # 承認が下りた瞬間から計り直す。ここを分けないと「本人が返事をするまでの
-        # 時間」が所要時間として記録され、見積もりが実態とかけ離れる。
-        _start_work(cid, label)
-        await factory()
+def _gate(message, cid, summary, plan, factory, label, cost="", engine="",
+          clarify="", request=""):
+    """確認つきで作業を起動する（呼び出し側は1行で済む）。
+    clarify と request を渡すと、確認の【前に】足りない点を聞き返す。
+    その場合 factory は補った依頼文を1つ受け取る関数にすること。"""
+    async def _run():
+        req, extra = request, ""
+        if clarify and request:
+            slots = _missing_slots(clarify, request)
+            if slots:
+                extra = await _ask_clarify(message, cid, slots)
+                if extra is None:
+                    return                      # 「やめて」で中止
+                if extra:
+                    req = f"{request}（{extra}）"
+        _sum = summary if not extra else f"{summary}／補足: {extra[:40]}"
 
-    return _spawn(
-        _confirm_then(message, cid, summary, plan, _go, cost, engine,
-                      _eta_hint(label)),
-        cid, label, gated=True,
-    )
+        async def _go():
+            # 承認が下りた瞬間から計り直す。ここを分けないと「本人が返事をするまでの
+            # 時間」が所要時間として記録され、見積もりが実態とかけ離れる。
+            _start_work(cid, label)
+            await (factory(req) if request else factory())
+
+        await _confirm_then(message, cid, _sum, plan, _go, cost, engine,
+                            _eta_hint(label))
+
+    return _spawn(_run(), cid, label, gated=True)
 
 
 async def run_claude_agent(cid, task, owner_id):
@@ -9168,6 +9296,12 @@ async def _dispatch_message(message):
         await message.channel.send("🔴 直近のエラー:\n" + _recent_errors(3)[:1800])
         return
 
+    # 聞き返しの返事を待っているなら、それを先に受け取る
+    if _try_text_clarify(cid, message.author.id, content):
+        _fired(cid, "聞き返しへの返事", content)
+        add_history(cid, message.author.display_name, content)
+        return
+
     # 承認待ちがあれば、テキストの「許可/拒否」でも受け付ける（ボタン不要）
     approval = _try_text_approval(cid, message.author.id, content)
     if approval is not None:
@@ -9463,8 +9597,9 @@ async def _dispatch_message(message):
               "Geminiの無料枠で画像を生成します"
               + ("" if _gemini_image_usable() else
                  f"（⚠️ いまGeminiは使えません: {_gemini_image_why_not()}）"),
-              lambda: _handle_image_request(cid, content), "画像生成",
-              "原則無料（Geminiの無料枠）", engine=ENGINE_GEMINI_IMG)
+              lambda req: _handle_image_request(cid, req), "画像生成",
+              "原則無料（Geminiの無料枠）", engine=ENGINE_GEMINI_IMG,
+              clarify="image", request=content)
         return
 
     if route == "hf_model":
@@ -9473,8 +9608,9 @@ async def _dispatch_message(message):
         _gate(message, cid, f"{label}で{'動画' if mtype == 'video' else '画像'}を生成",
               "依頼を英語プロンプトに整えてから生成し、完成したらURLを投稿します"
               + (f"\n{_hf_limit_note()}" if _hf_limit_note() else ""),
-              lambda: _run_hf_generate(message, content, model, mtype, label),
+              lambda req: _run_hf_generate(message, req, model, mtype, label),
               "動画/画像生成", "Higgsfieldのクレジットを消費します",
+              clarify=mtype, request=content,
               engine=_engine_label_hf(label, "動画" if mtype == "video" else "画像"))
         return
 
@@ -9498,8 +9634,9 @@ async def _dispatch_message(message):
               "内容に合う最適なモデルを自動で選び、"
               "英語プロンプトに整えてから生成します"
               + (f"\n{_hf_limit_note()}" if _hf_limit_note() else ""),
-              lambda: _run_hf_generate(message, _hreq, None, mtype, "自動選定"),
+              lambda req: _run_hf_generate(message, req, None, mtype, "自動選定"),
               "動画/画像生成", "Higgsfieldのクレジットを消費します",
+              clarify=mtype, request=_hreq,
               engine=_engine_label_hf("自動選定",
                                       "動画" if mtype == "video" else "画像"))
         return

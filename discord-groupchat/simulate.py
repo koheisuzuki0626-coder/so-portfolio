@@ -211,6 +211,8 @@ def install_stubs(mcp_url=None):
     import pathlib as _pl0
     bot.ERROR_LOG = _pl0.Path(_tf0.mkdtemp()) / "errors.log"
     bot.CONFIRM_BEFORE_WORK = False   # 確認は専用テストで検証する
+    bot.CLARIFY_ON = False            # 聞き返しも専用テストで検証する
+    bot._pending_clarify.clear()
     for ch in _CHANNELS.values():
         ch.sent.clear()   # 前のテストの送信内容が混ざらないように
     bot._self_diagnose = _rec_str("diagnose", "🩺 診断結果（スタブ）")
@@ -1820,6 +1822,90 @@ async def run():
     bot._hf_limit.update({"t": 0.0, "why": ""})
     check("当たっていなければ何も言わない", bot._hf_limit_note() == "",
           bot._hf_limit_note())
+
+    print("■ E2E: 分からないことは始める前に聞き返す")
+    # 本人の希望：「いちいち細かく与件を伝えられないから、不明点はあっちから聞いて」。
+    # ただし聞きすぎると逆に手間なので、中身が書かれていない依頼の時だけ聞く。
+    bot.CLARIFY_ON = True             # 判定そのものを見るので有効にする
+    check("中身が薄ければ聞く", bool(bot._missing_slots("video", "動画作って")),
+          bot._missing_slots("video", "動画作って"))
+    check("多くても2つまで",
+          len(bot._missing_slots("video", "動画作って")) <= 2,
+          bot._missing_slots("video", "動画作って"))
+    for _t in ("夕暮れの海辺を歩く猫の画像作って",
+               "メンヘラノンデリワキガ上司っていうサムネイルを作って"):
+        check(f"{_t[:14]!r}… は聞き返さない",
+              not bot._missing_slots("image", _t), bot._missing_slots("image", _t))
+    check("すでに書いてある項目は聞かない",
+          all("用途" not in n for n, _q in
+              bot._missing_slots("video", "YouTubeショート用の動画作って")),
+          bot._missing_slots("video", "YouTubeショート用の動画作って"))
+    check("おまかせと言われたら聞かない",
+          not bot._missing_slots("video", "おまかせで動画作って"),
+          bot._missing_slots("video", "おまかせで動画作って"))
+
+    # 実際の会話：聞く → 答える → その内容で作る
+    install_stubs()
+    bot.CLARIFY_ON = True
+    bot._pending_clarify.clear()
+    try:
+        _t = asyncio.get_running_loop().create_task(drive("動画作って"))
+        for _ in range(80):
+            await asyncio.sleep(0)
+            if 1234 in bot._pending_clarify:
+                break
+        check("始める前に聞いてくる", 1234 in bot._pending_clarify,
+              "聞いてこない")
+        _ch = _CHANNELS.setdefault(1234, _FakeChannel(1234))
+        check("何を知りたいのかを書く",
+              any("始める前に" in t for t in _ch.sent), _ch.sent[:1])
+        check("答えなくても抜けられると伝える",
+              any("おまかせ" in t for t in _ch.sent), _ch.sent[:1])
+        await drive("YouTubeショート用、縦で15秒")
+        await asyncio.wait_for(_t, timeout=5)
+        _c = last_call("hf_generate")
+        check("答えた内容が依頼に入る",
+              _c is not None and "縦で15秒" in _c[0][1],
+              _c[0][1] if _c else f"fired={FIRED}")
+    finally:
+        bot.CLARIFY_ON = False
+        bot._pending_clarify.clear()
+
+    # 「おまかせ」で必ず抜けられる（聞き返しが行き止まりにならない）
+    install_stubs()
+    bot.CLARIFY_ON = True
+    try:
+        _t2 = asyncio.get_running_loop().create_task(drive("動画作って"))
+        for _ in range(80):
+            await asyncio.sleep(0)
+            if 1234 in bot._pending_clarify:
+                break
+        await drive("おまかせ")
+        await asyncio.wait_for(_t2, timeout=5)
+        check("おまかせでも作業は進む", "hf_generate" in FIRED, f"fired={FIRED}")
+        _c2 = last_call("hf_generate")
+        check("おまかせを依頼文に混ぜない",
+              _c2 is not None and "おまかせ" not in _c2[0][1],
+              _c2[0][1] if _c2 else "")
+    finally:
+        bot.CLARIFY_ON = False
+        bot._pending_clarify.clear()
+
+    # 「やめて」で止まる
+    install_stubs()
+    bot.CLARIFY_ON = True
+    try:
+        _t3 = asyncio.get_running_loop().create_task(drive("動画作って"))
+        for _ in range(80):
+            await asyncio.sleep(0)
+            if 1234 in bot._pending_clarify:
+                break
+        await drive("やめて")
+        await asyncio.wait_for(_t3, timeout=5)
+        check("やめてで作業を始めない", "hf_generate" not in FIRED, f"fired={FIRED}")
+    finally:
+        bot.CLARIFY_ON = False
+        bot._pending_clarify.clear()
 
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()

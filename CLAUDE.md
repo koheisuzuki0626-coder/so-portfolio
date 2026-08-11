@@ -158,6 +158,7 @@ Mac で動いているボットは読まない。「ここで決めたのに Dis
 | 作り手の名指しを最優先する | `_route_by_maker` |
 | 使えないと分かっている手を勧めない | `_gemini_image_usable` |
 | 頼まれなくてもログを共有する | `_autolog_loop` |
+| 不明点は始める前に聞き返す | `CLARIFY_SLOTS` / `_missing_slots` |
 
 ## ボットへの指示（プロンプト）を足すときの鉄則
 

@@ -1467,6 +1467,10 @@ def run():
          lambda: callable(bot._gemini_image_usable)),
         ("頼まれなくてもログを共有する",
          lambda: bot.AUTOLOG_URGENT_SEC < bot.AUTOLOG_PERIOD_SEC),
+        ("分からないことは始める前に聞き返す",
+         lambda: bot.CLARIFY_ON and bool(bot._missing_slots("video", "動画作って"))),
+        ("聞きすぎない（書いてある依頼には聞かない）",
+         lambda: not bot._missing_slots("image", "夕暮れの海辺を歩く猫の画像作って")),
     ]
     for _name, _fn in _rules:
         try:
