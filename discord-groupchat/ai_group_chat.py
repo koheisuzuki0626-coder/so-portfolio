@@ -2163,7 +2163,8 @@ def _image_from_resp(resp):
     return None
 
 
-def _gemini_generate_image_sync(prompt, ref_bytes=None, ref_mime="image/png"):
+def _gemini_generate_image_sync(prompt, ref_bytes=None, ref_mime="image/png",
+                                extra_refs=None):
     """Gemini の画像生成モデルで画像を作り、PNGバイト列を返す。
     ref_bytes を渡すと、その画像を元にした編集（背景差し替え等）になる。
 
@@ -2174,9 +2175,12 @@ def _gemini_generate_image_sync(prompt, ref_bytes=None, ref_mime="image/png"):
       ・全部だめなら GeminiQuotaExceeded（＝無料枠切れとして扱える）
     クールダウンの記録はテキスト側と同じ _gemini_cooldown を共有するので、
     「ログ送って」の『Geminiクールダウン中』にそのまま出る。"""
-    contents = [prompt]
+    # 「2枚の写真を組み合わせて」のように、素材が複数のこともある。
+    # 1枚しか渡せないと、もう1枚は黙って無視されていた。
+    refs = list(extra_refs or [])
     if ref_bytes:
-        contents = [_make_media_part(ref_bytes, ref_mime), prompt]
+        refs.insert(0, (ref_bytes, ref_mime))
+    contents = [_make_media_part(b, m) for b, m in refs] + [prompt]
     n = len(GEMINI_IMAGE_MODELS)
     if n == 0:
         raise RuntimeError("GEMINI_IMAGE_MODELS が空です")
@@ -4519,6 +4523,23 @@ def _last_request_text(cid):
     return ""
 
 
+REVISE_MARK = "【今回の修正指示】"
+
+
+def _base_request(prompt):
+    """積み上がった依頼文から、元の依頼だけを取り出す。
+    事故：作り直しのたびに指示が継ぎ足され、
+    「背景を室内に変えて 【今回の修正指示】クロードで 【今回の修正指示】クロードでや」
+    のようになって、本来の依頼（2枚の写真を組み合わせて）が消えていた。"""
+    return (prompt or "").split(REVISE_MARK)[0].strip()
+
+
+def _stack_revise(prev, instruction):
+    """前回の依頼に今回の直しを足す。積み上げは1段までに抑える。"""
+    base = _base_request(prev)
+    return f"{base}\n{REVISE_MARK}{instruction}" if base else instruction
+
+
 def _request_with_context(req, cid):
     """作り手の指定しかない依頼を、直前の依頼の中身で補う。
     これが無いと『ヒッグスフィールドで作って』の指定語が題材になる。"""
@@ -4774,6 +4795,13 @@ def classify_route(content, **kw):
 _NOT_GEN_VERB_RE = re.compile(
     "調べ|検索|要約|まとめて|翻訳|説明して|教えて|読んで|分析|"
     "考えて|相談|聞いて|返事|文章|台本|コメント|意見")
+
+
+# 添付した写真に手を加える依頼。写真があるのに会話へ落ちるのを防ぐ。
+_PHOTO_EDIT_RE = re.compile(
+    "組み合わせ|合成|並べ|重ね|加工|編集|入れて|差し替え|置き換え|消して|"
+    "切り抜|背景|明るく|暗く|色|トリミング|つなげ|くっつけ|まとめて|"
+    "いい感じに|かっこよく|かわいく|きれいに|良い感じ")
 
 
 def _route_by_maker(content):
@@ -5039,6 +5067,10 @@ def _classify_route_raw(content, *, has_attachments=False, has_video_att=False,
             return "motion"
         if _GEN_INTENT2_RE.search(content) or re.search("したい|やりたい|お願い", content):
             return "motion_ask"
+    # ③.5 写真を添付しての加工の依頼は、必ず画像の経路へ。
+    #      事故：2枚の写真を添付して「いい感じに組み合わせて」が会話に落ちた。
+    if has_image_att and _wants_action(content) and _PHOTO_EDIT_RE.search(content):
+        return _route_by_maker(content) or "image"
     # ④ 作り手を名指しした依頼は、必ずその作り手の生成へ。
     #    他のどのルートにも当たらなかった時の最後の受け皿。
     #    事故：「geminiで背景を普通の室内にして」が会話に落ち、
@@ -5159,7 +5191,7 @@ async def _plan(history):
     return kind, mode, lead, search, recall, reply
 
 
-async def _handle_image_request(cid, request, refine=True):
+async def _handle_image_request(cid, request, refine=True, refs=None):
     """画像生成の依頼。既定は Gemini（無料枠 約500枚/日）。
     Gemini が使えないとき、以前は黙って Higgsfield に切り替えていたが、
     頼んでいないクレジット消費になるためやめた（本人の希望）。
@@ -5188,8 +5220,16 @@ async def _handle_image_request(cid, request, refine=True):
         return
     # 「この画像の背景を室内にして」は、元の写真を渡さないと別人が出来上がる。
     # 事故：参照を渡さずに作り、依頼者の写真とは無関係な男性の画像になった。
-    ref_bytes, ref_mime = None, "image/png"
-    if _POINTS_AT_RE.search(request) or _looks_revise(request, True):
+    ref_bytes, ref_mime, extra_refs = None, "image/png", []
+    for _u in (refs or [])[:4]:
+        _b, _m = await _fetch_image_bytes(_u)
+        if _b:
+            extra_refs.append((_b, _m))
+    if extra_refs:
+        await send_as(
+            orch, cid,
+            f"🖼 送られた画像{len(extra_refs)}枚を素材として使います。")
+    elif _POINTS_AT_RE.search(request) or _looks_revise(request, True):
         _ref_url = _recent_ref(cid)
         if _ref_url:
             ref_bytes, ref_mime = await _fetch_image_bytes(_ref_url)
@@ -5198,7 +5238,8 @@ async def _handle_image_request(cid, request, refine=True):
             else:
                 print(f"[image_request] 参照画像を取得できません: {_ref_url[:80]}")
     if refine:
-        refined = await _refine_prompt(request, "image", has_ref=bool(ref_bytes))
+        refined = await _refine_prompt(
+            request, "image", has_ref=bool(ref_bytes or extra_refs))
         if refined and refined != request:
             request = refined
             await send_as(orch, cid, f"🖋 プロンプト: {request[:300]}")
@@ -5212,11 +5253,12 @@ async def _handle_image_request(cid, request, refine=True):
     await send_as(
         orch, cid,
         "🎨 Gemini で画像を生成中…（無料枠"
-        + ("・元の画像を使用" if ref_bytes else "") + "）")
+        + ("・元の画像を使用" if (ref_bytes or extra_refs) else "") + "）")
     _why, _quota = "", False
     try:
         data = await asyncio.to_thread(
-            _gemini_generate_image_sync, request, ref_bytes, ref_mime)
+            _gemini_generate_image_sync, request, ref_bytes, ref_mime,
+            extra_refs)
         # どのモデルで作れたかを毎回見せる。どれが生きているかが分かるので、
         # 「ローテーションできてるのか分からない」状態にならない。
         await send_image_bytes(
@@ -6062,7 +6104,7 @@ async def _run_revise(message, instruction):
     # 文字と線が崩れて別物になるうえ、使う必要のないクレジットを消費する。
     # 入口がどこであってもここで必ず受け止める（最後の砦）。
     if str(last.get("label", "")).startswith("デザイン"):
-        _req = f"{last.get('prompt', '')}\n【今回の修正指示】{instruction}"
+        _req = _stack_revise(last.get("prompt", ""), instruction)
         if await _confirm(
             message, cid, f"デザインの作り直し（{instruction[:40]}）",
             "前回のデザインに今回の指示を足して、HTMLで組み直して画像に書き出します",
@@ -6391,6 +6433,13 @@ DESIGN_CRAFT_RULES = (
 # 参照画像を一切渡していなかったうえ、プロンプトで外部画像を禁じていた。
 _DESIGN_PHOTO_RE = re.compile(
     "写真|画像|人物|この人|この男性|この女性|顔|素材|組み込|入れて|合成|載せて")
+
+
+def _image_att_urls(message):
+    """メッセージに添付された画像のURLを全部返す（素材として渡すため）。"""
+    return [a.url for a in (getattr(message, "attachments", None) or [])
+            if Path(getattr(a, "filename", "")).suffix.lower()
+            in SUPPORTED_IMAGE_TYPES]
 
 
 def _design_refs(message, request):
@@ -9596,8 +9645,15 @@ async def _dispatch_message(message):
         # 何を作るのか分からない。前回の依頼に今回の修正を足して渡す。
         _req = content
         _prev = (_lg_rec or {}).get("prompt") or ""
-        if _prev and (_looks_revise(content) or len(_strip_media_context(content)) < 25):
-            _req = f"{_prev}\n【今回の修正指示】{content}"
+        # 「クロードでやって」のような作り手の指定だけの言い直しは、
+        # 直前の【生成物】ではなく直前の【依頼】をやり直す。
+        # 事故：2枚の写真を組み合わせる依頼のあとに「クロードでやって」と言ったら、
+        # ずっと前の「背景を室内に変えて」が引きずり出されて別物が出来た。
+        if not _has_subject(content):
+            _req = _request_with_context(content, cid)
+        elif _prev and (_looks_revise(content)
+                        or len(_strip_media_context(content)) < 25):
+            _req = _stack_revise(_prev, content)
         _w, _h, _label = _design_size(_req)
         _gate(message, cid, f"デザインの制作（{_req[:40]}）",
               f"ClaudeがHTMLでレイアウトを組み、{_label} {_w}×{_h} の画像に"
@@ -9685,7 +9741,8 @@ async def _dispatch_message(message):
               "Geminiの無料枠で画像を生成します"
               + ("" if _gemini_image_usable() else
                  f"（⚠️ いまGeminiは使えません: {_gemini_image_why_not()}）"),
-              lambda req: _handle_image_request(cid, req), "画像生成",
+              lambda req: _handle_image_request(
+                  cid, req, refs=_image_att_urls(message)), "画像生成",
               "原則無料（Geminiの無料枠）", engine=ENGINE_GEMINI_IMG,
               clarify="image", request=content)
         return
@@ -9768,7 +9825,7 @@ async def _dispatch_message(message):
             if _wants_action(content):
                 add_history(cid, message.author.display_name, content)
                 _fired(cid, "デザインの作り直し(文脈解釈)", content)
-                _req = f"{lg.get('prompt', '')}\n【今回の修正指示】{content}"
+                _req = _stack_revise(lg.get("prompt", ""), content)
                 _gate(message, cid, f"デザインの作り直し（{content[:40]}）",
                       "前回のデザインに今回の指示を足して、HTMLで組み直して"
                       "画像に書き出します",

@@ -748,7 +748,7 @@ async def run():
     print("■ E2E: 画像プロンプトの英訳")
     used = {}
 
-    def _gen_img(prompt, ref_bytes=None, ref_mime="image/png"):
+    def _gen_img(prompt, ref_bytes=None, ref_mime="image/png", extra_refs=None):
         used["prompt"] = prompt
         return b"PNG"
     install_stubs()
@@ -1358,7 +1358,7 @@ async def run():
     install_stubs()
     _tries = []
 
-    def _gen_img_fail(prompt, ref_bytes=None, ref_mime="image/png"):
+    def _gen_img_fail(prompt, ref_bytes=None, ref_mime="image/png", extra_refs=None):
         raise RuntimeError("404 model not found")
 
     _keep16 = bot._gemini_generate_image_sync
@@ -1517,7 +1517,7 @@ async def run():
     install_stubs()
     _seen = {}
 
-    def _gen_img_ref(prompt, ref_bytes=None, ref_mime="image/png"):
+    def _gen_img_ref(prompt, ref_bytes=None, ref_mime="image/png", extra_refs=None):
         _seen["ref"] = ref_bytes
         return b"PNG"
 
@@ -1678,7 +1678,7 @@ async def run():
         async def _refine_ng(req, mtype, style="", has_ref=False):
             return req                      # 英訳できなかった（上限など）
 
-        def _gen_ok(prompt, ref_bytes=None, ref_mime="image/png"):
+        def _gen_ok(prompt, ref_bytes=None, ref_mime="image/png", extra_refs=None):
             return b"PNG"
         bot._refine_prompt = _refine_ng
         bot._gemini_generate_image_sync = _gen_ok
@@ -1754,7 +1754,7 @@ async def run():
         async def _refine_strip(req, mtype, style="", has_ref=False):
             return bot._drop_tool_words(req)      # 英訳できず、語を落としただけ
 
-        def _gen_ok2(prompt, ref_bytes=None, ref_mime="image/png"):
+        def _gen_ok2(prompt, ref_bytes=None, ref_mime="image/png", extra_refs=None):
             return b"PNG"
         bot._refine_prompt = _refine_strip
         bot._gemini_generate_image_sync = _gen_ok2
@@ -1997,6 +1997,96 @@ async def run():
     finally:
         bot._run_claude_exec = _keep24
         bot._last_ref.clear()
+
+    # --- ㉕ 依頼文が作り直しのたびに積み上がって壊れた（09:23の実例）---
+    #     「この2枚の写真を組み合わせて」の直後に「クロードでやって」と言ったら、
+    #     ずっと前の「背景を室内に変えて」が引きずり出され、
+    #     依頼文は「背景を室内に変えて 【今回の修正指示】クロードで
+    #     【今回の修正指示】クロードでや」になっていた。
+    _stacked = ("背景を室内に変えて\n【今回の修正指示】クロードで"
+                "\n【今回の修正指示】クロードでや")
+    check("元の依頼だけを取り出せる",
+          bot._base_request(_stacked) == "背景を室内に変えて",
+          bot._base_request(_stacked))
+    check("積み上げは1段までに抑える",
+          bot._stack_revise(_stacked, "文字を大きく").count("【今回の修正指示】") == 1,
+          bot._stack_revise(_stacked, "文字を大きく"))
+    check("元の依頼は消さない",
+          "背景を室内に変えて" in bot._stack_revise(_stacked, "文字を大きく"),
+          bot._stack_revise(_stacked, "文字を大きく"))
+    # 「クロードでやって」は直前の【依頼】をやり直す（直前の生成物ではなく）
+    install_stubs()
+    bot.CLARIFY_ON = False
+    bot._load_last_gen = lambda cid: {
+        "prompt": "背景を室内に変えて", "media_type": "image",
+        "label": "デザイン（YouTubeサムネイル）", "t": _tm4.time(),
+        "url": "https://example.com/prev.png"}
+    await drive("この2枚の写真を、いい感じに組み合わせて")
+    install_stubs()
+    bot._load_last_gen = lambda cid: {
+        "prompt": "背景を室内に変えて", "media_type": "image",
+        "label": "デザイン（YouTubeサムネイル）", "t": _tm4.time(),
+        "url": "https://example.com/prev.png"}
+    await drive("クロードでやって")
+    _c25 = last_call("design")
+    check("直前の依頼をやり直す（古い生成物を引きずらない）",
+          _c25 is not None and "組み合わせて" in _c25[0][1],
+          _c25[0][1] if _c25 else f"fired={FIRED}")
+    check("古い依頼を混ぜない",
+          _c25 is not None and "背景を室内" not in _c25[0][1],
+          _c25[0][1] if _c25 else "")
+
+    # --- ㉖ 写真を添付した加工の依頼が会話に落ち、2枚目が無視されていた ---
+    for _t in ("この2枚の写真を、いい感じに組み合わせて",
+               "この写真の背景を消して", "この写真を明るくして"):
+        check(f"{_t[:12]!r}… は画像の経路へ",
+              bot.classify_route(_t, has_image_att=True,
+                                 has_attachments=True) == "image",
+              bot.classify_route(_t, has_image_att=True, has_attachments=True))
+    check("作り手の名指しがあればそちらが勝つ",
+          bot.classify_route("クロードでこの写真を組み合わせて",
+                             has_image_att=True, has_attachments=True) == "design",
+          bot.classify_route("クロードでこの写真を組み合わせて",
+                             has_image_att=True, has_attachments=True))
+    check("写真があっても、依頼でなければ会話のまま",
+          bot.classify_route("いい感じだね", has_image_att=True,
+                             has_attachments=True) is None,
+          bot.classify_route("いい感じだね", has_image_att=True,
+                             has_attachments=True))
+    # 添付が2枚なら2枚とも渡す
+    install_stubs()
+    _got = {}
+
+    def _gen2(prompt, ref_bytes=None, ref_mime="image/png", extra_refs=None):
+        _got["n"] = len(extra_refs or []) + (1 if ref_bytes else 0)
+        return b"PNG"
+
+    async def _fetch2(url, limit=None):
+        return b"BYTES", "image/jpeg"
+
+    _keep26 = (bot._gemini_generate_image_sync, bot._fetch_image_bytes,
+               bot._refine_prompt)
+    try:
+        bot._gemini_generate_image_sync = _gen2
+        bot._fetch_image_bytes = _fetch2
+
+        async def _refine26(req, mtype, style="", has_ref=False):
+            _got["has_ref"] = has_ref
+            return "two photos combined naturally, soft light, photorealistic"
+        bot._refine_prompt = _refine26
+        _ch26 = _CHANNELS.setdefault(1234, _FakeChannel(1234))
+        _ch26.sent.clear()
+        await _REAL_IMAGE_REQ(
+            1234, "この2枚の写真をいい感じに組み合わせて",
+            refs=["https://example.com/a.jpg", "https://example.com/b.jpg"])
+        check("2枚とも素材として渡す", _got.get("n") == 2, _got)
+        check("参照ありとして英訳させる", _got.get("has_ref") is True, _got)
+        check("何枚使ったかを伝える",
+              any("2枚を素材として使います" in t for t in _ch26.sent),
+              _ch26.sent[:2])
+    finally:
+        (bot._gemini_generate_image_sync, bot._fetch_image_bytes,
+         bot._refine_prompt) = _keep26
 
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
