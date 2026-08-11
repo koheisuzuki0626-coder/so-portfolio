@@ -2159,6 +2159,76 @@ async def run():
           "嫉妬ガエル" in bot._request_with_context("クロードで作って", 1234),
           bot._request_with_context("クロードで作って", 1234)[:60])
 
+    print("■ Agent と Model Registry（段階1）")
+    # 「どちらのAIが今使えるか」の判断を1か所に集めた。
+    # これまでは上限・枠切れの対処があちこちにあり、食い違っていた。
+    check("共通の形を持っている",
+          all(hasattr(a, "generate") and hasattr(a, "health_check")
+              and hasattr(a, "get_capabilities") for a in bot.AGENTS),
+          [a.name for a in bot.AGENTS])
+    check("得意分野を宣言している",
+          "reasoning" in bot.CLAUDE_AGENT.get_capabilities()
+          and "web_research" in bot.GEMINI_AGENT.get_capabilities(),
+          True)
+    _keep_cl = dict(bot._claude_limit)
+    _keep_cd2 = dict(bot._gemini_cooldown)
+    try:
+        bot._claude_limit.update({"t": 0.0, "why": ""})
+        bot._gemini_cooldown.clear()
+        check("どちらも使えるなら希望どおりの順番",
+              [a.provider for a in bot._agent_order("claude")][0], "claude")
+        # Claudeが上限 → Geminiを先に試す（無駄に待たされない）
+        bot._claude_limit.update({"t": _tm4.time(), "why": "利用上限に達しています"})
+        check("上限のAgentは後回しにする",
+              [a.provider for a in bot._agent_order("claude")][0], "gemini")
+        check("理由を答えられる",
+              "上限" in bot.CLAUDE_AGENT.health_check()[1],
+              bot.CLAUDE_AGENT.health_check())
+        # 上限の記録は、ユーザーに見せる知らせを作る時にも入る
+        bot._claude_limit.update({"t": 0.0, "why": ""})
+        bot._claude_fail_note(
+            "デザインの書き出し",
+            "You've hit your session limit · resets 4am (Asia/Tokyo)")
+        check("上限は1か所に記録される", bool(bot._claude_limit["why"]),
+              bot._claude_limit)
+    finally:
+        bot._claude_limit.clear()
+        bot._claude_limit.update(_keep_cl)
+        bot._gemini_cooldown.clear()
+        bot._gemini_cooldown.update(_keep_cd2)
+
+    # Registry：使えるか／理由／順番を1か所で答える
+    _keep_m = bot.GEMINI_IMAGE_MODELS[:]
+    _keep_cd3 = dict(bot._gemini_cooldown)
+    try:
+        bot.GEMINI_IMAGE_MODELS[:] = ["m1", "m2"]
+        bot._gemini_cooldown.clear()
+        bot._gemini_bad_models.clear()
+        bot._gemini_img_stats.clear()
+        check("使えると答える", bot.REGISTRY.usable(bot.PURPOSE_IMAGE), True)
+        bot.REGISTRY.mark_quota("m1")
+        check("枠切れは理由つきで止める",
+              "枠切れ" in bot.REGISTRY.blocked("m1"), bot.REGISTRY.blocked("m1"))
+        check("残りがあれば使える", bot.REGISTRY.usable(bot.PURPOSE_IMAGE), True)
+        bot.REGISTRY.mark_dead("m2", "このプランでは使えない（無料枠の割り当てが0）")
+        bot.REGISTRY.mark_dead("m1", "このプランでは使えない（無料枠の割り当てが0）")
+        check("全部だめなら使えないと答える",
+              not bot.REGISTRY.usable(bot.PURPOSE_IMAGE), True)
+        check("なぜ使えないかを答える",
+              "割り当てが0" in bot.REGISTRY.why_not(bot.PURPOSE_IMAGE),
+              bot.REGISTRY.why_not(bot.PURPOSE_IMAGE))
+        check("案内文も同じ判断を使う",
+              not bot._gemini_image_usable(), True)
+        bot.REGISTRY.mark_ok("m1")
+        check("通ったら枠切れの記録は消える",
+              bot.REGISTRY.blocked("m1"), "使えないID・プラン")
+    finally:
+        bot.GEMINI_IMAGE_MODELS[:] = _keep_m
+        bot._gemini_cooldown.clear()
+        bot._gemini_cooldown.update(_keep_cd3)
+        bot._gemini_bad_models.clear()
+        bot._gemini_img_stats.clear()
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile

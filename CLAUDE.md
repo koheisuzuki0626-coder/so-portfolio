@@ -242,6 +242,27 @@ AIは条件を無視して、その案内文自体を返事として出してし
 **directive: 例外（〜の時は除く）を足したら、その例外が
 元のガードを無効化しないかを必ずテストで確かめること。**
 
+## オーケストレーターの作り（段階的に整理中）
+
+**方針：一括で作り直さない。**Macで常駐しているうえ自動更新が3分で入るので、
+壊れたコミットは3分後に本人の手元で壊れる。テスト（routing / phrasing /
+simulate ＝ 1,500件超）を通しながら1つずつ剥がす。
+
+いまの到達点：
+
+- **Model Registry（`REGISTRY`）**…「どのモデルが今使えるか」を答える唯一の場所。
+  枠切れ（時間で戻る）／使えないID・割り当て0（戻らない）を区別する。
+  テキストも画像も同じ入口を通す。状態の置き場は
+  `_gemini_cooldown` / `_gemini_bad_models` のまま（ログと既存参照を壊さないため）。
+- **Agent（`CLAUDE_AGENT` / `GEMINI_AGENT`）**…ClaudeとGeminiを同じ形で扱う。
+  `generate()` / `health_check()` / `get_capabilities()`。
+  上限に当たったら `_claude_limit` に記録され、次からは後回しになる。
+  どちらを使うかの判断は `_agent_order` だけが持つ。
+
+次にやること（段階2）：`_classify_route_raw` の41個のif文を、
+宣言的なテーブル（条件・優先度・行き先）に置き換える。
+誤爆の原因が表を見れば分かる状態にするのが目的。
+
 ## discord-groupchat の基本
 
 - Discord Bot 3体（オーケストレーター / Claude / Gemini）を1つの Python プロセスで動かす

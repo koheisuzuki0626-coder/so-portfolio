@@ -1633,6 +1633,82 @@ _gemini_rr = {"i": 0}  # ラウンドロビン用インデックス
 _gemini_watch = {"outage_cid": None}
 
 
+# ---------- Model Registry（どのモデルが今使えるか、を1か所で持つ） ----------
+# これまでは「テキスト用の枠切れ処理」と「画像用の枠切れ処理」が別々にあり、
+# 404・割り当て0・クールダウンの扱いが場所ごとに違っていた。
+# 状態は _gemini_cooldown / _gemini_bad_models に置いたまま（ログや既存の
+# 参照を壊さないため）、判断の入口だけをここに集約する。
+PURPOSE_TEXT = "text"
+PURPOSE_IMAGE = "image"
+
+
+class ModelRegistry:
+    """モデルの一覧と『今使えるか』を答える。判断はここだけを見る。"""
+
+    def models(self, purpose):
+        return GEMINI_IMAGE_MODELS if purpose == PURPOSE_IMAGE else GEMINI_MODELS
+
+    def order(self, purpose, prefer=""):
+        """試す順番。毎回ずらして負荷を分散し、前に通ったものは先頭に置く。"""
+        ms = list(self.models(purpose))
+        n = len(ms)
+        if not n:
+            return []
+        rr = _gemini_img_rr if purpose == PURPOSE_IMAGE else _gemini_rr
+        start = rr["i"]
+        rr["i"] = (start + 1) % n
+        out = [ms[(start + k) % n] for k in range(n)]
+        if prefer in out:
+            out.remove(prefer)
+            out.insert(0, prefer)
+        return out
+
+    def blocked(self, model):
+        """今このモデルを呼べない理由（呼べるなら空文字）。"""
+        if model in _gemini_bad_models:
+            return "使えないID・プラン"
+        left = _gemini_cooldown.get(model, 0) - time.time()
+        return f"枠切れ（あと約{math.ceil(left / 60)}分）" if left > 0 else ""
+
+    def usable(self, purpose):
+        return any(not self.blocked(m) for m in self.models(purpose))
+
+    def mark_ok(self, model):
+        _gemini_cooldown.pop(model, None)
+        st = _img_stat(model)
+        st["ok"] += 1
+        st["last"], st["t"] = "成功", time.time()
+
+    def mark_quota(self, model, why="無料枠切れ"):
+        """使い切り。時間で戻るのでクールダウンに入れる。"""
+        _gemini_cooldown[model] = time.time() + GEMINI_COOLDOWN_SEC
+        st = _img_stat(model)
+        st["ng"] += 1
+        st["last"], st["t"] = why, time.time()
+
+    def mark_dead(self, model, why):
+        """404や割り当て0。待っても戻らないので恒久的に外す。"""
+        _gemini_bad_models.add(model)
+        st = _img_stat(model)
+        st["ng"] += 1
+        st["last"], st["t"] = why, time.time()
+
+    def why_not(self, purpose):
+        """全部だめなときの理由（人に見せる一言）。"""
+        ms = self.models(purpose)
+        if not ms:
+            return "使えるモデルが登録されていません"
+        if all(m in _gemini_bad_models for m in ms):
+            if any("割り当てが0" in _img_stat(m)["last"] for m in ms):
+                return ("いまのAPIキーのプランでは無料枠の割り当てが0です"
+                        "（使い切ったのではなく最初から使えません）")
+            return "登録されているモデルIDが今のAPIに存在しません"
+        return _cooldown_note(ms)
+
+
+REGISTRY = ModelRegistry()
+
+
 def _gemini_all_cooling():
     """全モデルがクールダウン中（＝実質的にGemini全滅）かどうか。"""
     now = time.time()
@@ -1669,32 +1745,108 @@ async def ask_gemini(history):
     return await _gemini_call(peer_prompt("Gemini", "Claude", history))
 
 
-async def _ai_text(prompt, tag="ai_text"):
-    """テキスト生成：その時動いているエンジンを優先。Geminiが全滅中なら
-    Claudeへ直行（無駄な試行と誤判定を避ける）。両方失敗時のみ例外が伝播。"""
-    if _gemini_all_cooling():
-        # Gemini枠切れ中 → Claude中心（意図判定が不安定になるのを防ぐ）
-        try:
-            return await run_claude_cli(prompt)
-        except Exception as e:  # noqa: BLE001
-            print(f"[{tag}] Claude失敗 → Gemini再試行: {str(e)[:150]}")
-            return await _gemini_call(prompt)
-    try:
+# ---------- Agent（ClaudeとGeminiを同じ形で扱う） ----------
+# どちらを使うかを呼び出し側に散らさない。「今どちらが使えるか」は
+# Registry と各Agentの health_check() だけが答える。
+# 事故：上限・枠切れの対処があちこちに書かれ、Geminiが枠切れなのに
+# 「Geminiで作って」と案内する、といった食い違いが起きた。
+# Claudeの利用上限を覚えておく置き場（ClaudeAgent.health_check がこれを見る）
+_claude_limit = {"t": 0.0, "why": ""}
+
+
+class Agent:
+    """共通インターフェース。増やすときはこれを実装する。"""
+
+    name = "agent"
+    provider = ""
+    capabilities = frozenset()
+
+    async def generate(self, prompt, background=False):
+        raise NotImplementedError
+
+    def health_check(self):
+        """(使えるか, 理由) を返す。理由は人に見せる短い一言。"""
+        return True, ""
+
+    def get_capabilities(self):
+        return set(self.capabilities)
+
+
+class ClaudeAgent(Agent):
+    """Claude CLI（サブスク定額・API課金なし）。推論・文章・コード向き。"""
+
+    name = CLAUDE2_NAME          # 表示名は1か所（既存の名乗りと揃える）
+    provider = "claude"
+    capabilities = frozenset({
+        "reasoning", "coding", "planning", "synthesis", "writing", "design",
+    })
+
+    async def generate(self, prompt, background=False):
+        return await run_claude_cli(prompt, background=background)
+
+    def health_check(self):
+        why = _claude_limit.get("why") or ""
+        if why and time.time() - _claude_limit.get("t", 0) < 1800:
+            return False, why
+        return True, ""
+
+
+class GeminiAgent(Agent):
+    """Gemini API（無料枠）。調査・長文・別視点からの検証・画像向き。"""
+
+    name = "Gemini"
+    provider = "gemini"
+    capabilities = frozenset({
+        "web_research", "long_context", "verification", "vision", "image",
+    })
+
+    async def generate(self, prompt, background=False):
         return await _gemini_call(prompt)
-    except Exception as e:  # noqa: BLE001
-        print(f"[{tag}] Gemini失敗 → Claudeへフォールバック: {str(e)[:150]}")
-        return await run_claude_cli(prompt)
+
+    def health_check(self):
+        if not REGISTRY.usable(PURPOSE_TEXT):
+            return False, REGISTRY.why_not(PURPOSE_TEXT)
+        return True, ""
+
+
+CLAUDE_AGENT = ClaudeAgent()
+GEMINI_AGENT = GeminiAgent()
+AGENTS = (CLAUDE_AGENT, GEMINI_AGENT)
+
+
+def _agent_order(prefer):
+    """使えるものを先に並べる。全部だめでも順番は返す（最後は試してみる）。"""
+    order = [a for a in AGENTS if a.provider == prefer]
+    order += [a for a in AGENTS if a.provider != prefer]
+    healthy = [a for a in order if a.health_check()[0]]
+    return healthy + [a for a in order if a not in healthy]
+
+
+async def _ask_agents(prompt, tag, prefer, background=False):
+    """使えるAgentを順に試す。どれが使えるかの判断は1か所（ここ）だけ。"""
+    last = None
+    for agent in _agent_order(prefer):
+        try:
+            return await agent.generate(prompt, background=background)
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if agent.provider == "claude" and _CLAUDE_LIMIT_RE.search(str(e)):
+                _claude_limit.update({"t": time.time(), "why": str(e)[:200]})
+            print(f"[{tag}] {agent.name}失敗 → 次のAgentへ: {str(e)[:150]}")
+    raise last if last else RuntimeError("使えるAgentがありません")
+
+
+async def _ai_text(prompt, tag="ai_text"):
+    """テキスト生成：その時使えるエンジンを優先。
+    Geminiが枠切れならClaudeへ直行する（無駄な試行と誤判定を避ける）。"""
+    return await _ask_agents(prompt, tag, prefer="gemini")
 
 
 async def _ai_text_bg(prompt, tag="ai_text_bg"):
-    """バックグラウンド処理用テキスト生成：速度不問なので Claude（サブスク定額）を
-    優先して Gemini の無料枠を温存する。Claude 失敗時のみ Gemini へ。
-    裏方専用の関門を通すので、会話の返事の枠を奪わない。"""
-    try:
-        return await run_claude_cli(prompt, background=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"[{tag}] Claude失敗 → Geminiへフォールバック: {str(e)[:150]}")
-        return await _gemini_call(prompt)
+    """裏方のテキスト生成：速度不問なので Claude（サブスク定額）を優先し、
+    Gemini の無料枠を温存する。裏方専用の関門を通すので、
+    会話の返事の枠を奪わない。"""
+    return await _ask_agents(prompt, tag, prefer="claude", background=True)
 
 
 # ---------- Web検索：Google（Geminiグラウンディング）優先・DDGフォールバック ----------
@@ -2058,28 +2210,15 @@ def _discover_gemini_image_models():
 
 
 def _gemini_image_usable():
-    """いま Gemini で画像を作れる見込みがあるか。
-    存在しないIDと枠切れ中を除いて、試せるモデルが1つでも残っているか。
+    """いま Gemini で画像を作れる見込みがあるか（判断は Registry が持つ）。
     これを見ずに「Geminiで作って」と案内していたため、
     使えないと分かっている手を勧めてしまっていた（本人の指摘）。"""
-    now = time.time()
-    return any(m not in _gemini_bad_models
-               and _gemini_cooldown.get(m, 0) <= now
-               for m in GEMINI_IMAGE_MODELS)
+    return REGISTRY.usable(PURPOSE_IMAGE)
 
 
 def _gemini_image_why_not():
     """使えない理由の一言（案内文に添えるため）。"""
-    if not GEMINI_IMAGE_MODELS:
-        return "使えるモデルがありません"
-    if all(m in _gemini_bad_models for m in GEMINI_IMAGE_MODELS):
-        zero = [m for m in GEMINI_IMAGE_MODELS
-                if "割り当てが0" in _img_stat(m)["last"]]
-        if zero:
-            return ("いまのAPIキーのプランでは、画像生成の無料枠の割り当てが0です"
-                    "（使い切ったのではなく最初から使えません）")
-        return "登録されているモデルIDが今のAPIに存在しません"
-    return _cooldown_note(GEMINI_IMAGE_MODELS)
+    return REGISTRY.why_not(PURPOSE_IMAGE)
 
 
 def _gemini_image_status():
@@ -2181,26 +2320,16 @@ def _gemini_generate_image_sync(prompt, ref_bytes=None, ref_mime="image/png",
     if ref_bytes:
         refs.insert(0, (ref_bytes, ref_mime))
     contents = [_make_media_part(b, m) for b, m in refs] + [prompt]
-    n = len(GEMINI_IMAGE_MODELS)
-    if n == 0:
+    order = REGISTRY.order(PURPOSE_IMAGE, prefer=_gemini_image_ok["model"])
+    if not order:
         raise RuntimeError("GEMINI_IMAGE_MODELS が空です")
-    start = _gemini_img_rr["i"]
-    _gemini_img_rr["i"] = (start + 1) % n
-    order = [GEMINI_IMAGE_MODELS[(start + k) % n] for k in range(n)]
-    # 前に通ったモデルがあれば、そこから試す（毎回の空振りを避ける）
-    if _gemini_image_ok["model"] in order:
-        order.remove(_gemini_image_ok["model"])
-        order.insert(0, _gemini_image_ok["model"])
 
-    now = time.time()
     last_err, tried, errs = None, False, []
     for model in order:
-        if model in _gemini_bad_models:
-            errs.append(f"{model}: 存在しないID")
-            continue                      # 待っても復活しないので飛ばす
-        if _gemini_cooldown.get(model, 0) > now:
-            errs.append(f"{model}: クールダウン中")
-            continue                      # 枠切れ中は次のモデルへ
+        _why = REGISTRY.blocked(model)
+        if _why:
+            errs.append(f"{model}: {_why}")
+            continue                      # 今は呼べない（理由は Registry が持つ）
         tried = True
         for attempt in range(2):
             try:
@@ -2209,52 +2338,40 @@ def _gemini_generate_image_sync(prompt, ref_bytes=None, ref_mime="image/png",
                 data = _image_from_resp(resp)
                 if data:
                     _gemini_image_ok["model"] = model
-                    st = _img_stat(model)
-                    st["ok"] += 1
-                    st["last"], st["t"] = "成功", time.time()
+                    REGISTRY.mark_ok(model)
                     print(f"[image_gen] 成功: {model}")
                     return data
                 errs.append(f"{model}: 画像が返らなかった")
-                st = _img_stat(model)
-                st["ng"] += 1
-                st["last"], st["t"] = "画像が返らなかった", time.time()
+                REGISTRY.mark_quota(model, "画像が返らなかった")
                 break                     # 本文が空 → 次のモデルへ
             except Exception as e:  # noqa: BLE001
                 last_err = e
                 errs.append(f"{model}: {str(e)[:120]}")
                 print(f"[image_gen] {model} 失敗: {str(e)[:200]}")
-                st = _img_stat(model)
-                st["ng"] += 1
-                st["t"] = time.time()
+                if _gemini_image_ok["model"] == model:
+                    _gemini_image_ok["model"] = ""
                 # 割り当てが0＝待っても戻らない。使い切りとは別扱いにする。
                 if _is_zero_quota_error(e):
-                    _gemini_bad_models.add(model)
-                    st["last"] = "このプランでは使えない（無料枠の割り当てが0）"
-                    if _gemini_image_ok["model"] == model:
-                        _gemini_image_ok["model"] = ""
+                    REGISTRY.mark_dead(
+                        model, "このプランでは使えない（無料枠の割り当てが0）")
                     break
                 # 404＝そのIDが無い。待っても戻らないので恒久的に外し、
                 # 代わりに使えるモデルをAPIの一覧から探す。
                 if _is_missing_model_error(e):
-                    _gemini_bad_models.add(model)
-                    st["last"] = "存在しないID（404）"
-                    if _gemini_image_ok["model"] == model:
-                        _gemini_image_ok["model"] = ""
+                    REGISTRY.mark_dead(model, "存在しないID（404）")
                     for _new in _discover_gemini_image_models():
                         if _new not in order:
                             order.append(_new)
                     break
                 per_day = "PerDay" in str(e) or "PerProjectPerModel" in str(e)
                 if _is_quota_error(e) and not per_day and attempt == 0:
-                    st["last"] = "分あたり制限（待って再挑戦）"
+                    _img_stat(model)["last"] = "分あたり制限（待って再挑戦）"
                     time.sleep(_retry_delay(e))   # 分あたり制限 → 少し待つ
                     continue
                 if per_day or not _is_quota_error(e):
-                    _gemini_cooldown[model] = time.time() + GEMINI_COOLDOWN_SEC
-                    st["last"] = ("無料枠切れ" if _is_quota_error(e)
-                                  else f"失敗: {str(e)[:60]}")
-                    if _gemini_image_ok["model"] == model:
-                        _gemini_image_ok["model"] = ""
+                    REGISTRY.mark_quota(
+                        model, "無料枠切れ" if _is_quota_error(e)
+                        else f"失敗: {str(e)[:60]}")
                 break
 
     detail = " / ".join(errs)[:600]
@@ -2334,25 +2451,22 @@ def _gemini_contents_sync(contents, tag):
       ・分あたり制限なら少し待って同じモデルで1度だけ再挑戦
     全モデル失敗時は握りつぶさず送出（無料枠切れは GeminiQuotaExceeded）。
     ※以前はテキスト用とメディア用に同じ処理が2つあり、方針が食い違っていた。"""
-    n = len(GEMINI_MODELS)
-    if n == 0:
+    order = REGISTRY.order(PURPOSE_TEXT)
+    if not order:
         raise RuntimeError("GEMINI_MODELS が空です")
-    start = _gemini_rr["i"]
-    _gemini_rr["i"] = (start + 1) % n
-    order = [GEMINI_MODELS[(start + k) % n] for k in range(n)]
 
-    now = time.time()
     last_err = None
     tried = False
     for model in order:
-        if _gemini_cooldown.get(model, 0) > now:
-            continue  # 枠切れクールダウン中は次のモデルへ
+        if REGISTRY.blocked(model):
+            continue  # 枠切れ・使えないIDは次のモデルへ
         tried = True
         for attempt in range(2):
             try:
                 resp = gemini_client.models.generate_content(model=model, contents=contents)
                 text = (resp.text or "").strip()
                 if text:
+                    REGISTRY.mark_ok(model)
                     print(f"[{tag}] 成功: {model}")
                     return text
                 break  # 本文が空 → 次のモデルへ
@@ -2365,7 +2479,9 @@ def _gemini_contents_sync(contents, tag):
                     continue
                 if per_day or not _is_quota_error(e):
                     # 日次枠切れ/その他エラー → このモデルをしばらく避ける（自動復帰）
-                    _gemini_cooldown[model] = time.time() + GEMINI_COOLDOWN_SEC
+                    REGISTRY.mark_quota(
+                        model, "無料枠切れ" if _is_quota_error(e)
+                        else f"失敗: {str(e)[:60]}")
                 break
 
     if last_err and _is_quota_error(last_err):
@@ -8454,6 +8570,9 @@ def _claude_fail_note(what, err):
     """クロード側の失敗を、何が起きたか分かる言い方にする。"""
     err = (err or "").strip()
     if _CLAUDE_LIMIT_RE.search(err):
+        # 上限に当たったことを1か所に覚えさせる。次からは health_check が
+        # これを見て、Claudeを後回しにする（無駄に待たされない）。
+        _claude_limit.update({"t": time.time(), "why": err[:200]})
         m = _CLAUDE_RESET_RE.search(err)
         when = f"（**{m.group(1)}** ごろに戻ります）" if m else ""
         return (
