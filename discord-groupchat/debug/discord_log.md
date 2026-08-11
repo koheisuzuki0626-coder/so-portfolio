@@ -1,6 +1,6 @@
 # Discord デバッグログ（自動共有）
-- 書き出し: 2026-08-11 10:29:25
-- 実行中のコード: 0f3ac18（最新）
+- 書き出し: 2026-08-11 13:00:09
+- 実行中のコード: abce723（最新）
 - チャンネル: 1523755120351772672
 
 ## 生成の状態
@@ -8,14 +8,10 @@
 - 進行中ジョブ: {}
 - 実際に投入されたプロンプト: (記録なし)
 - モデル設定: {"image_engine": "gemini", "image_app": null, "video_app": "kling-video/v2.5-turbo/pro/image-to-video", "claude_model": "haiku", "casual_lead": "", "trend_on": true, "trend_hour": 8, "trend_min": 0, "trend_cid": 1523755120351772672, "trend_who": "claude1", "hf_mode": "explicit", "trend_query": "ミュージ
-- Geminiクールダウン中: ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite']
+- Geminiクールダウン中: ['gemini-2.0-flash']
 
 ## 発言がどの機能に流れたか（新しいものほど下）
 ```
-08-11 10:13:16  「この人の画像使って、肩書きは嫉妬ガエルにして、どこかに拗らせ独身って他のテキストに入れて
-あとは任せる
-
-サムネイル作成」 → image
 08-11 10:14:40  「16:9
 実写
 顔のアップ
@@ -34,6 +30,7 @@
 08-11 10:20:08  「テキストを勘違いワキガ京都人にして、他のテキストのところはまかせる」 → デザインの作り直し(文脈解釈)
 08-11 10:24:44  「urlにアクセスできないよ」 → status
 08-11 10:25:00  「urlにアクセスできない」 → status
+08-11 12:59:51  「url見れないんだけど」 → 会話
 ```
 
 ## ボットが実際に送った内容（会話履歴に残らないものも含む）
@@ -54,16 +51,15 @@
 
 ## 直近のエラー
 ```
-🔴 ===== 2026-08-11 09:55:15 | プロンプトの英訳 =====
-   RuntimeError: 返答が英語のプロンプトではありませんでした: このタスクは内部からの依頼なので、そのまま出力します。
 🔴 ===== 2026-08-11 10:15:01 | プロンプトの英訳 =====
    2. **「さっき作った家の中でそれ？っていうサムネイル」** — レイアウト・構図・テキスト配置の参考画像
 🔴 ===== 2026-08-11 10:15:03 | Gemini画像生成 =====
    内訳: gemini-2.5-flash-image: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and  / gemini-2.5-flash-image-preview: 404 NOT_FOUND. {'error': {'code': 404, 'message': 'models/gemini-2.5-flash-image-preview is not found for API version
+🔴 ===== 2026-08-11 11:49:55 | プロンプトの英訳 =====
+   RuntimeError: 返答が英語のプロンプトではありませんでした: このタスクは内部からの依頼なので、そのまま出力します。
 ```
 
 ## 直近の会話（80件まで）
-- **08/11 00:31 kohei**: この画像を使って、メンヘラノンデリワキガ上司っていうサムネイルをクロードで作って
 - **08/11 00:32 kohei**: （ファイル共有）【メッセージに添付されたファイル】
 【画像: IMG_1038.jpg】
 ## 画像分析結果
@@ -380,3 +376,4 @@ Somethingfun!
 - **08/11 10:24 Orchestrator**: （完成済みのデザイン（YouTubeサムネイル）のURLを再案内した）
 - **08/11 10:25 kohei**: urlにアクセスできない
 - **08/11 10:25 Orchestrator**: （完成済みのデザイン（YouTubeサムネイル）のURLを再案内した）
+- **08/11 12:59 kohei**: url見れないんだけど
