@@ -2088,6 +2088,34 @@ async def run():
         (bot._gemini_generate_image_sync, bot._fetch_image_bytes,
          bot._refine_prompt) = _keep26
 
+    # --- ㉗ 何も動いていないのに「作り直しますね」と言っていた（09:30の実例）---
+    #     丁寧形が守り手の網から漏れていた。語を並べる方式をやめ、形で受ける。
+    install_stubs()
+    bot._pending_approvals.pop(1234, None)
+    for _t in ("元のサムネイルに男性の写真を組み込む形で作り直しますね。"
+               "少々お待ちください。",
+               "了解、進めますね。",
+               "いま対応します。少しお待ちください。"):
+        _out = bot._drop_false_progress(_t, 1234)
+        check(f"動いていないのに宣言しない: {_t[:12]}…",
+              "まだ実際には動かしていない" in _out or "まだ何も動かしていない" in _out,
+              _out[:60])
+    check("普通の返事は落とさない",
+          bot._drop_false_progress("いい天気だね。散歩でもする？", 1234)
+          == "いい天気だね。散歩でもする？",
+          bot._drop_false_progress("いい天気だね。散歩でもする？", 1234))
+    # 「〜して欲しかった」は直しの指示（09:29の実例）
+    check("『組み込んで欲しかった』は直しの指示",
+          bot.classify_route("全然指示と違う、サムネイルに写真を組み込んで欲しかった",
+                             has_last_gen=True, last_was_design=True) == "design",
+          bot.classify_route("全然指示と違う、サムネイルに写真を組み込んで欲しかった",
+                             has_last_gen=True, last_was_design=True))
+    check("お礼を直しの指示にしない",
+          bot.classify_route("ありがとう助かった", has_last_gen=True,
+                             last_was_design=True) is None,
+          bot.classify_route("ありがとう助かった", has_last_gen=True,
+                             last_was_design=True))
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile
