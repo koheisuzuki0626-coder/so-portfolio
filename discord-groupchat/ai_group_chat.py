@@ -6051,7 +6051,15 @@ def _looks_revise(content, has_last_gen=True):
     # 不満＋直しの指示。以前は進捗確認に化けて指示が消えていた。
     if _RESULT_COMPLAINT_RE.search(content) and _CHANGE_VERB_RE.search(content):
         return True
-    return bool(_REVISE_WEAK_RE.search(content) and _CHANGE_VERB_RE.search(content))
+    if _REVISE_WEAK_RE.search(content) and _CHANGE_VERB_RE.search(content):
+        return True
+    # 「背景が宇宙になってるから自然な背景にして」のように、
+    # 出来上がりの【部位】を名指しして直しを頼む言い方。
+    # 直前の生成がある時だけなので、普通の会話には効かない。
+    return bool(_DESIGN_TWEAK_RE.search(content)
+                and _CHANGE_VERB_RE.search(content)
+                and not _looks_like_question(content)
+                and not _USER_REPORT_RE.search(content))
 
 
 async def _interpret_video_turn(cid, latest, last):
@@ -7558,6 +7566,8 @@ async def _handle_orchestrator(message, cid):
     # 出す声はオーケストレーターひとつなので、誰が書いたかで混乱しない。
     answer, reviewed = await _review_reply(answer, history)
     answer = _drop_false_progress(answer, cid)
+    # 言い方を見ずに、状態だけで「動いていない」を明記する（最後の砦）
+    answer += _reality_note(cid, latest)
     # 実際に書いたのが誰かで名乗る。クロードが枠切れでGeminiが代打に入ると
     # 文体が変わるので、「クロード2」と名乗ったままだと別人が混ざって見える。
     _who = _wrote.get("name") or CLAUDE2_NAME
@@ -7664,8 +7674,9 @@ _PROGRESS_START_RE = re.compile(
     # 丁寧形が漏れていた。実例：「作り直しますね。少々お待ちください」と言って
     # 何も動いていなかった。語を並べる方式をやめ、
     # 「これからやる」と読める【形】で受ける。
-    "(作り直|やり直|直し|やり|進め|始め|対応)(す|し)?(ね|よ|ます|ますね|ますよ|"
-    "ます。|ておく|とく)|"
+    "(作り直|やり直|直し|やり|進め|始め|対応|生成|制作|作成)"
+    "(す|し|)?(ね|よ|ます|ますね|ますよ|ます。|ておく|とく|"
+    "ています|ています。|ている|てる|中です)|"
     "(お|)待ち(ください|くださ|を|ましょ)|待ってて|待っててね|"
     "少し待って|しばらく待って|少々"
 )
@@ -7677,15 +7688,58 @@ _NOTIFY_LATER_RE = re.compile(
 
 
 # 内部の状態についての作り話。確認待ちが無いのにこう言うのは全部でたらめ。
-# 言い方は毎回変わる（「許可が下りてない」→「許可が必要みたい」）ので、
-# 語を1つずつ潰さず「許可・権限まわりの否定/推量」という形で受ける。
+# 内部の状態についての作り話。言い方は毎回変わった
+# （「許可が下りてない」→「許可が必要みたい」→…）ので、
+# 【確認待ちが1件も無い】という状態を条件にして、語の方は広く取る。
+# 確認待ちが無いのに承認・権限の話をするのは、どう言おうと事実ではない。
 _FAKE_STATE_RE = re.compile(
-    "(許可|承認|権限)[^。\n]{0,12}"
-    "(下り|おり|降り|必要|通って|足りて|得られ|もらえ)"
-    "[^。\n]{0,10}(ない|いない|なかった|みたい|ようだ|らしい|そう)|"
-    "(この場|こっち|ここ)では[^。\n]{0,14}(動かせ|実行でき|できな|通せ)|"
-    "生成ボタン|実行ボタン|(通ってなくて|通っていなくて)"
+    "許可|承認|権限|生成ボタン|実行ボタン|"
+    "(この場|こっち|ここ)では[^。\n]{0,14}(動かせ|実行でき|できな|通せ)"
 )
+# ただし「よそのサービスの話」は事実として成り立つので落とさない。
+# 落として困るのはこちら側だけなので、除外はこの短い一覧で足りる。
+_FAKE_STATE_OK_RE = re.compile(
+    "アカウント|プラン|管理者|課金|契約|請求|設定|GitHub|Google|Discord|"
+    "API|サブスク|運営|サポート|審査", re.I)
+
+
+def _is_fake_state(part):
+    """確認待ちが無いときに、内部の状態を語っている文か。"""
+    return bool(_FAKE_STATE_RE.search(part)
+                and not _FAKE_STATE_OK_RE.search(part))
+
+
+# 作ってほしいと分かる依頼（言い方ではなく「何を頼んだか」で見る）。
+_PRODUCTION_ASK_RE = re.compile(
+    "動画|映像|画像|イラスト|写真|ロゴ|絵|サムネ|バナー|ポスター|チラシ|"
+    "デザイン|図解|スライド|表紙|ショート|切り抜き|作り直|やり直|"
+    "組み込|合成|加工|生成|制作|作って|作りたい|直して")
+
+
+def _reality_note(cid, user_said):
+    """『頼まれたのに何も動いていない』を、返事の言い方に関係なく検出する。
+
+    これまでは「作り直しますね」のような【言い方】を正規表現で拾って
+    落としていた。だから丁寧形・言い換えが出るたびに漏れた（何度も起きた）。
+    ここでは【状態】だけを見る:
+      ・本人が制作を頼む形で言った
+      ・なのに、このチャンネルで何も動いていない
+    この2つが揃ったら、返事の中身が何であれ、動いていないことを必ず書く。
+    言い方が変わっても抜けないのが、この作りの目的。"""
+    said = _strip_media_context(user_said or "")
+    if not said or not _wants_action(said):
+        return ""
+    if not _PRODUCTION_ASK_RE.search(said):
+        return ""                    # 制作の依頼ではない（雑談・相談）
+    try:
+        if _busy_tasks(cid) or _load_motion_job() or _pending_approvals.get(cid):
+            return ""                # 本当に動いている／確認待ち
+    except Exception:  # noqa: BLE001
+        return ""
+    _set_pending_do(cid, "何を・どの素材でやるか", said[:80])
+    return ("\n\n⚠️ **この返事の時点では、まだ何も動いていません。**"
+            "「**やって**」と送れば始めます"
+            "（素材が要るものは、写真や動画を添付してください）。")
 
 
 def _drop_false_progress(text, cid):
@@ -7709,7 +7763,7 @@ def _drop_false_progress(text, cid):
     _no_pending = not _pending_approvals.get(cid)
     kept = [p for p in parts
             if not (_PROGRESS_START_RE.search(p) or _NOTIFY_LATER_RE.search(p)
-                    or (_no_pending and _FAKE_STATE_RE.search(p)))]
+                    or (_no_pending and _is_fake_state(p)))]
     if len(kept) == len(parts):
         return text              # 何も落ちていない＝作業の宣言はしていない
     out = "".join(kept).strip()

@@ -1489,6 +1489,55 @@ def run():
     for _t in ("制限速度って何キロ？", "上司の制限がきつい"):
         check(f"{_t!r} は普通の会話", bot.classify_route(_t), None)
 
+    print("■ 過去に漏れた言い方（fixtures/regressions.md を全部検査）")
+    # 本人の指摘：「一回言ったことは二度と抜け漏れないようにしろ」。
+    # 実害が出た言い方を台帳に溜め、毎回ここで全行を検査する。
+    # 新しく漏れたものは、直すときに必ず台帳へ1行足すこと。
+    import pathlib as _pl
+    _fix = _pl.Path(__file__).parent / "fixtures" / "regressions.md"
+    check("台帳がある", _fix.exists(), True)
+    _rows = []
+    if _fix.exists():
+        for _ln in _fix.read_text(encoding="utf-8").splitlines():
+            if _ln.count("\t") >= 1 and not _ln.startswith("#"):
+                _kind, _text = _ln.split("\t")[0].strip(), _ln.split("\t")[1].strip()
+                if _kind and _text:
+                    _rows.append((_kind, _text))
+    check("台帳に中身がある", len(_rows) >= 25, True)
+    _keep_pa = dict(bot._pending_approvals)
+    _keep_busy = bot._busy_tasks
+    try:
+        bot._pending_approvals.clear()
+        bot._busy_tasks = lambda cid: []      # 何も動いていない状態にする
+        for _kind, _text in _rows:
+            if _kind == "false_progress":
+                _out = bot._drop_false_progress(_text, 4242)
+                check(f"作業の宣言を落とす: {_text[:16]}…／{_out[:40]}",
+                      "まだ" in _out and "動かしていない" in _out, True)
+            elif _kind == "fake_state":
+                _out = bot._drop_false_progress(_text, 4242)
+                check(f"内部状態の作り話を落とす: {_text[:16]}…／{_out[:40]}",
+                      not any(_w in _out for _w in ("許可", "承認", "生成ボタン")),
+                      True)
+            elif _kind == "keep":
+                check(f"普通の返事は落とさない: {_text[:16]}…",
+                      bot._drop_false_progress(_text, 4242), _text)
+            elif _kind == "limit_err":
+                check(f"上限として扱う: {_text[:20]}…／{bot._gen_fail_note(_text)[:30]}",
+                      "上限" in bot._gen_fail_note(_text), True)
+                bot._hf_limit.update({"t": 0.0, "why": ""})
+            elif _kind == "revise":
+                check(f"作り直しとして扱う: {_text[:16]}…",
+                      bot._looks_revise(_text, True), True)
+            elif _kind == "chat":
+                check(f"作業にしない: {_text[:16]}…",
+                      bot.classify_route(_text, has_last_gen=True), None)
+    finally:
+        bot._busy_tasks = _keep_busy
+        bot._pending_approvals.clear()
+        bot._pending_approvals.update(_keep_pa)
+        bot._pending_do.clear()
+
     print("■ 『〜って何？』で機能を起動しない _EXPLAIN_Q_RE")
     # 実例：「実績ってどうやって見るの」で実績分析が、
     #       「クロード3ってどんな役割？」で複数視点の呼び出しが走っていた

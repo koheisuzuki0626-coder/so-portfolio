@@ -2116,6 +2116,32 @@ async def run():
           bot.classify_route("ありがとう助かった", has_last_gen=True,
                              last_was_design=True))
 
+    # --- ㉘ 言い方ではなく【状態】で「動いていない」を明記する ---
+    #     本人の指摘：「何回も修正してる／二度と抜け漏れないようにしろ」。
+    #     これまでは返事の言い方を正規表現で拾っていたので、
+    #     丁寧形・言い換えが出るたびに漏れた。状態だけで判定すれば漏れない。
+    install_stubs()
+    bot._pending_approvals.pop(1234, None)
+    bot._pending_do.clear()
+    _keep28 = bot._busy_tasks
+    try:
+        bot._busy_tasks = lambda cid: []          # 何も動いていない
+        _n = bot._reality_note(1234, "このサムネイルに写真を組み込んで欲しい")
+        check("頼まれたのに動いていなければ明記する",
+              "まだ何も動いていません" in _n, _n[:60])
+        check("次に何をすればいいかを書く", "やって" in _n, _n[:60])
+        check("雑談には付けない", bot._reality_note(1234, "今日つかれた") == "", "")
+        check("お礼には付けない",
+              bot._reality_note(1234, "ありがとう助かった") == "", "")
+        check("制作以外の依頼には付けない",
+              bot._reality_note(1234, "ログ送って") == "", "")
+        bot._busy_tasks = lambda cid: ["動画生成"]  # 本当に動いている
+        check("本当に動いている時は付けない",
+              bot._reality_note(1234, "動画作って") == "", "")
+    finally:
+        bot._busy_tasks = _keep28
+        bot._pending_do.clear()
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile
