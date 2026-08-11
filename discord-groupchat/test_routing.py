@@ -1469,8 +1469,11 @@ def run():
          lambda: bot.AUTOLOG_URGENT_SEC < bot.AUTOLOG_PERIOD_SEC),
         ("分からないことは始める前に聞き返す",
          lambda: bot.CLARIFY_ON and bool(bot._missing_slots("video", "動画作って"))),
-        ("聞きすぎない（書いてある依頼には聞かない）",
-         lambda: not bot._missing_slots("image", "夕暮れの海辺を歩く猫の画像作って")),
+        ("書いてある項目は聞き返さない",
+         lambda: len(bot._missing_slots(
+             "image", "YouTubeサムネ用に夕暮れの海辺を歩く猫を実写風・16:9・"
+                      "暖色で、顔のアップ、文字なしで作って"))
+         < len(bot._missing_slots("image", "画像作って")) - 3),
     ]
     for _name, _fn in _rules:
         try:

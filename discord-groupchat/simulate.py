@@ -1830,13 +1830,19 @@ async def run():
     bot.CLARIFY_ON = True             # 判定そのものを見るので有効にする
     check("中身が薄ければ聞く", bool(bot._missing_slots("video", "動画作って")),
           bot._missing_slots("video", "動画作って"))
-    check("多くても2つまで",
-          len(bot._missing_slots("video", "動画作って")) <= 2,
-          bot._missing_slots("video", "動画作って"))
-    for _t in ("夕暮れの海辺を歩く猫の画像作って",
-               "メンヘラノンデリワキガ上司っていうサムネイルを作って"):
-        check(f"{_t[:14]!r}… は聞き返さない",
-              not bot._missing_slots("image", _t), bot._missing_slots("image", _t))
+    check("仕上がりに効く項目を一通り聞く",
+          len(bot._missing_slots("video", "動画作って")) >= 6,
+          [n for n, _ in bot._missing_slots("video", "動画作って")])
+    # 詳しく書くほど質問は減る（すでに書かれている項目は聞かない）
+    _bare = bot._missing_slots("image", "画像作って")
+    _rich = bot._missing_slots(
+        "image", "YouTubeサムネ用に、夕暮れの海辺を歩く猫を実写風・16:9・"
+                 "暖色で、顔のアップ、文字なしで作って")
+    check("詳しく書けば質問が減る", len(_rich) < len(_bare) - 3,
+          (len(_bare), len(_rich), [n for n, _ in _rich]))
+    for _n in ("用途", "比率・サイズ", "作風", "色味", "文字", "被写体の見せ方"):
+        check(f"書いてある項目は聞かない: {_n}",
+              all(_n != n for n, _ in _rich), [n for n, _ in _rich])
     check("すでに書いてある項目は聞かない",
           all("用途" not in n for n, _q in
               bot._missing_slots("video", "YouTubeショート用の動画作って")),
@@ -1859,7 +1865,10 @@ async def run():
               "聞いてこない")
         _ch = _CHANNELS.setdefault(1234, _FakeChannel(1234))
         check("何を知りたいのかを書く",
-              any("始める前に" in t for t in _ch.sent), _ch.sent[:1])
+              any("仕上がりを決める項目" in t for t in _ch.sent), _ch.sent[:1])
+        check("書かなくてもいいと伝える",
+              any("書かなかった項目はこちらで決めます" in t for t in _ch.sent),
+              _ch.sent[:1])
         check("答えなくても抜けられると伝える",
               any("おまかせ" in t for t in _ch.sent), _ch.sent[:1])
         await drive("YouTubeショート用、縦で15秒")
@@ -1868,6 +1877,35 @@ async def run():
         check("答えた内容が依頼に入る",
               _c is not None and "縦で15秒" in _c[0][1],
               _c[0][1] if _c else f"fired={FIRED}")
+        check("答えを『指定』として渡す",
+              _c is not None and "【指定】" in _c[0][1],
+              _c[0][1] if _c else "")
+    finally:
+        bot.CLARIFY_ON = False
+        bot._pending_clarify.clear()
+
+    # デザインでも聞き返す。ただし作り直し（前回を引き継ぐ形）では聞かない
+    check("デザインにも項目がある", bool(bot.CLARIFY_SLOTS.get("design")),
+          list(bot.CLARIFY_SLOTS))
+    install_stubs()
+    bot.CLARIFY_ON = True
+    bot._pending_clarify.clear()
+    try:
+        bot._load_last_gen = lambda cid: {
+            "prompt": "前のサムネ", "media_type": "image",
+            "label": "デザイン（YouTubeサムネイル）", "t": _tm4.time(),
+            "url": "https://example.com/prev.png"}
+        _t4 = asyncio.get_running_loop().create_task(drive("文字を大きくして"))
+        for _ in range(80):
+            await asyncio.sleep(0)
+            if "design" in FIRED or 1234 in bot._pending_clarify:
+                break
+        check("作り直しでは聞き返さない", 1234 not in bot._pending_clarify,
+              "作り直しなのに聞いてきた")
+        try:
+            await asyncio.wait_for(_t4, timeout=5)
+        except asyncio.TimeoutError:
+            _t4.cancel()
     finally:
         bot.CLARIFY_ON = False
         bot._pending_clarify.clear()
