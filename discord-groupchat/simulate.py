@@ -210,7 +210,12 @@ def install_stubs(mcp_url=None):
     # 不具合調査を誤らせた（実際に「404 model not found」が2件紛れた）。
     import tempfile as _tf0
     import pathlib as _pl0
-    bot.ERROR_LOG = _pl0.Path(_tf0.mkdtemp()) / "errors.log"
+    _tmp0 = _pl0.Path(_tf0.mkdtemp())
+    bot.ERROR_LOG = _tmp0 / "errors.log"
+    # テストの会話を本物の履歴に書き込まない。起動時セルフテストで
+    # simulate.py が走るため、実在しない会話が history/1234.jsonl に
+    # 溜まっていた（1日で4.7MB・26,983行）。
+    bot.HISTORY_DIR = _tmp0
     bot.CONFIRM_BEFORE_WORK = False   # 確認は専用テストで検証する
     bot.CLARIFY_ON = False            # 聞き返しも専用テストで検証する
     bot._pending_clarify.clear()
@@ -2228,6 +2233,27 @@ async def run():
         bot._gemini_cooldown.update(_keep_cd3)
         bot._gemini_bad_models.clear()
         bot._gemini_img_stats.clear()
+
+    print("■ 無駄をなくす（履歴の膨張・テストの汚染）")
+    # 写真1枚で2,000〜4,000字の分析文が履歴に入り、直近40発言として
+    # 【毎回のAI呼び出しに全部乗って】いた。遅く・高く・不正確になる。
+    _sample = ("この2枚の写真をいい感じに組み合わせて\n\n"
+               "【メッセージに添付されたファイル】\n【画像: IMG_1.jpg】\n"
+               + "この画像には人物が写っています。構図は中央集中型で…" * 60)
+    _short = bot._history_text(_sample)
+    check("添付の分析文は履歴では短くする", len(_short) < len(_sample) // 2,
+          (len(_sample), len(_short)))
+    check("依頼の本文は必ず残す", "組み合わせて" in _short, _short[:40])
+    check("省略したことが分かるようにする", "以下省略" in _short, _short[-60:])
+    check("短い発言はそのまま",
+          bot._history_text("動画作って") == "動画作って",
+          bot._history_text("動画作って"))
+    # テストが本物の履歴に書き込まないこと（起動時セルフテストで毎回走るため）
+    import pathlib as _pl9
+    check("テストの会話を本物の履歴に混ぜない",
+          str(bot.HISTORY_DIR) != str(
+              _pl9.Path(bot.__file__).parent / "history"),
+          str(bot.HISTORY_DIR))
 
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()

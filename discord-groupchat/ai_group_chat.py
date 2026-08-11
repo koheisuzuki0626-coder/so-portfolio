@@ -208,6 +208,7 @@ def _has_summary(h):
 def add_history(cid, speaker, text):
     h = get_history(cid)
     _mark_activity(cid)
+    text = _history_text(text)      # 添付の分析文は冒頭だけ残す（膨張を防ぐ）
     h.append((speaker, text))
     _append_jsonl(cid, speaker, text)
     # 直近枠から溢れた古い発言は「要約待ち」に回す（要約エントリは先頭に保持）
@@ -304,6 +305,31 @@ def build_transcript(history):
         else:
             lines.append(f"{name}: {text}")
     return "\n".join(lines) or "(まだ会話なし)"
+
+
+HISTORY_MEDIA_KEEP = int(os.getenv("HISTORY_MEDIA_KEEP", "300"))
+_MEDIA_BLOCK_RE = re.compile(r"(【[^】\n]{0,40}】\n)(.*?)(?=\n【|\Z)", re.S)
+
+
+def _history_text(text):
+    """履歴に残す用に、添付の分析文だけを短くする。
+
+    画像を1枚送るたびに、OCRと構図の説明（2,000〜4,000字）がそのまま
+    履歴に入っていた。履歴は直近40発言をすべてのAI呼び出しに毎回渡すので、
+    写真を数枚送っただけでプロンプトが数万字に膨らみ、遅く・不正確になる。
+    実際に「ご依頼の理解: 組み込んで欲しい こ」のような取り違えも起きた。
+    その場の判断には全文を使い、【残すのは冒頭だけ】にする。
+    後から詳しく見たいときは、画像のURLから読み直せる。"""
+    if not text or len(text) <= HISTORY_MEDIA_KEEP * 2:
+        return text
+
+    def _cut(m):
+        head, body = m.group(1), m.group(2)
+        if len(body) <= HISTORY_MEDIA_KEEP:
+            return m.group(0)
+        return f"{head}{body[:HISTORY_MEDIA_KEEP]}\n…（以下省略／必要なら画像を見直す）"
+
+    return _MEDIA_BLOCK_RE.sub(_cut, text)
 
 
 def _cid_of_history(history):
@@ -8612,8 +8638,6 @@ CLARIFY_SLOTS = {
 _CLARIFY_SKIP_RE = re.compile(
     "おまかせ|お任せ|まかせ|よしなに|適当|なんでも|どっちでも|なんでもいい|"
     "いい感じ|お好きに|決めて|そっちで")
-# 聞き返しをやめたい時の言い方（コード側で持つ。プロンプトでは守られない）
-_CLARIFY_OFF_RE = re.compile("聞き返(し|さ)ないで|質問(し|さ)ないで|確認(は|を)?(減ら|少な)")
 
 
 def _missing_slots(kind, request):
