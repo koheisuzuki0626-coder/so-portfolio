@@ -2333,6 +2333,60 @@ async def run():
     check("生成モデルの指定は巻き込まない",
           bool(bot._match_gen_model("veo3で動画作って")), True)
 
+    print("■ 学びを溜める（スマホ1通で追記・入院中でも残せる）")
+    import tempfile as _tfn, pathlib as _pln
+    _tmpn = _pln.Path(_tfn.mkdtemp())
+    _keepn = dict(bot.NOTES)
+    _keep_push = bot._push_paths
+    try:
+        bot.NOTES = {
+            "experiment": (_tmpn / "prompt_experiments.md", "プロンプト実験ログ"),
+            "insight": (_tmpn / "youtube_insights.md", "YouTube知見"),
+            "failed": (_tmpn / "failed_patterns.md", "効かなかった表現"),
+        }
+
+        async def _no_push(paths, msg):
+            return True, ""
+        bot._push_paths = _no_push
+        # 何を書くかの仕分け
+        for _t, _want in (
+            ("記録して Veoで高デンシティ試した→成功", "experiment"),
+            ("メモ 明日から入院", "experiment"),
+            ("知見メモ カメラ寄り引き6:4が効く", "insight"),
+            ("失敗メモ cinematic lighting は効かなかった", "failed"),
+        ):
+            _k = bot._note_kind(_t)
+            check(f"{_t[:12]!r} の行き先", _k and _k[0] == _want, _k)
+        for _t in ("この動画メモしておきたいんだけど", "記録して", "動画作って",
+                   "ログ送って"):
+            check(f"{_t[:14]!r} は記録にしない", bot._note_kind(_t) is None,
+                  bot._note_kind(_t))
+        # 読み返しは記録と取り違えない
+        for _t, _want in (("実験ログ見せて", "experiment"), ("知見見せて", "insight"),
+                          ("失敗メモ見せて", "failed")):
+            check(f"{_t!r} は読み返し", bot._note_show_kind(_t) == _want,
+                  bot._note_show_kind(_t))
+            check(f"{_t!r} を記録として保存しない", bot._note_kind(_t) is None,
+                  bot._note_kind(_t))
+        # 実際に書いて、読み返せる
+        _r = await bot._run_note(1234, "experiment",
+                                 "Veoで高デンシティ試した→成功。カット3つ")
+        check("記録したと伝える", "記録しました" in _r, _r[:40])
+        check("ファイルに残る",
+              "高デンシティ" in bot.NOTES["experiment"][0].read_text(encoding="utf-8"),
+              True)
+        await bot._run_note(1234, "experiment", "2件目の実験")
+        _out = bot._read_note("experiment", 5)
+        check("新しい順に読み返せる",
+              _out.index("2件目") < _out.index("高デンシティ"), _out[:80])
+        check("何件あるかも分かる", "全2件" in _out, _out[:80])
+        check("空のときは空と言う",
+              "まだ空です" in bot._read_note("failed", 5),
+              bot._read_note("failed", 5))
+    finally:
+        bot.NOTES = _keepn
+        bot._push_paths = _keep_push
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile

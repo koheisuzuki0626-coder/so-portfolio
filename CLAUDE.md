@@ -272,6 +272,24 @@ simulate ＝ 1,500件超）を通しながら1つずつ剥がす。
 API層（Discordを1クライアント化）は、LINEやWebから使う予定が
 実際に立つまでやらない。
 
+## 学びを溜める場所（`fixtures/`）
+
+入院中はスマホしか使えないので、**Discordに1通送るだけで追記され、
+GitHubへ push まで済む**ようにしてある。
+
+| Discordで送る | 入る場所 |
+|---|---|
+| `記録して 〇〇` / `メモ 〇〇` | `prompt_experiments.md`（試行ログ） |
+| `知見メモ 〇〇` | `youtube_insights.md`（YouTube知見） |
+| `失敗メモ 〇〇` | `failed_patterns.md`（効かなかった表現） |
+| `実験ログ見せて` / `知見見せて` / `失敗メモ見せて` | 新しい順に5件表示 |
+
+毎日8時の自動リサーチの要点も `youtube_insights.md` に自動で追記される
+（以前は会話ログに流れて散らばるだけだった）。
+
+種別の判定は**頭に付いている時だけ**拾う（`_note_kind`）。
+文中に「メモ」が出ただけでは反応しない。
+
 ## discord-groupchat の基本
 
 - Discord Bot 3体（オーケストレーター / Claude / Gemini）を1つの Python プロセスで動かす

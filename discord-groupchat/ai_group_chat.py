@@ -970,6 +970,110 @@ async def _freshness_note():
             f"{'／自動更新はオン' if _auto_update_on() else '／自動更新はオフ'}）")
 
 
+# ---------- 学びを溜める（スマホ1通で追記できるようにする） ----------
+# 本人の状況：入院中はスマホしか使えない。試して分かったことをその場で
+# 残せないと、退院後に何も残らない。Discordに1通送るだけで追記し、
+# GitHubへ push まで済ませる（あとでどこからでも読める）。
+NOTES_DIR = Path(_BASE) / "fixtures"
+NOTES = {
+    "experiment": (NOTES_DIR / "prompt_experiments.md", "プロンプト実験ログ"),
+    "insight": (NOTES_DIR / "youtube_insights.md", "YouTube知見"),
+    "failed": (NOTES_DIR / "failed_patterns.md", "効かなかった表現"),
+}
+# どのノートに入れるかの言い方。頭に付ける形だけを見る（本文と混ざらない）。
+_NOTE_KIND_RE = re.compile(
+    r"^\s*(記録して|記録|メモして|メモ|実験(ログ|メモ)|"
+    r"知見(メモ|)|失敗(メモ|の記録)|効かなかった)\s*[:：]?\s*", re.I)
+_NOTE_INSIGHT_RE = re.compile(r"^\s*知見")
+_NOTE_FAILED_RE = re.compile(r"^\s*(失敗|効かなかった)")
+# 読み返す言い方
+_NOTE_SHOW_RE = re.compile(
+    r"^\s*(実験ログ|知見|失敗メモ|メモ|記録)\s*(を)?\s*"
+    r"(見せて|みせて|見たい|出して|教えて|確認)")
+
+
+def _note_kind(text):
+    """『記録して 〜』の形か。(種別, 本文) か None。
+    頭に付いている時だけ拾う。文中に「メモ」が出ただけでは反応しない。"""
+    t = (text or "").strip()
+    m = _NOTE_KIND_RE.match(t)
+    if not m:
+        return None
+    body = t[m.end():].strip()
+    if not body:
+        return None                       # 中身が無ければ記録しない
+    # 「実験ログ見せて」は読み返し。記録として保存しない
+    if re.fullmatch(r"(を)?(見せて|みせて|見たい|出して|教えて|確認|表示)[。！!]*",
+                    body):
+        return None
+    head = m.group(0)
+    if _NOTE_INSIGHT_RE.match(head):
+        return "insight", body
+    if _NOTE_FAILED_RE.match(head):
+        return "failed", body
+    return "experiment", body
+
+
+def _note_show_kind(text):
+    """『実験ログ見せて』の形か。種別か None。"""
+    t = (text or "").strip()
+    m = _NOTE_SHOW_RE.match(t)
+    if not m:
+        return None
+    head = m.group(1)
+    if head.startswith("知見"):
+        return "insight"
+    if head.startswith("失敗"):
+        return "failed"
+    return "experiment"
+
+
+def _append_note_sync(kind, body, who="kohei"):
+    """ノートに1件足す。ファイルが無ければ見出しごと作る。"""
+    path, title = NOTES[kind]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+    entry = f"\n## {stamp}\n{body.strip()}\n"
+    if not path.exists():
+        path.write_text(f"# {title}\n", encoding="utf-8")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(entry)
+    return path
+
+
+def _read_note(kind, n=5):
+    """新しいものから n 件返す（読み返し用）。"""
+    path, title = NOTES[kind]
+    if not path.exists():
+        return f"（{title}はまだ空です）"
+    blocks = [b for b in path.read_text(encoding="utf-8").split("\n## ")[1:] if b.strip()]
+    if not blocks:
+        return f"（{title}はまだ空です）"
+    out = [f"📓 **{title}**（新しい順に{min(n, len(blocks))}件／全{len(blocks)}件）"]
+    for b in reversed(blocks[-n:]):
+        out.append("・" + b.strip().replace("\n", "\n　")[:400])
+    return "\n".join(out)
+
+
+async def _run_note(cid, kind, body, who="kohei"):
+    """記録して、GitHubへ push まで済ませる（スマホだけで完結させる）。"""
+    path = await asyncio.to_thread(_append_note_sync, kind, body, who)
+    title = NOTES[kind][1]
+    note = ""
+    try:
+        rel = str(path.relative_to(Path(_BASE)))
+    except ValueError:
+        rel = ""                       # リポジトリ外（テスト等）は push しない
+    if rel:
+        ok, why = await _push_paths([rel], f"{title}に追記（{body[:40]}）")
+        note = ("" if ok else
+                f"\n（GitHubへの反映は失敗: {why[:80]}／内容は手元に保存済み）")
+    return (f"📝 **{title}** に記録しました。\n"
+            f"> {body[:200]}\n"
+            f"（読み返すときは「**{'知見' if kind == 'insight' else '失敗メモ' if kind == 'failed' else '実験ログ'}見せて**」）"
+            + note)
+
+
 async def _share_debug_log(cid, limit=80):
     """直近の会話・エラー・生成状態をリポジトリに書き出してプッシュする。
     プッシュ後は Claude Code のチャット側から中身を直接読める。"""
@@ -4151,6 +4255,14 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
         text += "\n\n（本日はGemini無料枠切れのためメタ情報ベースの分析です）"
     await send_long(channel, text)
     add_history(cid, "🎬映像リサーチ", f"（YouTube{label}リサーチ {today}）\n{digest}")
+    # 会話ログに流れて散らばるだけだった知見を、読み返せる形で溜める。
+    # 「YouTubeリサーチのデータは蓄積されてる？」に「散らばったまま」と
+    # 答えていた状態を解消する（あとで見返してパターン化するため）。
+    try:
+        await _run_note(cid, "insight",
+                        f"【自動・{label}リサーチ】\n{digest[:1200]}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[trend] 知見の保存に失敗: {str(e)[:150]}")
 
 
 async def _weekly_channel_loop():
@@ -9697,6 +9809,20 @@ async def _dispatch_message(message):
     if _looks_trouble(content):
         _track(asyncio.create_task(_autoshare_log(cid, content[:60])))
 
+    # 学びの記録（スマホ1通で追記。入院中でも残せるように）
+    _show = _note_show_kind(content)
+    if _show:
+        _fired(cid, f"記録の読み返し({_show})", content)
+        add_history(cid, message.author.display_name, content)
+        await send_as(orch, cid, _read_note(_show, 5))
+        return
+    _note = _note_kind(content)
+    if _note:
+        _fired(cid, f"記録({_note[0]})", content)
+        add_history(cid, message.author.display_name, content)
+        await send_as(orch, cid, await _run_note(
+            cid, _note[0], _note[1], message.author.display_name))
+        return
     # 会話モデルの切替・確認（AI判定より前に拾う。AIに任せると
     # 「コードを直さないと変えられない」と答えてしまい、実際そうなった）
     _mdl = _match_claude_model(content)
