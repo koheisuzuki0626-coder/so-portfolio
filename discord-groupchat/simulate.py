@@ -2142,6 +2142,23 @@ async def run():
         bot._busy_tasks = _keep28
         bot._pending_do.clear()
 
+    # --- ㉙ 聞き返しの答えが、次の依頼として拾われていた（10:16の実例）---
+    #     「クロードで作って」の題材が「16:9 実写 顔のアップ 自然光」になり、
+    #     本来の依頼（この人の画像で肩書きは嫉妬ガエル…）が消えていた。
+    install_stubs()
+    bot._history.clear() if hasattr(bot, "_history") else None
+    bot.add_history(1234, "kohei", "この人の画像使って、肩書きは嫉妬ガエルにして")
+    bot.add_history(1234, "kohei", bot.CLARIFY_MARK + "16:9 実写 顔のアップ 自然光")
+    check("聞き返しの答えは依頼として拾わない",
+          "嫉妬ガエル" in bot._last_request_text(1234),
+          bot._last_request_text(1234)[:60])
+    check("答えの中身を題材にしない",
+          "16:9" not in bot._last_request_text(1234),
+          bot._last_request_text(1234)[:60])
+    check("補うときも本来の依頼を使う",
+          "嫉妬ガエル" in bot._request_with_context("クロードで作って", 1234),
+          bot._request_with_context("クロードで作って", 1234)[:60])
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile

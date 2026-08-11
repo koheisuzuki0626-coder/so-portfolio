@@ -4510,12 +4510,18 @@ def _recent_ref(cid):
     return url if url and time.time() - t < REF_KEEP_SEC else ""
 
 
+CLARIFY_MARK = "【聞き返しへの回答】"
+
+
 def _last_request_text(cid):
     """直近の『中身のある依頼』の本文を会話履歴から拾う。
     「ヒッグスフィールドで」のような指定だけの発言を、
-    直前に何を頼まれていたかで補うために使う。"""
+    直前に何を頼まれていたかで補うために使う。
+    聞き返しへの回答（項目の答え）は依頼そのものではないので飛ばす。"""
     for name, text in reversed(get_history(cid) or []):
         if not text or name == SUMMARY_SPEAKER or name == "Orchestrator":
+            continue
+        if text.startswith(CLARIFY_MARK):
             continue
         body = _strip_media_context(text)
         if _has_subject(body):
@@ -9497,7 +9503,11 @@ async def _dispatch_message(message):
     # 聞き返しの返事を待っているなら、それを先に受け取る
     if _try_text_clarify(cid, message.author.id, content):
         _fired(cid, "聞き返しへの返事", content)
-        add_history(cid, message.author.display_name, content)
+        # 印を付けて記録する。これが無いと、次に「クロードで作って」と
+        # 言われた時に【聞き返しの答え】が直前の依頼として拾われ、
+        # 本来の依頼（何を作るか）が消える。実際に起きた：
+        # 「16:9 実写 顔のアップ 自然光」だけが依頼文になっていた。
+        add_history(cid, message.author.display_name, CLARIFY_MARK + content)
         return
 
     # 承認待ちがあれば、テキストの「許可/拒否」でも受け付ける（ボタン不要）
