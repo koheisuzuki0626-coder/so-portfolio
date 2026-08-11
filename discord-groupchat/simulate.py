@@ -2293,6 +2293,46 @@ async def run():
         bot._gemini_call = _keep_rv
         bot._gemini_all_cooling = _keep_cool
 
+    print("■ Discordでコードを触る作業（本人の指摘）")
+    # 事故：ボットが「fixturesに3つファイルを追加する仕組み」を提案した直後、
+    # 「それクロードでやってくれる？やり方わからん」がどの機能にも流れず会話で終了。
+    bot._last_bot_say.clear()
+    bot._remember_bot_say(
+        7, "fixtures/ に3つのファイルを追加する仕組み：youtube_insights.md ─ "
+           "TOP100リサーチの知見を整理／prompt_experiments.md ─ 試行ログを記録")
+    for _t in ("それクロードでやってくれる？やり方わからん", "やって", "お願い",
+               "それやって"):
+        check(f"提案の直後の「{_t[:10]}」は実行へ",
+              bot.classify_route(_t, cid=7) == "selffix",
+              (bot.classify_route(_t, cid=7), bot._route_hit["name"]))
+    check("提案の中身が作業内容に入る",
+          "youtube_insights" in bot._selffix_task(7, "やって"),
+          bot._selffix_task(7, "やって")[:80])
+    for _t in ("ありがとう", "明日の天気は？", "今日つかれた"):
+        check(f"関係ない発言は実行しない: {_t}",
+              bot.classify_route(_t, cid=7) != "selffix",
+              bot.classify_route(_t, cid=7))
+    bot._last_bot_say.clear()
+    check("提案が無ければ実行しない",
+          bot.classify_route("それやって", cid=7) != "selffix",
+          bot.classify_route("それやって", cid=7))
+    bot._remember_bot_say(7, "今日は蕎麦食べたんだね。いい休日になってよかった。ゆっくり休んで。")
+    check("雑談の直後は実行しない",
+          bot.classify_route("やって", cid=7) != "selffix",
+          bot.classify_route("やって", cid=7))
+    bot._last_bot_say.clear()
+
+    # モデルの切り替え：打ち間違いでも通す／使えない名前は嘘をつかない
+    for _t in ("ハイクににして", "ハイクにして", "haikuで", "オーパスでお願い"):
+        check(f"モデル切替が通る: {_t}",
+              bot._match_claude_model(_t) is not None, bot._match_claude_model(_t))
+    for _t in ("モデルをフェイブル5にして", "クロードをGPT5にして"):
+        check(f"使えない名前だと分かる: {_t}",
+              bot._match_claude_model(_t) is None
+              and bool(bot._UNKNOWN_MODEL_RE.search(_t)), _t)
+    check("生成モデルの指定は巻き込まない",
+          bool(bot._match_gen_model("veo3で動画作って")), True)
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile

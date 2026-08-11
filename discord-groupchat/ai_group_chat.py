@@ -332,6 +332,27 @@ def _history_text(text):
     return _MEDIA_BLOCK_RE.sub(_cut, text)
 
 
+# ボットが直前に言ったこと（cid -> (本文, 時刻)）。
+# 「それクロードでやってくれる？」の“それ”は、ボット自身の直前の提案を指す。
+# これを持っていなかったので、提案の直後に「やって」と言われても
+# どの機能にも流れず会話で終わっていた（本人の指摘「コードを触る作業が
+# スムーズにできない」の正体）。
+_last_bot_say = {}
+BOT_SAY_KEEP_SEC = 1800
+
+
+def _remember_bot_say(cid, text):
+    if text and len(text) >= 20:
+        _last_bot_say[cid] = (text, time.time())
+
+
+def _recent_bot_say(cid):
+    v = _last_bot_say.get(cid)
+    if v and time.time() - v[1] <= BOT_SAY_KEEP_SEC:
+        return v[0]
+    return ""
+
+
 def _cid_of_history(history):
     """history リストから channel_id を逆引き（同一オブジェクト参照で照合）。"""
     for k, v in histories.items():
@@ -2100,10 +2121,20 @@ CLAUDE_MODEL_ALIASES = {
 _MODEL_SWITCH_RE = re.compile(
     r"(モデル|model|エンジン)?\s*(?:を|は)?\s*"
     r"(haiku|ハイク|はいく|sonnet|ソネット|そねっと|opus|オーパス|おーぱす|"
-    r"既定|デフォルト|標準)\s*(?:に|へ)?\s*"
-    r"(?:して|しろ|変えて|変更|切り替え|切替|に戻して|戻して|でお願い|で)",
+    r"既定|デフォルト|標準)\s*"
+    # 「ハイクににして」のように助詞が重なっても通す（打ち間違いで
+    # 切り替わらず、しかも「設定します」と言われる事故が起きた）
+    r"(?:[にへ]\s*)*"
+    r"(?:して|しろ|変えて|変更|切り替え|切替|戻して|でお願い|お願い|で)",
     re.I,
 )
+# 使えないモデルを名指しされた時（サブスクに無いものを「切り替えました」と
+# 言ってしまう事故が起きた。知らない名前は、はっきり知らないと言う）
+_UNKNOWN_MODEL_RE = re.compile(
+    r"(fable|フェイブル|gpt|ジーピーティー|チャットgpt|grok|グロック|llama|"
+    r"[a-zA-Z]{3,}\s*)"
+    r"[0-9]*(?:\.[0-9]+)?\s*(?:[にへ]\s*)*"
+    r"(?:して|しろ|変えて|変更|切り替え|切替|でお願い)", re.I)
 _MODEL_ASK_RE = re.compile(
     r"(いま|今|現在|どの)?\s*(モデル|model)\s*(は|って|何|なに|教えて|確認)")
 
@@ -4988,15 +5019,18 @@ STOP_CHAT = "__chat__"      # ここで打ち切って会話にする（None＝�
 class RouteCtx:
     """1発言について、判定に使う材料を1回だけ計算して持ち回る。"""
 
-    __slots__ = ("text", "has_attachments", "has_video_att", "has_image_att",
-                 "has_job", "has_last_gen", "after_credits", "has_running",
-                 "last_was_design", "is_question", "status_kw", "short_ask",
-                 "status_ctx", "fix_now", "learn_strict", "learn_loose")
+    __slots__ = ("text", "cid", "has_attachments", "has_video_att",
+                 "has_image_att", "has_job", "has_last_gen", "after_credits",
+                 "has_running", "last_was_design", "is_question", "status_kw",
+                 "short_ask", "status_ctx", "fix_now", "learn_strict",
+                 "learn_loose")
 
     def __init__(self, content, *, has_attachments=False, has_video_att=False,
                  has_image_att=False, has_job=False, has_last_gen=False,
-                 after_credits=False, has_running=False, last_was_design=False):
+                 after_credits=False, has_running=False, last_was_design=False,
+                 cid=None):
         self.text = content or ""
+        self.cid = cid
         self.has_attachments = has_attachments
         self.has_video_att = has_video_att
         self.has_image_att = has_image_att
@@ -5316,6 +5350,38 @@ def _r_photo_edit(c):
         return _route_by_maker(c.text) or "image"
 
 
+# 「それ」「さっきの」など、ボット自身の直前の発言を指す言い方
+_REFERS_TO_PROPOSAL_RE = re.compile(
+    "^(それ|これ|さっきの|その)|それ(を|で|、)|やり方(が|は)?(わから|分から)")
+# コードや仕組みに手を入れる作業だと分かる語
+_CODE_WORK_RE = re.compile(
+    "コード|プログラム|実装|仕組み|機能|ファイル|スクリプト|関数|バグ|"
+    "リポジトリ|テスト|設定を(足|追加|変え)|作り込")
+
+
+def _r_do_proposal(c):
+    """ボットが直前に出した提案を『それやって』で実行に移す。
+
+    事故：ボットが「fixtures に3つのファイルを追加する仕組み」を提案した直後に
+    「それクロードでやってくれる？やり方わからん」と言われても、
+    どの機能にも流れず会話で終わっていた。
+    “それ”が何を指すかは、こちらが覚えている【直前の自分の発言】で分かる。"""
+    if not _wants_action(c.text) or c.has_attachments:
+        return None
+    if len(_strip_media_context(c.text)) > 60:
+        return None                        # 長い＝新しい依頼。提案の実行ではない
+    said = c.text
+    if not (_BARE_GO_RE.search(said) or _REFERS_TO_PROPOSAL_RE.search(said)):
+        return None
+    prev = _recent_bot_say(c.cid)
+    if not prev:
+        return None
+    # 直前の提案がコード・仕組みの話だった時だけ。雑談の「それやって」は通さない
+    if _CODE_WORK_RE.search(prev) or _CODE_WORK_RE.search(said):
+        return "selffix"
+    return None
+
+
 def _r_maker_fallback(c):
     """作り手を名指しした依頼は、必ずその作り手の生成へ（最後の受け皿）。
     事故：「geminiで背景を普通の室内にして」が会話に落ち、
@@ -5356,6 +5422,7 @@ ROUTE_RULES = (
     ("生成", _r_generate),
     ("モーション転写", _r_motion),
     ("写真の加工", _r_photo_edit),
+    ("提案をそのまま実行", _r_do_proposal),
     ("作り手の名指し（受け皿）", _r_maker_fallback),
 )
 
@@ -7825,7 +7892,8 @@ async def _handle_orchestrator(message, cid):
               "原則無料（Geminiの無料枠）", engine=ENGINE_GEMINI_IMG)
         return
     if kind == "selffix":
-        _spawn(_run_self_fix(cid, _latest_user_msg(history), message.author.id),
+        _spawn(_run_self_fix(cid, _selffix_task(cid, _latest_user_msg(history)),
+                             message.author.id),
                cid, "自己改修")
         return
     if kind == "restart":
@@ -7888,6 +7956,7 @@ async def _handle_orchestrator(message, cid):
     if _who == GEMINI_STANDIN:
         answer += ("\n\n" + _limit_note(_wrote.get("why", "")))
     add_history(cid, "Orchestrator", answer)
+    _remember_bot_say(cid, answer)   # 「それやって」の“それ”を解決するため
     await send_as(orch, cid, _with_speaker(answer, _who))
 
 
@@ -7988,9 +8057,11 @@ _PROGRESS_START_RE = re.compile(
     # 丁寧形が漏れていた。実例：「作り直しますね。少々お待ちください」と言って
     # 何も動いていなかった。語を並べる方式をやめ、
     # 「これからやる」と読める【形】で受ける。
-    "(作り直|やり直|直し|やり|進め|始め|対応|生成|制作|作成)"
-    "(す|し|)?(ね|よ|ます|ますね|ますよ|ます。|ておく|とく|"
-    "ています|ています。|ている|てる|中です)|"
+    "(作り直|やり直|直し|やり|進め|始め|対応|生成|制作|作成|"
+    # 実例：切り替えていないのに「フェイブル5に切り替えました」と言った
+    "切り替え|切替|設定|変更|反映)"
+    "(す|し|)?(ね|よ|ます|ますね|ますよ|ます。|ました|ました。|"
+    "ておく|とく|ています|ています。|ている|てる|中です)|"
     "(お|)待ち(ください|くださ|を|ましょ)|待ってて|待っててね|"
     "少し待って|しばらく待って|少々"
 )
@@ -9288,6 +9359,19 @@ async def _git_self(args, timeout=90):
     return proc.returncode, (out.decode(errors="replace") + err.decode(errors="replace")).strip()
 
 
+def _selffix_task(cid, said):
+    """コード作業の依頼文。「それやって」だけなら、直前の提案を中身として渡す。
+    これが無いと「それ」が何か分からないまま自己改修が走り、
+    見当違いの変更になる（または何も起きない）。"""
+    said = (said or "").strip()
+    prev = _recent_bot_say(cid)
+    if prev and (_BARE_GO_RE.search(said) or len(said) <= 30):
+        return (f"直前に自分（ボット）が提案した内容を実装する。\n"
+                f"【提案の本文】\n{prev[:1500]}\n\n"
+                f"【本人の指示】{said}")
+    return said
+
+
 async def _run_self_fix(cid, request, owner_id):
     """ボット自身のコードを Claude Code に修正させ、検証→承認→適用→自己再起動。
     検証失敗・却下時はバックアップから自動ロールバックする。"""
@@ -9616,6 +9700,22 @@ async def _dispatch_message(message):
     # 会話モデルの切替・確認（AI判定より前に拾う。AIに任せると
     # 「コードを直さないと変えられない」と答えてしまい、実際そうなった）
     _mdl = _match_claude_model(content)
+    if (_mdl is None and _UNKNOWN_MODEL_RE.search(content)
+            # 生成モデル（veo3・kling など）の指定はここではなく生成側で扱う
+            and not _match_gen_model(content)
+            and re.search("モデル|model|クロード|claude|エンジン", content, re.I)):
+        # 事故：「フェイブル5にして」に「フェイブル5に切り替えました」と答えた。
+        # 実際には切り替わっていないし、そもそも使えない。
+        _fired(cid, "使えないモデルの指定", content)
+        add_history(cid, message.author.display_name, content)
+        await message.channel.send(
+            "⚠️ そのモデルは、いまの claude CLI（サブスク）では使えません"
+            "（切り替えていません）。\n"
+            "使えるのは **ハイク**（軽量・最速）／**ソネット**（標準）／"
+            "**オーパス**（最高性能・低速）／**既定** です。\n"
+            f"いまは **{_current_model_label()}** です。"
+        )
+        return
     if _mdl is not None:
         _fired(cid, "会話モデルの切替", content)
         gen_settings["claude_model"] = _mdl[0]
@@ -9867,6 +9967,7 @@ async def _dispatch_message(message):
     _lg_rec = _load_last_gen(cid)
     route = classify_route(
         content,
+        cid=cid,
         has_attachments=bool(message.attachments),
         has_video_att=bool(_video_att),
         has_image_att=bool(_image_att),

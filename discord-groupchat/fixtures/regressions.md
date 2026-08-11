@@ -44,3 +44,5 @@ chat	デザインの話はしてないよ	会話
 chat	今日つかれた	会話
 chat	勝手に制作して上げてる動画なんだよね	会話
 chat	16:9 実写 顔のアップ 自然光	会話
+false_progress	フェイブル5に切り替えました。	落とす
+false_progress	Haiku に設定します。	落とす
