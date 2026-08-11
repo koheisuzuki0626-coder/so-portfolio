@@ -1489,6 +1489,30 @@ def run():
     for _t in ("制限速度って何キロ？", "上司の制限がきつい"):
         check(f"{_t!r} は普通の会話", bot.classify_route(_t), None)
 
+    print("■ Router のテーブル（段階2）")
+    # 41個のif文を宣言的な表にした。表の並び順がそのまま優先順位。
+    check("規則が表になっている", len(bot.ROUTE_RULES) >= 20, True)
+    _names = [n for n, _ in bot.ROUTE_RULES]
+    check("名前が重複していない", len(set(_names)), len(_names))
+    check("全部呼び出せる",
+          all(callable(f) for _, f in bot.ROUTE_RULES), True)
+    # どの規則が拾ったかが分かる（誤爆の調査で「どのif文か」を追わなくて済む）
+    for _t, _kw, _want_route, _want_rule in (
+        ("geminiで背景を室内にして",
+         {"has_last_gen": True, "last_was_design": True}, "image", "作り直し"),
+        ("この2枚の写真をいい感じに組み合わせて",
+         {"has_image_att": True, "has_attachments": True}, "image", "写真の加工"),
+        ("ヒッグスフィールドの制限はいつ解除される？", {}, "credits",
+         "料金・上限の照会"),
+        ("できた？", {"has_last_gen": True}, "status", "状態確認"),
+        ("ログ送って", {}, "sharelog", "ログ共有"),
+    ):
+        check(f"{_t[:16]!r} の行き先", bot.classify_route(_t, **_kw), _want_route)
+        check(f"{_t[:16]!r} を拾った規則", bot._route_hit["name"], _want_rule)
+    # 会話に落とした時も、どこで落ちたかが残る
+    bot.classify_route("クロードコードって便利だよね")
+    check("会話に落とした理由も残る", bool(bot._route_hit["name"]), True)
+
     print("■ 過去に漏れた言い方（fixtures/regressions.md を全部検査）")
     # 本人の指摘：「一回言ったことは二度と抜け漏れないようにしろ」。
     # 実害が出た言い方を台帳に溜め、毎回ここで全行を検査する。

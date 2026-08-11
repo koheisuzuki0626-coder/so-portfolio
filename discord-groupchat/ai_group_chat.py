@@ -4909,6 +4909,7 @@ def classify_route(content, **kw):
     route = _classify_route_raw(content, **kw)
     if (route in ACT_ROUTES and not kw.get("has_attachments")
             and not _wants_action(content)):
+        _route_hit["name"] = (_route_hit.get("name") or "") + "→依頼の形でないので会話"
         return None          # 頼まれていない＝会話として扱う
     return route
 
@@ -4940,275 +4941,413 @@ def _route_by_maker(content):
     return None
 
 
-def _classify_route_raw(content, *, has_attachments=False, has_video_att=False,
-                   has_image_att=False, has_job=False, has_last_gen=False,
-                   after_credits=False, has_running=False, last_was_design=False):
-    """@メンションなし発言のルーティングを判定（AI(_plan)前の決定的ルートのみ）。
-    返り値: 'status'/'revise'/'short'/'virality'/'ad'/'credits'/'design'/
-    'hf_model'/'hf_auto'/'motion'/'motion_ask'/None。
-    on_message と同じ順序・同じ正規表現を使うので、これをテストすれば実挙動を検証できる。"""
-    # ⓪ 「これからもよろしく」は“今やって”ではない。
-    #    実際に「チャンネル実績レポートこれからもよろしくね」で確認が立ち上がり、
-    #    言い直すたびに『作業を中止した』が会話に割り込んだ。
-    if _NOT_NOW_RE.search(content) and not _NOW_RE.search(content):
-        return None
-    # ⓪.5 「〜って何？」は説明を求める質問。制作の指示が同じ文に無ければ会話。
-    if _EXPLAIN_Q_RE.search(content) and not _GEN_ORDER_RE.search(content):
-        return None
-    # ① 生成物の状態確認（添付なし・状態ワード・文脈）。
-    #    直近の生成があれば「できた？」だけでも状態確認につなぐ。
-    #    ただし「作って」「作り直して」など生成・修正の依頼は状態確認にしない
-    #    （「〜作ってください」の「ください」で誤爆しないように）。
-    status_kw = _STATUS_KW_RE.search(content)
-    # 実行中の作業があれば「まだ？」「あと何分？」だけでも状態確認につなぐ。
-    # これが無いとAIに流れ、実行中だと知らないAIが
-    # 「その機能自体が無い」と作り話をする事故が実際に起きた。
-    # 「まだ」「できた」だけを頼りにすると、身の上話まで進捗確認になる。
-    # 生成の話だと分かる語があるか、進捗を聞く短い一言の時だけにする。
-    _short_ask = len(_strip_media_context(content).strip()) <= 20
-    status_ctx = _STATUS_CTX_RE.search(content) or (
-        (has_job or has_last_gen or has_running) and status_kw
-        and (_short_ask or _STATUS_CTX_RE.search(content))
-    )
-    if (not has_attachments and status_kw and status_ctx
+# ---------- Router（段階2：41個のif文を宣言的な表にした） ----------
+# 以前はここが268行のif文の列で、順番が意味を持っているのに一覧できなかった。
+# 「geminiで、がデザインに行く」「クロードでやって、が古い依頼を引きずる」など、
+# 誤爆のたびにどのif文が拾ったのかを人力で追う必要があった。
+# いまは ROUTE_RULES の表を上から順に見るだけで分かる。
+#
+# 規則を足すときは:
+#   1) 判定に使う材料は RouteCtx に足す（毎回計算し直さない）
+#   2) 規則は「(名前, 関数)」で ROUTE_RULES の【正しい位置】に入れる
+#      ＝ 表の並び順がそのまま優先順位。上ほど強い
+#   3) 副作用のある行き先なら ACT_ROUTES にも入れる
+#   4) test_routing.py に1件足す
+STOP_CHAT = "__chat__"      # ここで打ち切って会話にする（None＝該当せず次へ）
+
+
+class RouteCtx:
+    """1発言について、判定に使う材料を1回だけ計算して持ち回る。"""
+
+    __slots__ = ("text", "has_attachments", "has_video_att", "has_image_att",
+                 "has_job", "has_last_gen", "after_credits", "has_running",
+                 "last_was_design", "is_question", "status_kw", "short_ask",
+                 "status_ctx", "fix_now", "learn_strict", "learn_loose")
+
+    def __init__(self, content, *, has_attachments=False, has_video_att=False,
+                 has_image_att=False, has_job=False, has_last_gen=False,
+                 after_credits=False, has_running=False, last_was_design=False):
+        self.text = content or ""
+        self.has_attachments = has_attachments
+        self.has_video_att = has_video_att
+        self.has_image_att = has_image_att
+        self.has_job = has_job
+        self.has_last_gen = has_last_gen
+        self.after_credits = after_credits
+        self.has_running = has_running
+        self.last_was_design = last_was_design
+        self.is_question = bool(_looks_like_question(self.text))
+        self.status_kw = _STATUS_KW_RE.search(self.text)
+        # 「まだ」「できた」だけを頼りにすると身の上話まで進捗確認になる。
+        # 生成の話だと分かる語があるか、進捗を聞く短い一言の時だけにする。
+        self.short_ask = len(_strip_media_context(self.text).strip()) <= 20
+        self.status_ctx = _STATUS_CTX_RE.search(self.text) or (
+            (has_job or has_last_gen or has_running) and self.status_kw
+            and (self.short_ask or _STATUS_CTX_RE.search(self.text))
+        )
+        # 出来上がりへの不満＋直しの指示は、丁寧形でも疑問形でも作り直し。
+        self.fix_now = bool(_RESULT_COMPLAINT_RE.search(self.text)
+                            and _CHANGE_VERB_RE.search(self.text))
+        self.learn_strict = re.search(
+            "学習して|学習させ|覚えさせ|参考にして|真似して|勉強して", self.text)
+        self.learn_loose = self.learn_strict or re.search(
+            "覚えて(?![るたない])", self.text)
+
+    def revise_like(self):
+        return _looks_revise(self.text, self.has_last_gen)
+
+
+def _r_not_now(c):
+    """「これからもよろしく」は“今やって”ではない。
+    実際に「チャンネル実績レポートこれからもよろしくね」で確認が立ち上がり、
+    言い直すたびに『作業を中止した』が会話に割り込んだ。"""
+    if _NOT_NOW_RE.search(c.text) and not _NOW_RE.search(c.text):
+        return STOP_CHAT
+
+
+def _r_explain_question(c):
+    """「〜って何？」は説明を求める質問。制作の指示が同じ文に無ければ会話。"""
+    if _EXPLAIN_Q_RE.search(c.text) and not _GEN_ORDER_RE.search(c.text):
+        return STOP_CHAT
+
+
+def _r_status(c):
+    """生成物の状態確認（添付なし・状態ワード・文脈）。
+    「作って」「作り直して」など生成・修正の依頼は状態確認にしない
+    （「〜作ってください」の「ください」で誤爆しないように）。"""
+    if (not c.has_attachments and c.status_kw and c.status_ctx
             # 「できた！ありがとー」のような報告・お礼は進捗の質問ではない
-            and not _USER_REPORT_RE.search(content)
-            and not re.search("作って|作りたい|つくって|生成して|作成して|描いて|アニメ化", content)
-            and not _CONTENT_Q_RE.search(content)   # 中身への質問は会話へ
-            and not _looks_revise(content, has_last_gen)):
+            and not _USER_REPORT_RE.search(c.text)
+            and not re.search(
+                "作って|作りたい|つくって|生成して|作成して|描いて|アニメ化", c.text)
+            and not _CONTENT_Q_RE.search(c.text)   # 中身への質問は会話へ
+            and not c.revise_like()):
         return "status"
-    # ①.35 長い動画の切り抜き（素材を渡して「ショートにして」）。
-    #       完パケ編集より先に見る。編集ルートは Higgsfield のクラウドで
-    #       ffmpeg を回すが、切り抜きは Mac 上で完結しクレジットを使わない。
-    #       添付動画に「切り抜いて」と言われたら、こちらが本命。
-    if (_CLIP_INTENT_RE.search(content) and not _looks_like_question(content)
-            and (_YT_LINK_RE.search(content) or has_video_att
-                 or _VIDEO_PATH_RE.search(content)
+
+
+def _r_clip(c):
+    """長い動画の切り抜き（素材を渡して「ショートにして」）。
+    完パケ編集より先に見る。編集はHiggsfieldのクラウドでffmpegを回すが、
+    切り抜きはMac上で完結しクレジットを使わない。"""
+    if (_CLIP_INTENT_RE.search(c.text) and not c.is_question
+            and (_YT_LINK_RE.search(c.text) or c.has_video_att
+                 or _VIDEO_PATH_RE.search(c.text)
                  # 動画ファイルの名前が書かれていれば素材の指定とみなす。
                  # iPhoneから貼った道順（iCloud Drive ▸ …）もここで拾う。
-                 or _VIDEO_NAME_RE.search(content))):
+                 or _VIDEO_NAME_RE.search(c.text))):
         return "clip"
-    # ※編集は作り直しより先に判定する。「もっと短くして」は作り直しではなく
-    #   尺の編集だが、作り直しの語（もっと等）にも当たるため順序が効く。
-    # ①.7 完パケ編集（既にある動画への後工程。新規生成とは別物）
-    if (has_video_att or has_last_gen) and re.search(
+
+
+def _r_edit(c):
+    """完パケ編集（既にある動画への後工程。新規生成とは別物）。
+    作り直しより先に判定する。「もっと短くして」は作り直しではなく尺の編集だが、
+    作り直しの語（もっと等）にも当たるため順序が効く。"""
+    if (c.has_video_att or c.has_last_gen) and re.search(
         "字幕|テロップ|サブタイトル|編集して|加工して|つなげ|繋げ|結合|くっつけ|"
         "尺を|秒に(して|縮め)|短くして|長くして|カットして|トリム|切り抜いて|"
-        "9:16|縦型に|横型に|縦にして|横にして|音量|BGM|無音に", content
-    ) and not _looks_like_question(content):
+        "9:16|縦型に|横型に|縦にして|横にして|音量|BGM|無音に", c.text
+    ) and not c.is_question:
         return "edit"
 
-    # ①.4 前の生成の作り直し（修正マーカーがあれば発動。記録が無くても
-    #     _run_revise が Higgsfield から直前プロンプトを回収するので安全）。
-    #     「前の動画のこと覚えてる？」のような質問では発動しない
-    # 「〜してくれる？」は問いかけの形をした依頼なので、?で終わっても通す。
-    # これが無いと「武将も追記してくれる？」が会話に落ちて何も起きなかった。
-    # 出来上がりへの不満＋直しの指示は、丁寧形でも疑問形でも作り直し。
-    # 「顔が違うので、鼻の高さだけ変えて…ください」が進捗確認に化けていた。
-    _fix_now = bool(_RESULT_COMPLAINT_RE.search(content)
-                    and _CHANGE_VERB_RE.search(content))
-    if (not has_attachments and _looks_revise(content, has_last_gen)
-            and (_fix_now or not _looks_like_question(content)
-                 or _wants_action(content))):
+
+def _r_revise(c):
+    """前の生成の作り直し。記録が無くても _run_revise が
+    Higgsfield から直前プロンプトを回収するので安全。
+    「〜してくれる？」は問いかけの形をした依頼なので、?で終わっても通す。"""
+    if (not c.has_attachments and c.revise_like()
+            and (c.fix_now or not c.is_question or _wants_action(c.text))):
         # 作り直しでも「誰に作らせるか」の指定が最優先。
         # 「クロードで作り直して」を作風の指定と読んで Higgsfield に投げ、
         # 「Claude.ai風デザイン」の画像を生成してしまう事故が起きた。
-        _maker = _route_by_maker(content)
-        if _maker:
-            return _maker
+        maker = _route_by_maker(c.text)
+        if maker:
+            return maker
         # 直前がデザインなら、作り直しも同じ作り方（HTML）で行う。
         # 画像生成に投げると、せっかくの文字が崩れたものに置き換わってしまう。
-        if last_was_design:
+        if c.last_was_design:
             return "design"
         return "revise"
-    # 直前がデザインなら、短い手直し（「背景を暗くして」等）も作り直しとして扱う。
-    # 動画/画像と違い、デザインは細かい調整を重ねる使い方が普通のため。
-    # ただし【デザインの部位・見た目の語がある時だけ】に限る。
-    # 変更動詞だけを条件にしていたため、「親が入院しろって言ってくる」の
-    # 「しろ」を手直し指示と読んでデザイン制作を始める事故が起きた。
-    if (last_was_design and not has_attachments
+
+
+def _r_design_tweak(c):
+    """直前がデザインなら、短い手直し（「背景を暗くして」等）も作り直し扱い。
+    ただし【デザインの部位・見た目の語がある時だけ】に限る。
+    変更動詞だけを条件にしていたため、「親が入院しろって言ってくる」の
+    「しろ」を手直し指示と読んでデザイン制作を始める事故が起きた。"""
+    if (c.last_was_design and not c.has_attachments
             # 「背景も変えてくれる？」は問いかけの形をした手直しの依頼
-            and (not _looks_like_question(content) or _wants_action(content))
+            and (not c.is_question or _wants_action(c.text))
             # 「デザインの話はしてないよ」を手直しの指示と読まない
-            and not _NEGATION_RE.search(content)
-            and not _USER_REPORT_RE.search(content)
-            and len(content) <= 40
+            and not _NEGATION_RE.search(c.text)
+            and not _USER_REPORT_RE.search(c.text)
+            and len(c.text) <= 40
             # 「geminiで背景を室内にして」は作り手の名指し。直前がデザインでも
             # そちらが勝つ。名指しを無視してHTMLで作り直していた（実例）。
-            and not _BY_GEMINI_RE.search(content)
-            and not _BY_HF_RE.search(content)
-            and _CHANGE_VERB_RE.search(content)
-            and _DESIGN_TWEAK_RE.search(content)):
+            and not _BY_GEMINI_RE.search(c.text)
+            and not _BY_HF_RE.search(c.text)
+            and _CHANGE_VERB_RE.search(c.text)
+            and _DESIGN_TWEAK_RE.search(c.text)):
         return "design"
-    # ①.45 作り手の名指しだけの言い直し（「ヒッグスフィールドで」「クロードで」）。
-    #      直前に依頼があるので、その中身のまま作り手だけ変える。
-    if has_last_gen and not has_attachments and not _has_subject(content):
-        if _BY_HF_RE.search(content):
-            return "hf_auto"
-        if _BY_CLAUDE_RE.search(content):
-            return "design"
-        if _BY_GEMINI_RE.search(content):
-            return "image"
-    # ①.5 ショート量産（「ショート作って」「今日のショート」等）
-    if re.search("ショート|shorts?|ショート動画", content, re.I) and (
-        _GEN_INTENT2_RE.search(content) or re.search("今日の|ネタ|企画|お願い", content)
+
+
+def _r_maker_only(c):
+    """作り手の名指しだけの言い直し（「ヒッグスフィールドで」「クロードで」）。
+    直前に依頼があるので、その中身のまま作り手だけ変える。"""
+    if c.has_last_gen and not c.has_attachments and not _has_subject(c.text):
+        return _route_by_maker(c.text)
+
+
+def _r_short(c):
+    """ショート量産（「ショート作って」「今日のショート」等）。"""
+    if re.search("ショート|shorts?|ショート動画", c.text, re.I) and (
+        _GEN_INTENT2_RE.search(c.text)
+        or re.search("今日の|ネタ|企画|お願い", c.text)
     ):
         return "short"
-    # ①.6 バズ度シミュレーション（広告効果の事前予測＝物理エンジン相当）。
-    #     「バズる動画作って」のような生成依頼は②へ、
-    #     「バズった動画調べて」のようなリサーチはAI(trend)へ譲る。
-    if (not _GEN_INTENT2_RE.search(content)
-            and not re.search("チャンネル|実績|成績|投稿した", content)  # それは実績分析
-            and re.search("バズ|バイラル|広告効果|再生数|伸び", content)
-            and re.search("分析|予測|チェック|診断|シミュレ|測って|判定", content)):
+
+
+def _r_virality(c):
+    """バズ度シミュレーション（事前予測）。
+    「バズる動画作って」は生成へ、「バズった動画調べて」はリサーチへ譲る。"""
+    if (not _GEN_INTENT2_RE.search(c.text)
+            and not re.search("チャンネル|実績|成績|投稿した", c.text)  # 実績分析
+            and re.search("バズ|バイラル|広告効果|再生数|伸び", c.text)
+            and re.search("分析|予測|チェック|診断|シミュレ|測って|判定", c.text)):
         return "virality"
-    # ①.7 広告代理店モード（企画書＋縦型CM動画の制作）。
-    #     「10cm」等の単位と誤爆しないよう CM は直前が数字でない場合のみ。
-    if re.search("広告|(?<![0-9０-９])[cCｃＣ][mMｍＭ]|コマーシャル|プロモ", content) and (
-        _GEN_INTENT2_RE.search(content) or re.search("お願い|企画", content)
+
+
+def _r_ad(c):
+    """広告代理店モード（企画書＋縦型CM動画）。
+    「10cm」等の単位と誤爆しないよう CM は直前が数字でない場合のみ。"""
+    if re.search("広告|(?<![0-9０-９])[cCｃＣ][mMｍＭ]|コマーシャル|プロモ", c.text) and (
+        _GEN_INTENT2_RE.search(c.text) or re.search("お願い|企画", c.text)
     ):
         return "ad"
-    # ①.71 複数視点で検討（クロード1＝情報収集／クロード3＝多角的視点）
-    # 名前が出ただけでは呼ばない。実際に「リサーチするのはクロード1にしてね」で
-    # 役の呼び出しが走った（担当を決める話であって、意見を聞く話ではない）。
+
+
+def _r_multiview(c):
+    """複数視点で検討（クロード1＝情報収集／クロード3＝多角的視点）。
+    名前が出ただけでは呼ばない。実際に「リサーチするのはクロード1にしてね」で
+    役の呼び出しが走った（担当を決める話であって、意見を聞く話ではない）。"""
     if (re.search("多角的|多角度|いろんな(視点|角度)|色んな(視点|角度)|"
-                  "複数の(視点|角度)|両面から|別の視点", content)
+                  "複数の(視点|角度)|両面から|別の視点", c.text)
             or (re.search("クロード\\s*[1１]|クロード\\s*[3３]|claude\\s*[13]|"
-                          "リサーチャー|アドバイザー", content, re.I)
-                and not _ROLE_ASSIGN_RE.search(content)
-                and _ASK_ROLE_RE.search(content))):
+                          "リサーチャー|アドバイザー", c.text, re.I)
+                and not _ROLE_ASSIGN_RE.search(c.text)
+                and _ASK_ROLE_RE.search(c.text))):
         return "multiview"
-    # ①.72 自分のチャンネルの実績分析／チャンネル登録
-    if re.search("チャンネル", content) and re.search(
-        "登録|設定|変更|セット|教える|これ", content
-    ) and re.search(r"https?://|@[\w.\-]+|UC[\w-]{20,}", content):
+
+
+def _r_channel_set(c):
+    """自分のチャンネルの登録（URL・ハンドル・IDを渡された時）。"""
+    if re.search("チャンネル", c.text) and re.search(
+        "登録|設定|変更|セット|教える|これ", c.text
+    ) and re.search(r"https?://|@[\w.\-]+|UC[\w-]{20,}", c.text):
         return "ch_set"
-    #      「実績/成績/再生数」は単体で実績分析。「チャンネル＋分析」も同じ。
-    #      生成依頼（〜作って）が混ざっている場合は制作なので対象外にする。
-    if (not _GEN_INTENT2_RE.search(content)
-            and (re.search("実績|成績|再生数|視聴回数|伸び方", content)
-                 or (re.search("チャンネル", content)
-                     and re.search("分析|レポート|振り返り|どう", content)))
-            and not re.search("この動画|添付", content)):
+
+
+def _r_channel_stats(c):
+    """実績分析。「実績/成績/再生数」は単体で、「チャンネル＋分析」も同じ。
+    生成依頼（〜作って）が混ざっている場合は制作なので対象外。"""
+    if (not _GEN_INTENT2_RE.search(c.text)
+            and (re.search("実績|成績|再生数|視聴回数|伸び方", c.text)
+                 or (re.search("チャンネル", c.text)
+                     and re.search("分析|レポート|振り返り|どう", c.text)))
+            and not re.search("この動画|添付", c.text)):
         return "ch_stats"
-    # ①.75 デバッグログの共有（スクショを撮らずに開発側へ状況を渡す）
-    if re.search("ログ|log", content, re.I) and re.search(
+
+
+def _r_sharelog(c):
+    """デバッグログの共有（スクショを撮らずに開発側へ状況を渡す）。"""
+    if re.search("ログ|log", c.text, re.I) and re.search(
         "送って|送っと|送信|共有|出して|上げて|あげて|渡して|見せて|"
-        "ちょうだい|ください|くれ", content
-    ) and not re.search("消して|削除", content):
+        "ちょうだい|ください|くれ", c.text
+    ) and not re.search("消して|削除", c.text):
         return "sharelog"
-    # ①.76 料金・残クレジットの照会（作らずに、実データを調べて答える）。
-    #      「無料で動画作って」のような明確な依頼は制作なので対象外。
-    #      「クレジット」「残高」はそれだけでHiggsfieldの話だが、「プラン」「料金」は
-    #      事業計画や一般の話にも使うので、生成の文脈があるときだけ拾う。
-    if (not _GEN_ORDER_RE.search(content) and _looks_like_question(content)
-            and (re.search("クレジット|残高|課金", content)
+
+
+def _r_credits(c):
+    """料金・残クレジット・上限の照会（作らずに実データを調べて答える）。
+    「クレジット」「残高」はそれだけでHiggsfieldの話だが、「プラン」「料金」は
+    事業計画や一般の話にも使うので、生成の文脈があるときだけ拾う。"""
+    if (not _GEN_ORDER_RE.search(c.text) and c.is_question
+            and (re.search("クレジット|残高|課金", c.text)
                  # 「ヒッグスフィールドの制限はいつ解除される？」は、実データを
                  # 持っている経路で答える。会話に流して
                  # 「詳しい情報が手元にありません」と言わせない（実例）。
-                 or (re.search("上限|制限|リミット|枠", content)
+                 or (re.search("上限|制限|リミット|枠", c.text)
                      and re.search("higgsfield|ヒッグス|gemini|ジェミニ|生成|"
-                                   "画像|動画", content, re.I))
+                                   "画像|動画", c.text, re.I))
                  or (re.search("料金|価格|値段|費用|コスト|いくら|何円|なん円|"
-                               "無料|有料|プラン", content)
-                     and (_match_gen_model(content)
-                          or re.search("生成|動画|映像|画像|イラスト|higgsfield|ヒッグス",
-                                       content, re.I))))):
+                               "無料|有料|プラン", c.text)
+                     and (_match_gen_model(c.text)
+                          or re.search(
+                              "生成|動画|映像|画像|イラスト|higgsfield|ヒッグス",
+                              c.text, re.I))))):
         return "credits"
-    #      直前が料金照会なら、続きの短い質問（「画像生成はどうなの？」等）も照会に流す。
-    #      普通の会話パスにはMCPの権限が無く、ツールが動かずに
-    #      「権限が下りない」と言い出す事故が起きたため。
-    if (after_credits and _looks_like_question(content) and len(content) <= 40
-            and not _GEN_ORDER_RE.search(content)
+
+
+def _r_credits_followup(c):
+    """直前が料金照会なら、続きの短い質問も照会に流す。
+    普通の会話パスにはMCPの権限が無く、ツールが動かずに
+    「権限が下りない」と言い出す事故が起きたため。"""
+    if (c.after_credits and c.is_question and len(c.text) <= 40
+            and not _GEN_ORDER_RE.search(c.text)
             and re.search("画像|動画|映像|イラスト|音声|音楽|モデル|生成|プラン|"
-                          "それ|こっち|そっち|他|ほか|逆に", content)):
+                          "それ|こっち|そっち|他|ほか|逆に", c.text)):
         return "credits"
-    # ①.8 スタイル学習（参考動画から勝ちパターンを覚えて以降の生成に反映）
-    if re.search("スタイル|作風", content) and re.search("リセット|白紙|消して|忘れて|クリア", content):
+
+
+def _r_style(c):
+    """スタイル学習（参考動画から勝ちパターンを覚えて以降の生成に反映）。
+    「覚えてる？」のような質問・既存機能の話と誤爆しないよう、
+    添付/リンクなしの案内(style_ask)は明確な依頼形＋非質問のときだけ。"""
+    if re.search("スタイル|作風", c.text) and re.search(
+            "リセット|白紙|消して|忘れて|クリア", c.text):
         return "style_reset"
-    if re.search("(学習|覚え)(した|た)スタイル|スタイル(を|は)?(見せて|どんな|確認|教えて)", content):
+    if re.search("(学習|覚え)(した|た)スタイル|"
+                 "スタイル(を|は)?(見せて|どんな|確認|教えて)", c.text):
         return "style_show"
-    #     「覚えてる？」のような質問・既存機能の話と誤爆しないよう、
-    #     添付/リンクなしの案内(style_ask)は明確な依頼形＋非質問のときだけ
-    _learn_strict = re.search("学習して|学習させ|覚えさせ|参考にして|真似して|勉強して", content)
-    _learn_loose = _learn_strict or re.search("覚えて(?![るたない])", content)
-    if not re.search("調べて|リサーチ|検索", content):
-        if _learn_loose and (has_video_att or YOUTUBE_URL_RE.search(content)):
+    if not re.search("調べて|リサーチ|検索", c.text):
+        if c.learn_loose and (c.has_video_att or YOUTUBE_URL_RE.search(c.text)):
             return "style_learn"
-        if (_learn_strict and not _looks_like_question(content)
-                and re.search("動画|ショート|映像|スタイル|作風", content)):
+        if (c.learn_strict and not c.is_question
+                and re.search("動画|ショート|映像|スタイル|作風", c.text)):
             return "style_ask"
-    # ①.85 作り手の名指しが最優先（「クロードでサムネ作って」「geminiでサムネ作って」）。
-    #       本人が指定した以上、こちらの自動判定より優先する。
-    if (_GEN_INTENT2_RE.search(content) and not _looks_like_question(content)
-            and _VISUAL_NOUN_RE.search(content)):
-        _maker = _route_by_maker(content)
-        if _maker:
-            return _maker
-    # ①.9 デザイン制作（文字が主役のもの。画像生成AIは文字が苦手なので
-    #      ClaudeにHTMLで組ませてスクリーンショットする）。
-    #      「猫のイラスト作って」のような絵の依頼は従来どおり画像生成へ。
-    if (_GEN_INTENT2_RE.search(content)
+
+
+def _r_maker_named(c):
+    """作り手の名指しが最優先（「クロードでサムネ作って」「geminiでサムネ作って」）。
+    本人が指定した以上、こちらの自動判定より優先する。"""
+    if (_GEN_INTENT2_RE.search(c.text) and not c.is_question
+            and _VISUAL_NOUN_RE.search(c.text)):
+        return _route_by_maker(c.text)
+
+
+def _r_design(c):
+    """デザイン制作（文字が主役のもの。画像生成AIは文字が苦手なので
+    ClaudeにHTMLで組ませてスクリーンショットする）。
+    「猫のイラスト作って」のような絵の依頼は従来どおり画像生成へ。"""
+    if (_GEN_INTENT2_RE.search(c.text)
             or re.search(r"(デザイン|バナー|ポスター|チラシ|フライヤー|スライド|"
-                         r"名刺|表紙|図解)\S{0,6}お願い", content)
-            ) and not _looks_like_question(content) and (
-        _DESIGN_NOUN_RE.search(content)
+                         r"名刺|表紙|図解)\S{0,6}お願い", c.text)
+            ) and not c.is_question and (
+        _DESIGN_NOUN_RE.search(c.text)
         # 「ロゴをデザインして」のような絵の依頼は、従来どおり画像生成に任せる
-        or (re.search("デザイン", content) and not _IMAGE_NOUN_RE.search(content))
-        or (re.search("サムネ|thumbnail|タイトル画像|カバー", content, re.I)
-            and re.search("文字|テキスト|タイトル|キャッチ|コピー|入れて|入り", content))
+        or (re.search("デザイン", c.text) and not _IMAGE_NOUN_RE.search(c.text))
+        or (re.search("サムネ|thumbnail|タイトル画像|カバー", c.text, re.I)
+            and re.search("文字|テキスト|タイトル|キャッチ|コピー|入れて|入り",
+                          c.text))
     ):
         return "design"
-    # ② Higgsfield生成（モーション以外・生成意図あり）
-    #    「動画お願い」もAI判定に落とさず生成として扱う
-    if not re.search("モーション|この動き|動きを", content) and (
-        _GEN_INTENT2_RE.search(content)
-        or re.search(r"(動画|映像|画像|イラスト|ロゴ|写真)\S{0,8}お願い", content)
-    ):
-        # 「どうやって動画作ってるの？」「veo3の料金いくら？」のような
-        # 質問では発動しない。モデル名の指定があっても同じ（質問が先）。
-        if not _looks_like_question(content):
-            if _match_gen_model(content):
-                return "hf_model"
-            # 画像は Gemini（無料枠）優先。「geminiで画像作って」もここ
-            if re.search("画像|イラスト|ロゴ|絵|写真|アイコン|サムネ", content):
-                return "image"
-            auto_kw = re.search(
-                "おまかせ|お任せ|自動|最適|いい感じ|良い感じ|どれでも|モデル任せ|よしなに|"
-                "バズる|バズり|バズそう", content
-            )
-            # 媒体が明示されていればAI判定に落とさず生成へ（速度と確実性）
-            media_noun = re.search("動画|映像|ムービー|クリップ|PV|ＰＶ", content)
-            if auto_kw or has_video_att or has_image_att or media_noun:
-                return "hf_auto"
-    # ③ モーション転写（キーワード or 依頼待ち中の動画添付）。
-    #    「モーション動画じゃないよ」のような否定・単なる言及では発動させず、
-    #    生成の意図がある時だけ反応する
-    if _MOTION_KW_RE.search(content) and not re.search("じゃな|ではな|違う|ちがう", content):
-        if has_video_att:
+
+
+def _r_generate(c):
+    """Higgsfield等での生成（モーション以外・生成意図あり）。
+    「動画お願い」もAI判定に落とさず生成として扱う。"""
+    if re.search("モーション|この動き|動きを", c.text):
+        return None
+    if not (_GEN_INTENT2_RE.search(c.text)
+            or re.search(r"(動画|映像|画像|イラスト|ロゴ|写真)\S{0,8}お願い", c.text)):
+        return None
+    # 「どうやって動画作ってるの？」「veo3の料金いくら？」のような
+    # 質問では発動しない。モデル名の指定があっても同じ（質問が先）。
+    if c.is_question:
+        return None
+    if _match_gen_model(c.text):
+        return "hf_model"
+    # 画像は Gemini（無料枠）優先。「geminiで画像作って」もここ
+    if re.search("画像|イラスト|ロゴ|絵|写真|アイコン|サムネ", c.text):
+        return "image"
+    auto_kw = re.search(
+        "おまかせ|お任せ|自動|最適|いい感じ|良い感じ|どれでも|モデル任せ|よしなに|"
+        "バズる|バズり|バズそう", c.text)
+    # 媒体が明示されていればAI判定に落とさず生成へ（速度と確実性）
+    media_noun = re.search("動画|映像|ムービー|クリップ|PV|ＰＶ", c.text)
+    if auto_kw or c.has_video_att or c.has_image_att or media_noun:
+        return "hf_auto"
+
+
+def _r_motion(c):
+    """モーション転写（キーワード or 依頼待ち中の動画添付）。
+    「モーション動画じゃないよ」のような否定・単なる言及では発動させない。"""
+    if _MOTION_KW_RE.search(c.text) and not re.search(
+            "じゃな|ではな|違う|ちがう", c.text):
+        if c.has_video_att:
             return "motion"
-        if _GEN_INTENT2_RE.search(content) or re.search("したい|やりたい|お願い", content):
+        if _GEN_INTENT2_RE.search(c.text) or re.search(
+                "したい|やりたい|お願い", c.text):
             return "motion_ask"
-    # ③.5 写真を添付しての加工の依頼は、必ず画像の経路へ。
-    #      事故：2枚の写真を添付して「いい感じに組み合わせて」が会話に落ちた。
-    if has_image_att and _wants_action(content) and _PHOTO_EDIT_RE.search(content):
-        return _route_by_maker(content) or "image"
-    # ④ 作り手を名指しした依頼は、必ずその作り手の生成へ。
-    #    他のどのルートにも当たらなかった時の最後の受け皿。
-    #    事故：「geminiで背景を普通の室内にして」が会話に落ち、
-    #    ボットは「生成の実行に許可が必要みたい」と作り話をして終わった。
-    #    名指しは本人の明確な意思表示なので、会話に落としてはいけない。
-    if (not has_attachments and _wants_action(content)
-            and not _looks_like_question(content)
+
+
+def _r_photo_edit(c):
+    """写真を添付しての加工の依頼は、必ず画像の経路へ。
+    事故：2枚の写真を添付して「いい感じに組み合わせて」が会話に落ちた。"""
+    if c.has_image_att and _wants_action(c.text) and _PHOTO_EDIT_RE.search(c.text):
+        return _route_by_maker(c.text) or "image"
+
+
+def _r_maker_fallback(c):
+    """作り手を名指しした依頼は、必ずその作り手の生成へ（最後の受け皿）。
+    事故：「geminiで背景を普通の室内にして」が会話に落ち、
+    ボットは「生成の実行に許可が必要みたい」と作り話をして終わった。"""
+    if (not c.has_attachments and _wants_action(c.text) and not c.is_question
             # 「ジェミニで調べて」「ジェミニで要約して」は生成の依頼ではない
-            and not _NOT_GEN_VERB_RE.search(content)
+            and not _NOT_GEN_VERB_RE.search(c.text)
             # 何を作るかが書かれている時だけ。「ヒッグスフィールドで作って」だけなら
-            # 直前の依頼を引き継ぐ①.45に任せる（無ければ何も始めない）
-            and _has_subject(content)):
-        _maker = _route_by_maker(content)
-        if _maker in ("hf_auto", "image"):   # クロード指定はコード修正等と紛れる
-            return _maker
+            # 直前の依頼を引き継ぐ _r_maker_only に任せる
+            and _has_subject(c.text)):
+        maker = _route_by_maker(c.text)
+        if maker in ("hf_auto", "image"):   # クロード指定はコード修正等と紛れる
+            return maker
+
+
+# 上から順に見る。この並び順がそのまま優先順位。
+ROUTE_RULES = (
+    ("今すぐではない", _r_not_now),
+    ("説明を求める質問", _r_explain_question),
+    ("状態確認", _r_status),
+    ("切り抜き", _r_clip),
+    ("完パケ編集", _r_edit),
+    ("作り直し", _r_revise),
+    ("デザインの手直し", _r_design_tweak),
+    ("作り手の指定だけ", _r_maker_only),
+    ("ショート量産", _r_short),
+    ("バズ度予測", _r_virality),
+    ("広告", _r_ad),
+    ("複数視点", _r_multiview),
+    ("チャンネル登録", _r_channel_set),
+    ("実績分析", _r_channel_stats),
+    ("ログ共有", _r_sharelog),
+    ("料金・上限の照会", _r_credits),
+    ("料金照会の続き", _r_credits_followup),
+    ("スタイル学習", _r_style),
+    ("作り手の名指し", _r_maker_named),
+    ("デザイン制作", _r_design),
+    ("生成", _r_generate),
+    ("モーション転写", _r_motion),
+    ("写真の加工", _r_photo_edit),
+    ("作り手の名指し（受け皿）", _r_maker_fallback),
+)
+
+
+def _classify_route_raw(content, **kw):
+    """@メンションなし発言のルーティングを判定（AI(_plan)前の決定的ルートのみ）。
+    ROUTE_RULES を上から順に見て、最初に決まった行き先を返す。
+    どれにも当たらなければ None（＝AI判定へ）。
+    どの規則が拾ったかは _route_hit で分かる（誤爆の調査用）。"""
+    ctx = RouteCtx(content, **kw)
+    for name, rule in ROUTE_RULES:
+        route = rule(ctx)
+        if route is None:
+            continue
+        _route_hit["name"] = name
+        return None if route is STOP_CHAT or route == STOP_CHAT else route
+    _route_hit["name"] = ""
     return None  # 決定的ルートに該当せず → AI(_plan)へ
+
+
+_route_hit = {"name": ""}      # 直前の発言を拾った規則の名前（調査用）
 
 
 _PLAN_REPLY_SEP = "---REPLY---"
@@ -9699,7 +9838,10 @@ async def _dispatch_message(message):
     pm = _pending_motion.get(cid)
     if route is None and pm and _video_att and time.time() - pm["ts"] < 900:
         route = "motion"
-    _fired(cid, route or "会話", content)
+    # どの規則が拾ったかも一緒に残す。誤爆の調査で「どのif文か」を
+    # 人力で追う必要がなくなる（段階2でルールを表にしたことの効果）。
+    _hit = _route_hit.get("name") or ""
+    _fired(cid, f"{route or '会話'}（{_hit}）" if _hit else (route or "会話"), content)
 
     if route == "status":
         # 進行中も完成物も無ければ状態確認に入らず、普通の会話として続行する
