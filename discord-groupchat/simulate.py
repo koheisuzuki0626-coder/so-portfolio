@@ -2255,6 +2255,44 @@ async def run():
               _pl9.Path(bot.__file__).parent / "history"),
           str(bot.HISTORY_DIR))
 
+    print("■ 雑談では校閲しない（速さのため）")
+    # 校閲はGeminiを1回、直しが要ればクロードをもう1回呼ぶ。
+    # 毎回やると雑談の返事が数秒遅くなるので、間違えると困る話題だけにする。
+    _long = "あ" * 200
+    for _said in ("今日つかれた", "蕎麦美味しかった？", "いい休日だった",
+                  "ありがとう助かった"):
+        check(f"雑談は校閲しない: {_said}",
+              not bot._needs_review(_long, [("kohei", _said)]), True)
+    for _said, _why in (("サムネ作って", "制作"),
+                        ("アップルウォッチの相場は？", "実データ"),
+                        ("ボットが反応しない", "不具合"),
+                        ("クロード3の役割は？", "運用")):
+        check(f"{_why}は校閲する: {_said}",
+              bot._needs_review(_long, [("kohei", _said)]), True)
+    check("長い返事は雑談でも校閲する",
+          bot._needs_review("あ" * 600, [("kohei", "今日つかれた")]), True)
+    check("短い返事は校閲しない",
+          not bot._needs_review("うん", [("kohei", "サムネ作って")]), True)
+    # 実際に呼ばれないこと（Geminiを消費しない）
+    install_stubs()
+    _called = []
+    _keep_rv = bot._gemini_call
+
+    async def _gem_rv(prompt, tag=""):
+        _called.append(tag)
+        return "問題なし"
+    _keep_cool = bot._gemini_all_cooling
+    try:
+        bot._gemini_call = _gem_rv
+        bot._gemini_all_cooling = lambda: False   # 枠切れの影響を受けないように
+        await bot._review_reply(_long, [("kohei", "今日つかれた")])
+        check("雑談ではGeminiを呼ばない", not _called, _called)
+        await bot._review_reply(_long, [("kohei", "サムネ作って")])
+        check("制作の話では校閲が走る", bool(_called), _called)
+    finally:
+        bot._gemini_call = _keep_rv
+        bot._gemini_all_cooling = _keep_cool
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile

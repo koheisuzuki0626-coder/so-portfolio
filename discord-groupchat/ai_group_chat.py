@@ -7472,13 +7472,37 @@ def _register_changed(draft, out):
     return d <= 1 and o >= 3
 
 
+# 雑談では校閲しない（本人の希望）。校閲はGeminiを1回、直しが要れば
+# クロードをもう1回呼ぶので、毎回やると雑談の返事が数秒遅くなる。
+# 間違えると困る話題（制作・運用・実データ）と、長い返事だけ校閲する。
+REVIEW_LONG_CHARS = int(os.getenv("REVIEW_LONG_CHARS", "500"))
+
+
+def _needs_review(draft, history):
+    """この返事に校閲が要るか。要らない雑談で呼ばないための門。"""
+    if not (REVIEW_REPLIES and draft) or len(draft) < REVIEW_MIN_CHARS:
+        return False
+    said = _latest_user_msg(history) or ""
+    # 制作・運用・実データの話は、間違いがそのまま実害になるので校閲する
+    if _PRODUCTION_ASK_RE.search(said) or _PRODUCTION_ASK_RE.search(draft):
+        return True
+    if ops_guide(said) != TALK_RULES:          # ボットの運用の話
+        return True
+    if fact_guide(said):                       # 相場・値段など実データの話
+        return True
+    if _TROUBLE_STRONG_RE.search(said) or _TROUBLE_WEAK_RE.search(said):
+        return True
+    # 話題では拾えなくても、長い返事は間違いが紛れやすいので見てもらう
+    return len(draft) >= REVIEW_LONG_CHARS
+
+
 async def _review_reply(draft, history):
     """クロードの下書きを、Geminiが【校閲】する（書き直させない）。
     以前はGeminiに本文を書き直させていたため、長い返事だけが
     Geminiの敬語・箇条書きに化けて、会話が急に他人行儀になった。
     いまはGeminiは指摘だけを返し、直すのは書いた本人（クロード）。
     指摘が無ければ余計な呼び出しをしないので、速さも落ちない。"""
-    if not (REVIEW_REPLIES and draft) or len(draft) < REVIEW_MIN_CHARS:
+    if not _needs_review(draft, history):
         return draft, False
     if _gemini_all_cooling():
         return draft, False

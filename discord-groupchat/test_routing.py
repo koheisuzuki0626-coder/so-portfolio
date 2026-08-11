@@ -479,7 +479,9 @@ def run():
     import asyncio as _aio7
     _orig_g, _orig_cool = bot._gemini_call, bot._gemini_all_cooling
     _orig_cli = bot.run_claude_cli
-    _h = [("kohei", "これどう思う？")]
+    # 校閲は「間違えると困る話題」だけで走る（雑談では省く）ので、
+    # 仕組みを試すここでは制作の話にしておく
+    _h = [("kohei", "サムネ作って")]
     _draft = "クロードの下書きだよ。" + "y" * 130
 
     async def _notes(prompt, tag="gemini"):
