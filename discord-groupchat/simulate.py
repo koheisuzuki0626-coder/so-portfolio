@@ -94,6 +94,7 @@ import ai_group_chat as bot  # noqa: E402
 # 本物の実装を控えておく（スタブに差し替えたあとでも中身を検証するため）
 _REAL_GEN_IMG = bot._gemini_generate_image_sync
 _REAL_REFINE = bot._refine_prompt
+_REAL_DESIGN = bot._run_design
 
 # 実物の会話ハンドラ（install_stubs で記録用に差し替わる前に退避）。
 # 「判定＋返事の1回化」など、会話ハンドラ本体の挙動を検証するテストで使う。
@@ -1906,6 +1907,58 @@ async def run():
     finally:
         bot.CLARIFY_ON = False
         bot._pending_clarify.clear()
+
+    # --- ㉔ 添付しているのに「添付が見当たりません」（09:09の実例）---
+    #     デザインの経路が参照画像を1枚も渡しておらず、
+    #     しかもプロンプトで外部画像を禁じていたので、写真は絶対に入らなかった。
+    install_stubs()
+    bot._last_ref.clear()
+    _att = types.SimpleNamespace(filename="IMG_1.jpg",
+                                 url="https://example.com/IMG_1.jpg", size=1000)
+    _m = _FakeMessage("このサムネイルに、この男性の写真を入れて欲しい", [_att])
+    _refs = bot._design_refs(_m, "このサムネイルに、この男性の写真を入れて欲しい")
+    check("添付した画像を素材として拾う",
+          "https://example.com/IMG_1.jpg" in _refs, _refs)
+    bot._last_ref.clear()
+    bot._remember_ref(1234, "https://example.com/prev.png")
+    _m2 = _FakeMessage("この写真を入れて")
+    check("直前に送った画像も拾う",
+          "https://example.com/prev.png" in bot._design_refs(_m2, "この写真を入れて"),
+          bot._design_refs(_m2, "この写真を入れて"))
+    bot._last_ref.clear()
+    # 素材が無いのに写真を頼まれたら、2分かけて失敗する前に聞く
+    _keep24 = bot._run_claude_exec
+    _called24 = []
+
+    async def _exec24(task, timeout=600, model=None):
+        _called24.append(task)
+        return "URL: https://example.com/out.png"
+    try:
+        bot._run_claude_exec = _exec24
+        bot._load_last_gen = lambda cid: None
+        _ch24 = _CHANNELS.setdefault(1234, _FakeChannel(1234))
+        _ch24.sent.clear()
+        await _REAL_DESIGN(_FakeMessage("この男性の写真を入れて"),
+                           "この男性の写真を入れて")
+        check("素材が無ければ作る前に聞く",
+              any("使う写真が見つかりません" in t for t in _ch24.sent), _ch24.sent)
+        check("素材が無いまま書き出しに行かない", not _called24, _called24)
+        # 素材があれば、その画像を使うよう指示に入れる
+        _called24.clear()
+        _ch24.sent.clear()
+        bot._remember_ref(1234, "https://example.com/IMG_1.jpg")
+        await _REAL_DESIGN(_FakeMessage("この男性の写真を入れて"),
+                           "この男性の写真を入れて")
+        check("素材があれば書き出しに進む", bool(_called24), _called24)
+        check("画像のURLを指示に入れる",
+              _called24 and "https://example.com/IMG_1.jpg" in _called24[0],
+              (_called24[0][:200] if _called24 else ""))
+        check("先に落としてから使わせる",
+              _called24 and "curl" in _called24[0] and "【使う画像】" in _called24[0],
+              "")
+    finally:
+        bot._run_claude_exec = _keep24
+        bot._last_ref.clear()
 
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()

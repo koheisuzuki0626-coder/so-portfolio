@@ -6386,9 +6386,44 @@ DESIGN_CRAFT_RULES = (
 )
 
 
+# 「この写真を入れて」に使う画像を集めるための語。
+# 事故：添付しているのに「今回のメッセージに添付が見当たりません」と返した。
+# 参照画像を一切渡していなかったうえ、プロンプトで外部画像を禁じていた。
+_DESIGN_PHOTO_RE = re.compile(
+    "写真|画像|人物|この人|この男性|この女性|顔|素材|組み込|入れて|合成|載せて")
+
+
+def _design_refs(message, request):
+    """デザインに使う画像URLを集める（添付 → 直前の画像 → 直前の作品）。"""
+    urls = []
+    for att in getattr(message, "attachments", None) or []:
+        if Path(getattr(att, "filename", "")).suffix.lower() in SUPPORTED_IMAGE_TYPES:
+            urls.append(att.url)
+    ref = _recent_ref(message.channel.id)
+    if ref and ref not in urls:
+        urls.append(ref)
+    # 「このサムネイルに〜」なら、直前に作ったデザインも素材として渡す
+    if re.search("このサムネ|この画像|さっきの|前の|今の", request or ""):
+        prev = (_load_last_gen(message.channel.id) or {}).get("url") or ""
+        if prev and prev not in urls:
+            urls.append(prev)
+    return urls[:4]
+
+
 async def _run_design(message, request):
     """ClaudeがHTMLでデザインを組み、サンドボックスでPNGに書き出して返す。"""
     cid = message.channel.id
+    refs = _design_refs(message, request)
+    # 写真を入れてほしいのに素材が無いなら、2分かけて失敗する前に聞く。
+    if not refs and _DESIGN_PHOTO_RE.search(request or ""):
+        await send_as(
+            orch, cid,
+            "🖼 **使う写真が見つかりません。**\n"
+            "このチャンネルに写真を添付して、もう一度同じ言い方で頼んでください"
+            "（直前に送った写真があればそれも使えます）。"
+        )
+        _set_pending_do(cid, "使う写真", request)
+        return
     w, h, label = _design_size(request)
     await send_as(
         orch, cid,
@@ -6429,7 +6464,14 @@ async def _run_design(message, request):
         "4) media_confirm で確定して公開URLを得る\n"
         "※HTMLは自己完結（外部CDN・外部画像を使わない）。"
         f"body と .canvas は {w}x{h}px 固定、margin:0、overflow:hidden。\n"
-        "※やり直しが必要なときも、1回の sandbox_exec にまとめ直すこと。\n\n"
+        + ("【使う画像】次のURLの画像を素材として使うこと。"
+           "同じ sandbox_exec の中で curl -sL で ~/img1.jpg のように落としてから、"
+           "<img src=\"/home/user/img1.jpg\"> のようにローカルのパスで参照する"
+           "（外からの読み込みは禁止だが、この素材だけは先に落として使う）。"
+           "人物写真は object-fit: cover で切り抜き、顔が切れないように配置する。\n"
+           + "".join(f"  画像{i + 1}: {u}\n" for i, u in enumerate(refs))
+           if refs else "")
+        + "※やり直しが必要なときも、1回の sandbox_exec にまとめ直すこと。\n\n"
         # JSの波括弧があるので format ではなく置換で埋める
         + DESIGN_SETUP_SNIPPET.replace("WIDTH", str(w)).replace("HEIGHT", str(h))
                               .replace("SCALE", str(DESIGN_SCALE))
