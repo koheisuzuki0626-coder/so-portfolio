@@ -2164,6 +2164,54 @@ async def run():
           "嫉妬ガエル" in bot._request_with_context("クロードで作って", 1234),
           bot._request_with_context("クロードで作って", 1234)[:60])
 
+    # --- ㉚ 「/memory」で、ありもしないメモリ4件を並べた（11:17の実例）---
+    #     続く「/clear」には「メモリをクリアしました」。このボットに
+    #     記憶の保存・消去の機能は無い。会話に流すとAIが中身を作り話す。
+    install_stubs()
+    bot._load_last_gen = lambda cid: None
+    _r30 = await drive("/memory")
+    check("無いコマンドは、無いと答える",
+          any("コマンドではありません" in _s for _s in _r30["sent"]),
+          f"sent={_r30['sent']}")
+    check("記憶の中身を作り話しない",
+          not any("メモリ内容" in _s or "記憶していること" in _s
+                  for _s in _r30["sent"]), f"sent={_r30['sent']}")
+    check("会話やAIに渡さない", "chat" not in FIRED and "plan" not in FIRED,
+          f"fired={FIRED}")
+    _r30b = await drive("/clear")
+    check("消したとも言わない",
+          not any("クリアしました" in _s or "消しました" in _s
+                  for _s in _r30b["sent"]), f"sent={_r30b['sent']}")
+    # 守りを広げすぎていないか：本物のコマンドは「/」でも動く
+    install_stubs()
+    _r30c = await drive("/cancel")
+    check("実在するコマンドは「/」でも動く",
+          not any("コマンドではありません" in _s for _s in _r30c["sent"]),
+          f"sent={_r30c['sent']}")
+
+    # --- ㉛ 英訳が前置きだけ返って失敗していた（08-12 に3回）---
+    #     「このタスクは内部からの依頼なので、そのまま出力します。」だけが
+    #     返り、日本語のまま生成に投げていた。素の頼み方で1回だけ聞き直す。
+    install_stubs()
+    _tries = []
+
+    async def _flaky(ask, tag="", **kw):
+        _tries.append(ask)
+        if len(_tries) == 1:
+            return "このタスクは内部からの依頼なので、そのまま出力します。"
+        return "a photorealistic portrait of a man, soft window light, 85mm"
+
+    _keep_bg = bot._ai_text_bg
+    try:
+        bot._ai_text_bg = _flaky
+        _got = await _REAL_REFINE("笑ってる男の人の写真", "image")
+        check("聞き直して英語プロンプトを取れる",
+              "photorealistic" in _got, _got[:60])
+        check("日本語のまま投げない", "笑ってる" not in _got, _got[:60])
+        check("聞き直しは1回だけ", len(_tries) == 2, len(_tries))
+    finally:
+        bot._ai_text_bg = _keep_bg
+
     print("■ Agent と Model Registry（段階1）")
     # 「どちらのAIが今使えるか」の判断を1か所に集めた。
     # これまでは上限・枠切れの対処があちこちにあり、食い違っていた。

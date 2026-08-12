@@ -5445,6 +5445,15 @@ def _r_sharelog(c):
         return "sharelog"
 
 
+# 「いくら稼げる？」は【入ってくる金】の話。こちらの残高や1本の費用を
+# 見ても答えは出ない。実際に「aiでの動画生成で稼ぐとして、いくら稼げるかな？」
+# が料金照会に流れ、Higgsfieldの残クレジット12.48が返ってきて話が止まった。
+# 出ていく金（費用・上限）と、入ってくる金（収益）を分ける。
+_INCOME_Q_RE = re.compile(
+    "稼[げぐいご]|儲[かけ]|収益|収入|売上|売り上げ|利益|粗利|採算|"
+    "年収|月収|報酬|ペイする|元が取れ|ビジネスに?なる")
+
+
 def _r_credits(c):
     """料金・残クレジット・上限の照会（作らずに実データを調べて答える）。
     「クレジット」「残高」はそれだけでHiggsfieldの話だが、「プラン」「料金」は
@@ -5463,6 +5472,9 @@ def _r_credits(c):
                           or re.search(
                               "生成|動画|映像|画像|イラスト|higgsfield|ヒッグス",
                               c.text, re.I))))):
+        # 収益の話は手元のデータでは答えられない。会話で相談に乗る。
+        if _INCOME_Q_RE.search(c.text):
+            return STOP_CHAT
         return "credits"
 
 
@@ -6322,6 +6334,17 @@ def _refine_fail_note():
     )
 
 
+def _pick_english_line(out, request):
+    """返答から英語のプロンプト行を選ぶ。先頭行を無条件に採るとCLIの前置きが
+    そのまま入る。実際に「このタスクはDiscordボット内部からの依頼(claude -p
+    呼び出し)で…」が画像プロンプトとして投入された。"""
+    for ln in (out or "").splitlines():
+        ln = ln.strip().strip('"' + "'`")
+        if len(ln) >= 15 and _looks_english_prompt(ln):
+            return _clean_tool_words(ln, request)
+    return ""
+
+
 async def _refine_prompt(request, media_type, style="", has_ref=False):
     """日本語の依頼（会話文含む）を、具体的な英語の映像/画像生成プロンプトに変換。
     既に英語プロンプトならそのまま返す。生成物が『全然違う』のを防ぐ核心工程。
@@ -6359,13 +6382,23 @@ async def _refine_prompt(request, media_type, style="", has_ref=False):
     _refine_fail["why"] = ""
     try:
         out = _strip_cli_boilerplate((await _ai_text_bg(ask, "refine_prompt")).strip())
-        # 先頭行を無条件に採るとCLIの前置きがそのまま入る。実際に
-        # 「このタスクはDiscordボット内部からの依頼(claude -p呼び出し)で…」
-        # が画像プロンプトとして投入された。英語の描写になっている行を選ぶ。
-        for ln in out.splitlines():
-            ln = ln.strip().strip('"' + "'`")
-            if len(ln) >= 15 and _looks_english_prompt(ln):
-                return _clean_tool_words(ln, request)
+        got = _pick_english_line(out, request)
+        if got:
+            return got
+        # 前置きしか返らないことがある（実例：08-12 に3回、
+        # 「このタスクは内部からの依頼なので、そのまま出力します。」だけ）。
+        # 事情の説明を全部落とした素の頼み方で、もう一度だけ聞く。
+        # ここで通れば、原文のまま投げて出来上がりがずれるのを避けられる。
+        bare = (f"Translate into one English {kind} generation prompt. "
+                "Output only the prompt: one line, comma separated, "
+                "no explanation, no quotes.\n"
+                f"{request}")
+        out2 = _strip_cli_boilerplate(
+            (await _ai_text_bg(bare, "refine_prompt_retry")).strip())
+        got = _pick_english_line(out2, request)
+        if got:
+            print("[refine_prompt] 1回目は前置きだけ。素の頼み方で通った")
+            return got
         _refine_fail["why"] = f"返答が英語のプロンプトではありませんでした: {out[:120]}"
         print(f"[refine_prompt] 英語プロンプトが得られず原文使用: {out[:120]}")
         _log_error("プロンプトの英訳", RuntimeError(_refine_fail["why"]))
@@ -9895,6 +9928,22 @@ _COMMANDS = {
     "!talk": _cmd_talk,
 }
 
+# 「/」で始まるコマンド名の形（「/Users/...」やURLを巻き込まないため）
+_SLASH_CMD_RE = re.compile(r"/[A-Za-z][\w-]{0,20}$")
+
+
+def _no_slash_note(cmd):
+    """「/xxx」への返事。手元の表にある名前だけを挙げ、無いものは無いと言う。
+    会話に流すと、AIが【存在しない機能】の中身を作り話す。実際に「/memory」で
+    ありもしないメモリ4件を並べ、「/clear」に『メモリをクリアしました』と
+    答えた（08-12 11:17〜11:20）。このボットに記憶の保存・消去の機能は無い。"""
+    names = " ".join(sorted(_COMMANDS) + ["!stop", "!restart"])
+    return (f"`{cmd}` はこのボットのコマンドではありません。"
+            "（`/memory` `/clear` は Claude Code のもので、"
+            "このボットに記憶の保存や消去の機能はありません）\n"
+            f"記号で使えるのは {names} だけです。"
+            "ほかは、ふつうの言葉で頼んでもらえればそのまま動きます。")
+
 
 async def _dispatch_message(message):
     content = message.content.strip()
@@ -10175,6 +10224,19 @@ async def _dispatch_message(message):
             "（いま確認待ちです。開始するなら「**OK**」、やめるなら「**やめて**」と"
             "送ってください。別の内容を頼みたい場合はそのまま言ってもらえれば切り替えます）"
         )
+
+    # 「/memory」「/clear」と打つのは Claude Code の癖。表にある名前だけ
+    # 「!」に読み替え、無い名前は【無いと答える】。会話に流すと、AIが
+    # 存在しない機能の中身を作り話して答えてしまう（_no_slash_note 参照）。
+    if content.startswith("/"):
+        _sl, _, _sarg = content.partition(" ")
+        _bang = "!" + _sl[1:].lower()
+        if _bang in _COMMANDS or _bang in ("!stop", "!restart"):
+            content = f"{_bang} {_sarg}".strip()
+        elif _SLASH_CMD_RE.match(_sl):
+            _fired(cid, "コマンド無し(/)", content)
+            await message.channel.send(_no_slash_note(_sl))
+            return
 
     if content == "!stop" or _is_stop_phrase(content):
         _fired(cid, "停止", content)

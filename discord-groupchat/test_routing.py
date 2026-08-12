@@ -1491,6 +1491,34 @@ def run():
     for _t in ("制限速度って何キロ？", "上司の制限がきつい"):
         check(f"{_t!r} は普通の会話", bot.classify_route(_t), None)
 
+    print("■ 出ていく金（費用）と入ってくる金（収益）を分ける")
+    # 実例：「aiでの動画生成で稼ぐとして、いくら稼げるかな？」が料金照会に流れ、
+    # Higgsfieldの残クレジット12.48が返ってきて相談が止まった（08-12 11:52）。
+    for _t in ("aiでの動画生成で稼ぐとして、いくら稼げるかな？",
+               "動画制作で儲かるのかな", "この事業って採算取れる？",
+               "AI動画で月いくら売上立つと思う？", "動画で収益出せる？"):
+        check(f"{_t!r} は相談として会話", bot.classify_route(_t), None)
+    # 費用の側は今まで通り実データで答える（守りを広げすぎていないか）
+    for _t, _w in (("クロードとヒッグスフィールドで動画1本あたりの値段は？", "credits"),
+                   ("veo3の生成っていくらかかる？", "credits"),
+                   ("画像生成の費用はいくら？", "credits")):
+        check(f"{_t!r} は実データで答える", bot.classify_route(_t), _w)
+
+    print("■ 「/」コマンドは、無いものは無いと答える")
+    # 実例：「/memory」に、ありもしないメモリ4件を並べて答え、「/clear」に
+    # 「メモリをクリアしました」と答えた（08-12 11:17〜11:20）。
+    # このボットに記憶の保存・消去の機能は無い。会話に流すとAIが作り話す。
+    check("コマンド名の形だけ拾う", bool(bot._SLASH_CMD_RE.match("/memory")), True)
+    check("パスは拾わない", bool(bot._SLASH_CMD_RE.match("/Users/kohei/x")), False)
+    check("日本語の書き出しは拾わない",
+          bool(bot._SLASH_CMD_RE.match("/画像作って")), False)
+    _note = bot._no_slash_note("/memory")
+    check("無いと言う", "ありません" in _note, True)
+    check("記憶の機能が無いと明言する", "記憶" in _note, True)
+    check("実在するコマンドだけ挙げる", "!stop" in _note and "!talk" in _note, True)
+    check("存在しないコマンドを挙げない",
+          "/memory" not in _note.split("記号で使えるのは")[-1], True)
+
     print("■ Router のテーブル（段階2）")
     # 41個のif文を宣言的な表にした。表の並び順がそのまま優先順位。
     check("規則が表になっている", len(bot.ROUTE_RULES) >= 20, True)
