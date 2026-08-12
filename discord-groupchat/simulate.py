@@ -236,6 +236,8 @@ def install_stubs(mcp_url=None):
     bot._run_design = _rec("design")
     bot._analyze_my_channel = _rec("ch_stats")
     bot._run_multi_view = _rec("multiview")
+    globals().setdefault("_REAL_RUN_SHEET", bot._run_sheet)
+    bot._run_sheet = _rec("sheet")
 
     async def _insp(req, url, mt="image"):
         return True, ""
@@ -684,6 +686,61 @@ async def run():
     check("返事なし→従来の回答フェーズで応答",
           any("claude回答" in s for s in r["sent"]), f"sent={r['sent']}")
     check("フォールバックでも例外なし", r["err"] is None, f"{r['err']}")
+
+    # ===== ②-c 実際に壊れた会話：Excelが4回とも会話に落ちた =====
+    print("■ E2E: 「構成案エクセルで」（実際に壊れた会話の再現）")
+    # 08-13 の実ログ。04:50/04:52/04:53/05:06 の4回とも会話に落ち、
+    # そのうえ「了解。構成案を Excel でまとめます。」と答えていた。
+    # 機能そのものが無かったため、待っても何も出てこなかった。
+    async def _ai_kind(kind):
+        async def _f(prompt, tag="x", **kw):
+            return ('{"kind":"%s","mode":"single","lead":"claude",'
+                    '"search":false,"recall":false}' % kind)
+        return _f
+
+    install_stubs()
+    bot._handle_orchestrator = _HANDLE_ORCH
+    bot._ai_text = await _ai_kind("sheet")
+    r = await drive("この構成案をエクセルでまとめて")
+    check("頼まれたらExcelの作成が走る", "sheet" in r["fired"], f"{r['fired']}")
+    check("例外なし", r["err"] is None, f"{r['err']}")
+    _c = last_call("sheet")
+    check("依頼文がそのまま渡る",
+          _c and "エクセル" in str(_c[0][1]), f"{_c[0] if _c else None}")
+
+    # 省略形（体言止め）でも通ること。_wants_action は依頼の形を見るので
+    # False になるが、sheet は ACT_ROUTES に入れていないので通る。
+    install_stubs()
+    bot._handle_orchestrator = _HANDLE_ORCH
+    bot._ai_text = await _ai_kind("sheet")
+    r = await drive("構成案エクセルで")
+    check("省略形『構成案エクセルで』でも走る", "sheet" in r["fired"], f"{r['fired']}")
+    check("省略形でも依頼の形を要求しない",
+          not bot._wants_action("構成案エクセルで"), "＝ACT_ROUTESに入れていない")
+
+    # 可否の質問では作り始めない（会話で答える）
+    install_stubs()
+    bot._handle_orchestrator = _HANDLE_ORCH
+    bot._ai_text = await _ai_kind("sheet")
+    r = await drive("構成案ってエクセルで出せたりするの？")
+    check("可否の質問では作り始めない", "sheet" not in r["fired"], f"{r['fired']}")
+
+    # 中身が無ければ空ファイルを置かず、できたと言わない
+    install_stubs()
+    _keep_rows, _keep_send = bot._sheet_rows, bot.send_as
+
+    async def _no_rows(request, history):
+        return "", "", [["見出しだけ"]]     # 見出し1行＝データが無い
+    try:
+        bot._sheet_rows = _no_rows
+        bot.send_as = _rec_str("send_as", "")
+        # install_stubs が差し替える前の【本物】を呼ぶ
+        await _REAL_RUN_SHEET(1234, "エクセルで", [("kohei", "エクセルで")])
+        _sa = last_call("send_as")
+        check("中身が無ければ警告して作らない",
+              _sa and "見つかりません" in str(_sa[0][2]), f"{_sa[0] if _sa else None}")
+    finally:
+        bot._sheet_rows, bot.send_as = _keep_rows, _keep_send
 
     # ===== ③ ストレス：異常・境界入力で例外が漏れないこと =====
     print("■ E2E: ストレス（例外ゼロ）")

@@ -3077,6 +3077,159 @@ TREND_REGION = os.getenv("TREND_REGION", "JP")
 TREND_DEEP_COUNT = int(os.getenv("TREND_DEEP_COUNT", "5"))  # 実際に視聴する本数/日
 TREND_MAX_MINUTES = int(os.getenv("TREND_MAX_MINUTES", "20"))  # これより長い動画は視聴しない
 
+# ---------- 表を作る（Excel）----------
+# 事故：「構成案エクセルで」が4回とも会話に落ち、そのうえ
+# 「了解。構成案を Excel でまとめます。」と答えていた（実際には何も作っていない）。
+# 原因は単純で、Excelを作る機能そのものが無かった。
+# 置き場は so-portfolio/projects/<案件>/ 。Gitで追跡するので、
+# 入院中でもスマホのGitHubから読めるし、Macが落ちても消えない。
+PROJECTS_DIR = Path(os.getenv(
+    "PROJECTS_DIR", os.path.abspath(os.path.join(_BASE, "..", "projects"))))
+SHEET_MAX_ROWS = int(os.getenv("SHEET_MAX_ROWS", "200"))
+SHEET_MAX_COLS = int(os.getenv("SHEET_MAX_COLS", "20"))
+
+
+def _sheet_slug(name, default="untitled"):
+    """案件名をフォルダ名に使える形にする。日本語はそのまま残す
+    （英語に直すとユーザーが自分の案件を見つけられない）。"""
+    s = re.sub(r'[\\/:*?"<>|\s]+', "-", (name or "").strip())
+    s = re.sub(r"-{2,}", "-", s).strip("-.")
+    return s[:60] or default
+
+
+def _rows_from_tsv(text):
+    """AIの出力（TSV）を行列にする。表以外の前置きが混ざっても拾えるよう、
+    タブを含む行だけを採る。列数は最も多い行に合わせて揃える。"""
+    rows = []
+    for ln in (text or "").splitlines():
+        ln = ln.rstrip()
+        if not ln or "\t" not in ln:
+            continue
+        # Markdownの表を貼ってきた時の飾りを落とす
+        if set(ln.replace("\t", "").replace(" ", "")) <= {"-", "|", ":"}:
+            continue
+        cells = [c.strip().strip("|").strip() for c in ln.split("\t")]
+        rows.append(cells[:SHEET_MAX_COLS])
+        if len(rows) >= SHEET_MAX_ROWS:
+            break
+    width = max((len(r) for r in rows), default=0)
+    return [r + [""] * (width - len(r)) for r in rows]
+
+
+def _write_xlsx(rows, path, title="Sheet1"):
+    """行列を .xlsx に書き出す。列幅は中身に合わせて広げる
+    （既定のままだと日本語が全部潰れて、開いた瞬間に読めない）。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = (title or "Sheet1")[:31]
+    for r in rows:
+        ws.append(r)
+    if rows:
+        for c in ws[1]:                      # 1行目は見出しとして固める
+            c.font = Font(bold=True)
+            c.fill = PatternFill("solid", fgColor="DDEBF7")
+        ws.freeze_panes = "A2"
+    for i in range(1, (len(rows[0]) if rows else 0) + 1):
+        letter = ws.cell(row=1, column=i).column_letter
+        # 全角は2文字分として数える
+        width = max(
+            (sum(2 if ord(ch) > 0x2E80 else 1 for ch in str(r[i - 1] or ""))
+             for r in rows), default=8)
+        ws.column_dimensions[letter].width = min(max(width + 2, 8), 60)
+        for cell in ws[letter]:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+    return path
+
+
+_SHEET_SEP = "---表---"
+_SHEET_META_RE = re.compile(r"^(案件|表題)\s*[:：]\s*(.+)$")
+
+
+async def _sheet_rows(request, history):
+    """会話の中身を表にする。列や行はこちらで決めずAIに組ませる
+    （案件ごとに要る列が違う）。返り値: (案件名, 表題, 行列)。"""
+    ask = (
+        "次の依頼に沿って、これまでの会話の内容を【表】にまとめて。\n"
+        "出力の形式（この通りに。前置きや説明は書かない）:\n"
+        "案件: <フォルダ名に使う短い案件名>\n"
+        "表題: <ファイル名に使う短い表題>\n"
+        f"{_SHEET_SEP}\n"
+        "<1行目が見出し。2行目以降がデータ。セルの区切りは【タブ文字】>\n\n"
+        "決まり: 区切りはタブのみ（カンマや | で区切らない）。"
+        "セルの中で改行しない。見出しは短く。"
+        "会話に出ている情報だけを使い、無い数字や事実を作らない。\n\n"
+        f"依頼: {request}\n\n"
+        + transcript_block(history)
+    )
+    raw = await _ai_text(ask, "sheet")
+    head, sep, body = (raw or "").partition(_SHEET_SEP)
+    meta = {}
+    for ln in head.splitlines():
+        m = _SHEET_META_RE.match(ln.strip())
+        if m:
+            meta[m.group(1)] = m.group(2).strip()
+    # 区切りが無くても、タブを含む行だけ拾えば表は取れる（諦めない）
+    return (meta.get("案件", ""), meta.get("表題", ""),
+            _rows_from_tsv(body if sep else raw))
+
+
+async def _save_to_github(path, note):
+    """成果物をGitHubへ。Macが落ちても消えず、スマホからも読めるようにする。
+    自分で push した分は HEAD に含まれるので、自動更新の再起動は誘発しない。"""
+    rc, out = await _git_self(["add", "--", str(path)])
+    if rc != 0:
+        return f"\n※GitHubへの保存に失敗しました（手元には有ります）: {out[:80]}"
+    rc, out = await _git_self(["commit", "-m", note])
+    if rc != 0 and "nothing to commit" not in out and "変更がありません" not in out:
+        return f"\n※GitHubへの保存に失敗しました（手元には有ります）: {out[:80]}"
+    rc, out = await _git_self(["push", "origin", "HEAD"], timeout=180)
+    if rc != 0:
+        return f"\n※手元には保存済みですが、GitHubへの反映は失敗しました: {out[:80]}"
+    return "\n※GitHubにも保存したので、スマホからも見られます。"
+
+
+async def _run_sheet(cid, request, history):
+    """依頼を表にして .xlsx で保存し、Discordに添付して返す。"""
+    try:
+        project, title, rows = await _sheet_rows(request, history)
+    except Exception as e:  # noqa: BLE001
+        _log_error("Excelの作成", e)
+        await send_as(orch, cid, f"⚠️ 表の作成に失敗しました: {str(e)[:200]}")
+        return
+    # 見出しだけ・空＝材料が無い。空ファイルを置いて「できた」と言わない
+    if len(rows) < 2:
+        await send_as(
+            orch, cid,
+            "⚠️ 表にできる中身が会話から見つかりませんでした。"
+            "何をまとめるか（元になる話や項目）を教えてください。")
+        return
+    title = title or "表"
+    path = (PROJECTS_DIR / _sheet_slug(project, "misc")
+            / f"{_sheet_slug(title, 'sheet')}.xlsx")
+    try:
+        await asyncio.to_thread(_write_xlsx, rows, path, title)
+        data = await asyncio.to_thread(path.read_bytes)
+    except Exception as e:  # noqa: BLE001
+        _log_error("Excelの書き出し", e)
+        await send_as(orch, cid, f"⚠️ Excelの書き出しに失敗しました: {str(e)[:200]}")
+        return
+    saved = await _save_to_github(path, f"{title}を作成（Discordから）")
+    rel = os.path.relpath(path, os.path.dirname(PROJECTS_DIR))
+    body = (f"📊 **{title}** を作りました（{len(rows) - 1}行 × {len(rows[0])}列）\n"
+            f"保存先: `{rel}`{saved}")
+    channel = orch.get_channel(cid) or await orch.fetch_channel(cid)
+    await channel.send(
+        body[:1900],
+        file=discord.File(io.BytesIO(data), filename=path.name),
+    )
+    add_history(cid, "Orchestrator", body)
+
+
 INSIGHTS_DIR = Path(os.getenv("INSIGHTS_DIR", os.path.join(_BASE, "insights")))
 INSIGHTS_DIR.mkdir(parents=True, exist_ok=True)
 _ANALYZED_IDS_FILE = INSIGHTS_DIR / "analyzed_ids.txt"
@@ -4893,7 +5046,10 @@ _PLAN_TRIGGER_RE = re.compile(
     "最新|ニュース|調べ|検索|比較|価格|いくら|発売|リリース|"
     "前に|昨日|以前|この前|先週|先月|過去|話した|決めた|約束|"
     "機能|追加|変更|挙動|ボット|bot|自分|きみ|君|あなた|再起動|短く|長く|口調|"
-    "トレンド|急上昇|リサーチ|雑談|会話して|話して|プロフィール|プロファイル"
+    "トレンド|急上昇|リサーチ|雑談|会話して|話して|プロフィール|プロファイル|"
+    # 表・Excel。これが無いと、短い依頼が【AIを呼ぶ前に】雑談へ落ちていた。
+    # 「構成案エクセルで」(8字) が4回とも会話になった原因はここ。
+    "エクセル|ｴｸｾﾙ|excel|xlsx|スプレッドシート|表に|表で|一覧|シート"
 )
 
 
@@ -5866,6 +6022,11 @@ async def _plan(history):
         "『〜系の動画を調べて』。直前の会話がリサーチの流れならその続きもtrend）。"
         "talk=ClaudeとGeminiだけで自動会話させる依頼（例:『二人で雑談して』）。"
         "profile=学習済みの人物プロファイルを見たい（例:『プロフィール見せて』）。"
+        "sheet=会話の内容をExcel・表・一覧にまとめてほしい依頼"
+        "（例:『構成案エクセルで』『さっきの表をExcelにして』『一覧で出して』）。"
+        "言い切らずに『エクセルで』『表で』とだけ言う省略形も、"
+        "直前に表やまとめの話が出ていればsheet。"
+        "ただし『エクセルで出せるの？』のような可否の質問はchat。"
         "exec=ボット以外のファイルやコードを作成・編集・削除、コマンド実行する"
         "明確な作業指示（例:『server.pyのバグを直して』）。"
         "video=あなたに新しく動画・映像・CM・PVを【制作】してほしい依頼"
@@ -5913,7 +6074,7 @@ async def _plan(history):
         d = json.loads(m.group(0)) if m else {}
         if d.get("kind") in (
             "chat", "exec", "video", "image", "selffix", "restart",
-            "trend", "talk", "profile",
+            "trend", "talk", "profile", "sheet",
         ):
             kind = d["kind"]
         # 依頼の形をしていない発言は、AIが何と言おうと会話に戻す。
@@ -8280,7 +8441,9 @@ async def _handle_orchestrator(message, cid):
         plan_engine = _last_engine.get("name") or CLAUDE2_NAME
     # 保険：質問や相談っぽい発言が作業系に誤分類されたらchatに戻す。
     # video/image も対象（「veo3の料金いくら？」で生成が始まる事故があった）。
-    if kind in ("selffix", "exec", "video", "image") and _looks_like_question(latest):
+    # sheet も対象。「エクセルで出せるの？」は可否の質問なので作り始めない
+    if kind in ("selffix", "exec", "video", "image",
+                "sheet") and _looks_like_question(latest):
         print(f"[plan] {kind}→chat に降格（質問/相談と判断）")
         kind, reply = "chat", ""   # 降格時の返事は無いので通常の回答フェーズへ
     # 判定と同時に返事も書けていれば、追加のAI呼び出しをせずそのまま返す（最速）
@@ -8356,6 +8519,13 @@ async def _handle_orchestrator(message, cid):
         return
     if kind == "profile":
         await _cmd_profile(message, cid, "")
+        return
+    if kind == "sheet":
+        # 確認ダイアログは挟まない。クレジットを使わず・コードも触らず・
+        # すぐ終わる（＝ACT_ROUTES の「勝手に始まると困る」に当たらない）。
+        # 逆に確認を挟むと、省略形の「エクセルで」が毎回1往復増えて煩わしい。
+        _spawn(_run_sheet(cid, _latest_user_msg(history), history),
+               cid, "Excelの作成")
         return
 
     # 通常会話（承認ダイアログは出さない）

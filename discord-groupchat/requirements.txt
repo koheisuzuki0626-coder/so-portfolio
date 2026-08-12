@@ -4,3 +4,4 @@ python-dotenv>=1.0
 higgsfield_client>=0.1
 ddgs>=6.0
 aiohttp>=3.8
+openpyxl>=3.1

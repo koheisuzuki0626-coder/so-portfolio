@@ -626,6 +626,42 @@ def run():
         bot._gemini_all_cooling, bot.run_claude_cli = _orig_cool2, _orig_cli2
         bot.gen_settings["casual_lead"] = _kl2
 
+    print("■ Excelを作る（無い機能を「ある」ことにしない）")
+    # 事故：「構成案エクセルで」が4回とも会話に落ち、そのうえ
+    # 「了解。構成案を Excel でまとめます。」と答えていた（何も作っていない）。
+    # 原因は Excel を作る機能が無かったこと。
+    check("表の解析はタブ区切りだけ拾う（前置きが混ざっても）",
+          bot._rows_from_tsv("説明文です\nA\tB\n1\t2"), [["A", "B"], ["1", "2"]])
+    check("Markdownの飾り行は落とす",
+          bot._rows_from_tsv("A\tB\n---\t---\n1\t2"), [["A", "B"], ["1", "2"]])
+    check("列数が欠けた行も揃える",
+          bot._rows_from_tsv("A\tB\tC\n1\t2"), [["A", "B", "C"], ["1", "2", ""]])
+    check("表が無ければ空を返す（空ファイルを作らせない）",
+          bot._rows_from_tsv("タブがひとつも無い文章"), [])
+    check("案件名は日本語のまま残す（英訳して見失わせない）",
+          bot._sheet_slug("スキンケアPV 案件"), "スキンケアPV-案件")
+    check("フォルダ名に使えない字は落とす",
+          bot._sheet_slug("a/b:c*d?"), "a-b-c-d")
+    check("空なら既定名にする", bot._sheet_slug("", "misc"), "misc")
+    # 実際に .xlsx として開けること（拡張子だけ合わせて中身が壊れている事故を防ぐ）
+    import tempfile as _tf, pathlib as _pl
+    _xp = _pl.Path(_tf.mkdtemp()) / "t.xlsx"
+    bot._write_xlsx([["見出し", "値"], ["あ", "1"]], _xp, "試験")
+    try:
+        from openpyxl import load_workbook as _lw
+        _ws = _lw(_xp).active
+        check("Excelとして開ける", [c.value for c in _ws[1]], ["見出し", "値"])
+        check("見出しは固定して読みやすくする", _ws.freeze_panes, "A2")
+        check("日本語が潰れない列幅にする",
+              _ws.column_dimensions["A"].width >= 8, True)
+    except ImportError:
+        check("openpyxl が入っている（requirements.txt）", False, True)
+    # 可否の質問で作り始めない（「エクセルで出せるの？」で走った事故の予防）
+    check("可否の質問は作業にしない",
+          bot._looks_like_question("構成案ってエクセルで出せたりするの？"), True)
+    check("頼まれた形なら質問扱いにしない",
+          bot._looks_like_question("この構成案をエクセルでまとめて"), False)
+
     print("■ 消えたモデルIDは恒久的に外す（テキスト側）")
     # 本番で gemini-2.0-flash / -lite が404になったが、テキスト側は
     # mark_quota（30分クールダウン）扱いだったため、永久に叩き直していた。
