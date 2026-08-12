@@ -2387,6 +2387,52 @@ async def run():
         bot.NOTES = _keepn
         bot._push_paths = _keep_push
 
+    print("■ 記録の有無は、推測せずファイルを見て答える")
+    # 事故：実際には保存済みなのに「追記される予定です」と曖昧に答え、
+    # しかも本人に手で貼り直させようとした（自分のファイルを見れば分かること）。
+    for _t in ("ミュージック・ビデオの演出例は参考になるようにどっかにメモしてある？",
+               "YouTubeリサーチのデータは蓄積されてる？"):
+        check(f"記録の有無の質問: {_t[:16]}…", bot._asks_note_state(_t), True)
+    for _t in ("これまでのとこれからのやつ全部保存しといて",
+               "過去のリサーチも全部知見に入れて"):
+        check(f"過去ぶんの取り込み: {_t[:16]}…", bot._asks_backfill(_t), True)
+    for _t in ("今日の予定メモしてある？", "動画作って", "記録して テスト"):
+        check(f"巻き込まない: {_t}",
+              not bot._asks_note_state(_t) and not bot._asks_backfill(_t), True)
+    # 過去のリサーチを会話ログから拾って取り込む（二重に入れない）
+    import tempfile as _tfb, pathlib as _plb, json as _jsb, time as _tmb
+    _tmpb = _plb.Path(_tfb.mkdtemp())
+    _keepb, _keep_hist = dict(bot.NOTES), bot.HISTORY_DIR
+    _keep_pushb = bot._push_paths
+    try:
+        bot.NOTES = dict(bot.NOTES)
+        bot.NOTES["insight"] = (_tmpb / "youtube_insights.md", "YouTube知見")
+        bot.HISTORY_DIR = _tmpb
+
+        async def _no_push2(paths, msg):
+            return True, ""
+        bot._push_paths = _no_push2
+        _src = _tmpb / "555.jsonl"
+        _src.write_text("\n".join(
+            _jsb.dumps({"t": _tmb.time(), "speaker": "🎬映像リサーチ",
+                        "text": f"（YouTubeリサーチ 8/{d}）" + "本文" * 60},
+                       ensure_ascii=False) for d in (10, 11, 12)
+        ) + "\n" + _jsb.dumps({"t": _tmb.time(), "speaker": "kohei",
+                               "text": "これは普通の発言"},
+                              ensure_ascii=False), encoding="utf-8")
+        _n = bot._backfill_insights_sync(555)
+        check("過去のリサーチを取り込む", _n == 3, _n)
+        check("普通の発言は取り込まない",
+              "普通の発言" not in bot.NOTES["insight"][0].read_text(encoding="utf-8"),
+              True)
+        check("二度目は増やさない", bot._backfill_insights_sync(555) == 0, True)
+        _msg = await bot._run_backfill_insights(555)
+        check("増えなければそう言う", "すでに全部" in _msg, _msg[:50])
+    finally:
+        bot.NOTES = _keepb
+        bot.HISTORY_DIR = _keep_hist
+        bot._push_paths = _keep_pushb
+
     print("■ E2E: 例外ガード（沈黙失敗の防止）")
     install_stubs()
     import tempfile

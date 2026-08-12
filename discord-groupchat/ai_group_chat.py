@@ -1055,6 +1055,91 @@ def _read_note(kind, n=5):
     return "\n".join(out)
 
 
+RESEARCH_SPEAKER = "🎬映像リサーチ"
+
+
+def _backfill_insights_sync(cid):
+    """過去のリサーチ結果を、会話ログから知見ファイルへ移す。
+    自動保存を入れる前のぶんは会話ログに散らばったままなので、
+    「これまでのぶんも全部保存して」で拾い直せるようにする。
+    すでに入っているものは二重に書かない。"""
+    path, _title = NOTES["insight"]
+    have = path.read_text(encoding="utf-8") if path.exists() else ""
+    added = 0
+    src = _hist_path(cid)
+    if not src.exists():
+        return 0
+    for line in src.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            rec = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if rec.get("speaker") != RESEARCH_SPEAKER:
+            continue
+        text = (rec.get("text") or "").strip()
+        if len(text) < 80:
+            continue
+        key = re.sub(r"\s+", "", text)[:60]
+        if key and re.sub(r"\s+", "", have).find(key) >= 0:
+            continue                       # もう入っている
+        stamp = datetime.fromtimestamp(rec.get("t", time.time()),
+                                       JST).strftime("%Y-%m-%d %H:%M")
+        entry = f"\n## {stamp}\n【過去ぶん・リサーチ】\n{text[:1500]}\n"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(entry)
+        have += entry
+        added += 1
+    return added
+
+
+async def _run_backfill_insights(cid):
+    """過去ぶんの取り込み＋GitHubへの反映まで。"""
+    n = await asyncio.to_thread(_backfill_insights_sync, cid)
+    path = NOTES["insight"][0]
+    if not n:
+        return ("📓 過去のリサーチは、すでに全部 **YouTube知見** に入っています"
+                "（新しく足すものはありませんでした）。\n"
+                "これからのぶんも毎日8時に自動で追記されます。")
+    try:
+        rel = str(path.relative_to(Path(_BASE)))
+    except ValueError:
+        rel = ""
+    why = ""
+    if rel:
+        ok, why = await _push_paths([rel], f"過去のリサーチ{n}件を知見に取り込み")
+        why = "" if ok else f"\n（GitHubへの反映は失敗: {why[:80]}）"
+    return (f"📓 過去のリサーチ **{n}件** を **YouTube知見** に取り込みました。\n"
+            "これからのぶんも毎日8時に自動で追記されます。\n"
+            "読み返すときは「**知見見せて**」。" + why)
+
+
+# 「どこかにメモしてある？」「保存されてる？」＝ 記録の【有無】の質問。
+# 事故：実際には保存済みなのに「追記される予定です」と曖昧に答え、
+# しかも本人に手で貼り直させようとした（自分のファイルを見れば分かること）。
+_NOTE_ASK_RE = re.compile(
+    "(メモ|記録|保存|蓄積|残っ|溜ま|貯ま)[^。\n]{0,10}"
+    "(ある|あります|ますか|てる|ている|されて|されてる|た\?|る\?|る？|？|\?)")
+_NOTE_TOPIC_RE = re.compile(
+    "知見|リサーチ|トレンド|演出|youtube|ユーチューブ|実験|失敗|プロンプト", re.I)
+# 「これまでのも全部保存して」＝ 過去ぶんの取り込み
+_NOTE_BACKFILL_RE = re.compile(
+    "(これまで|今まで|過去|全部|ぜんぶ|まとめて)[^。\n]{0,14}"
+    "(保存|記録|残し|取り込|溜め|入れ)")
+
+
+def _asks_note_state(text):
+    """記録の有無を聞かれているか（保存済みかどうか）。"""
+    t = text or ""
+    return bool(_NOTE_ASK_RE.search(t) and _NOTE_TOPIC_RE.search(t))
+
+
+def _asks_backfill(text):
+    """過去ぶんも保存してほしい、と頼まれているか。"""
+    t = text or ""
+    return bool(_NOTE_BACKFILL_RE.search(t)
+                and (_NOTE_TOPIC_RE.search(t) or _wants_action(t)))
+
+
 async def _run_note(cid, kind, body, who="kohei"):
     """記録して、GitHubへ push まで済ませる（スマホだけで完結させる）。"""
     path = await asyncio.to_thread(_append_note_sync, kind, body, who)
@@ -9810,6 +9895,17 @@ async def _dispatch_message(message):
         _track(asyncio.create_task(_autoshare_log(cid, content[:60])))
 
     # 学びの記録（スマホ1通で追記。入院中でも残せるように）
+    if _asks_backfill(content):
+        _fired(cid, "過去ぶんの取り込み", content)
+        add_history(cid, message.author.display_name, content)
+        await send_as(orch, cid, await _run_backfill_insights(cid))
+        return
+    if _asks_note_state(content):
+        # 自分のファイルを見れば分かることを、推測で答えさせない
+        _fired(cid, "記録の有無の確認", content)
+        add_history(cid, message.author.display_name, content)
+        await send_as(orch, cid, _read_note("insight", 3))
+        return
     _show = _note_show_kind(content)
     if _show:
         _fired(cid, f"記録の読み返し({_show})", content)
