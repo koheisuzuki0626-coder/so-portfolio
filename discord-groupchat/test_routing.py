@@ -677,23 +677,27 @@ def run():
     import asyncio as _aio14
     _keep_bg2 = bot._ai_text_bg
 
-    async def _meta(prompt, tag="x"):
+    async def _meta(prompt, tag="x", prefer="", **kw):
         return ("このタスクはDiscordボット内部からの依頼(claude -p呼び出し)です。\n"
                 "photorealistic portrait of the person in the reference image, "
                 "85mm lens, soft window light")
 
-    async def _junk(prompt, tag="x"):
+    async def _junk(prompt, tag="x", prefer="", **kw):
         return "このタスクは内部からの依頼なので、そのまま出力します。"
+    _keep_ask2 = bot._ask_agents
     try:
         bot._ai_text_bg = _meta
+        bot._ask_agents = _meta
         _out = _aio14.run(bot._refine_prompt("鼻を高くして", "image"))
         check("前置きを飛ばして英語の行を採る",
               _out.startswith("photorealistic"), True)
         check("前置きを混ぜない", "Discordボット" in _out, False)
         bot._ai_text_bg = _junk
+        bot._ask_agents = _junk
         check("英語が得られなければ原文を使う",
               _aio14.run(bot._refine_prompt("鼻を高くして", "image")), "鼻を高くして")
     finally:
+        bot._ask_agents = _keep_ask2
         bot._ai_text_bg = _keep_bg2
     # 直前の生成を「今回の完成」と取り違える幅を狭める
     import time as _tm14
@@ -799,11 +803,13 @@ def run():
     _keep_bg = bot._ai_text_bg
     _seen = {}
 
-    async def _spy(prompt, tag="x"):
+    async def _spy(prompt, tag="x", prefer="", **kw):
         _seen["p"] = prompt
         return "photorealistic portrait, 85mm lens"
+    _keep_ask1 = bot._ask_agents
     try:
         bot._ai_text_bg = _spy
+        bot._ask_agents = _spy
         _aio11.run(bot._refine_prompt("この人の鼻を高くして", "image", has_ref=True))
         check("参照を指すよう指示する", "reference image" in _seen["p"], True)
         check("見た目を描写させない", "描写してはいけない" in _seen["p"], True)
@@ -814,6 +820,7 @@ def run():
         check("参照なしでは参照の指示を出さない",
               "reference image" in _seen["p"], False)
     finally:
+        bot._ask_agents = _keep_ask1
         bot._ai_text_bg = _keep_bg
     _srcM = open(bot.__file__, encoding="utf-8").read()
     check("生成側から参照の有無を渡す",

@@ -6383,26 +6383,39 @@ async def _refine_prompt(request, media_type, style="", has_ref=False):
         + (f"\n学習済みスタイルの傾向（合う範囲で反映）:\n{sp}" if sp else "")
         + f"\n依頼: {request}"
     )
+    # 事情の説明を全部落とした素の頼み方（前置きだけ返ってきた時の受け皿）
+    bare = (f"Translate into one English {kind} generation prompt. "
+            "Output only the prompt: one line, comma separated, "
+            "no explanation, no quotes.\n"
+            f"{request}")
     _refine_fail["why"] = ""
+    out = ""
+    last_err = None
     try:
-        out = _strip_cli_boilerplate((await _ai_text_bg(ask, "refine_prompt")).strip())
-        got = _pick_english_line(out, request)
-        if got:
-            return got
-        # 前置きしか返らないことがある（実例：08-12 に3回、
-        # 「このタスクは内部からの依頼なので、そのまま出力します。」だけ）。
-        # 事情の説明を全部落とした素の頼み方で、もう一度だけ聞く。
-        # ここで通れば、原文のまま投げて出来上がりがずれるのを避けられる。
-        bare = (f"Translate into one English {kind} generation prompt. "
-                "Output only the prompt: one line, comma separated, "
-                "no explanation, no quotes.\n"
-                f"{request}")
-        out2 = _strip_cli_boilerplate(
-            (await _ai_text_bg(bare, "refine_prompt_retry")).strip())
-        got = _pick_english_line(out2, request)
-        if got:
-            print("[refine_prompt] 1回目は前置きだけ。素の頼み方で通った")
-            return got
+        # Gemini を先に試す。claude CLI は cwd の CLAUDE.md（このリポジトリの
+        # 運用マニュアル）を読み込むため、ただの翻訳にまで内部事情の前置きが
+        # 混ざる。実際に「このタスクは内部からの依頼なので、そのまま出力します。」
+        # だけが返り、日本語のまま生成に投げていた（08-12 に5回）。
+        # 機械的な言い換えに、運用マニュアルを持っている側を使う必要はない。
+        for _tag, _ask, _prefer in (("refine_prompt", ask, "gemini"),
+                                    ("refine_prompt_bare", bare, "gemini"),
+                                    ("refine_prompt_claude", bare, "claude")):
+            try:
+                raw = await _ask_agents(_ask, _tag, prefer=_prefer,
+                                        background=True)
+            except Exception as e:  # noqa: BLE001
+                # 上限などの理由は、そのまま知らせに出す価値がある。
+                # 文字列に潰すと「なぜ直せなかったのか」が分からなくなる。
+                last_err = e
+                continue
+            out = _strip_cli_boilerplate((raw or "").strip()) or out
+            got = _pick_english_line(out, request)
+            if got:
+                if _tag != "refine_prompt":
+                    print(f"[refine_prompt] {_tag} で通った")
+                return got
+        if last_err and not out.strip():
+            raise last_err          # 全部エラーなら、その理由をそのまま知らせる
         _refine_fail["why"] = f"返答が英語のプロンプトではありませんでした: {out[:120]}"
         print(f"[refine_prompt] 英語プロンプトが得られず原文使用: {out[:120]}")
         _log_error("プロンプトの英訳", RuntimeError(_refine_fail["why"]))

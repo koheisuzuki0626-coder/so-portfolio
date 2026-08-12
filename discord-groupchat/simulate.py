@@ -1775,9 +1775,11 @@ async def run():
     #     推測で「クロード側の利用上限の可能性」と書いていた。
     _keep22 = bot._ai_text_bg
     try:
-        async def _ai_ng(prompt, tag=""):
+        async def _ai_ng(prompt, tag="", prefer="", **kw):
             raise RuntimeError("Claude Code サブスクの利用上限に達しています")
         bot._ai_text_bg = _ai_ng
+        _keep22b = bot._ask_agents
+        bot._ask_agents = _ai_ng
         bot._refine_fail["why"] = ""
         _out = await _REAL_REFINE("背景を室内にして", "image")
         check("英訳できなければ原文を返す", _out == "背景を室内にして", _out)
@@ -1786,15 +1788,17 @@ async def run():
         check("知らせに理由を入れる", "利用上限" in bot._refine_fail_note(),
               bot._refine_fail_note())
 
-        async def _ai_ja(prompt, tag=""):
+        async def _ai_ja(prompt, tag="", prefer="", **kw):
             return "背景を室内にした画像です"      # 英語になっていない
         bot._ai_text_bg = _ai_ja
+        bot._ask_agents = _ai_ja
         bot._refine_fail["why"] = ""
         await _REAL_REFINE("背景を室内にして", "image")
         check("英語でない返答も理由として区別する",
               "英語のプロンプトではありません" in bot._refine_fail["why"],
               bot._refine_fail["why"])
     finally:
+        bot._ask_agents = _keep22b
         bot._ai_text_bg = _keep22
         bot._refine_fail["why"] = ""
     # 作り手の指定を落とした後に「、」が残っていた
@@ -2195,22 +2199,43 @@ async def run():
     install_stubs()
     _tries = []
 
-    async def _flaky(ask, tag="", **kw):
-        _tries.append(ask)
+    async def _flaky(ask, tag="", prefer="", **kw):
+        _tries.append((tag, prefer))
         if len(_tries) == 1:
             return "このタスクは内部からの依頼なので、そのまま出力します。"
         return "a photorealistic portrait of a man, soft window light, 85mm"
 
-    _keep_bg = bot._ai_text_bg
+    _keep_ask = bot._ask_agents
     try:
-        bot._ai_text_bg = _flaky
+        bot._ask_agents = _flaky
         _got = await _REAL_REFINE("笑ってる男の人の写真", "image")
         check("聞き直して英語プロンプトを取れる",
               "photorealistic" in _got, _got[:60])
         check("日本語のまま投げない", "笑ってる" not in _got, _got[:60])
         check("聞き直しは1回だけ", len(_tries) == 2, len(_tries))
+        # claude CLI は CLAUDE.md を読むので、翻訳はGeminiを先に当てる
+        check("翻訳はGeminiから当てる", _tries[0][1] == "gemini", _tries)
     finally:
-        bot._ai_text_bg = _keep_bg
+        bot._ask_agents = _keep_ask
+
+    # 3回とも前置きだけなら、正直に「直せなかった」と言う（黙って原文を使わない）
+    install_stubs()
+    _n = []
+
+    async def _always_meta(ask, tag="", prefer="", **kw):
+        _n.append(tag)
+        return "このタスクは内部からの依頼なので、そのまま出力します。"
+
+    _keep_ask = bot._ask_agents
+    try:
+        bot._ask_agents = _always_meta
+        _got2 = await _REAL_REFINE("笑ってる男の人の写真", "image")
+        check("諦めたら原文を返す", _got2 == "笑ってる男の人の写真", _got2)
+        check("最後はClaudeにも当てる", "refine_prompt_claude" in _n, _n)
+        check("理由を残す", "英語のプロンプト" in bot._refine_fail["why"],
+              bot._refine_fail["why"][:60])
+    finally:
+        bot._ask_agents = _keep_ask
 
     # --- ㉜ 承認が宙に浮いた（14:27〜14:34の実例）---
     #     1500字の計画を読んでいる5分の間に時間切れ →「🛑 却下されました」。
