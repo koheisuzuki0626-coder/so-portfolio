@@ -54,11 +54,15 @@ GEMINI_MODELS = [
     m.strip()
     for m in os.getenv(
         "GEMINI_MODELS",
-        "gemini-2.0-flash,gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.0-flash-lite",
+        # 決め打ちのIDは提供側の都合で消える。実際に旧・既定の4つのうち
+        # gemini-2.0-flash と gemini-2.0-flash-lite が404になり、
+        # ローテーションの先頭で毎回1往復を捨てていた（本番ログで33回）。
+        # 消えたIDは _discover_gemini_text_models が拾い直す。
+        "gemini-2.5-flash,gemini-3.5-flash,gemini-3.6-flash,"
+        "gemini-2.5-flash-lite,gemini-3.5-flash-lite,gemini-3.1-flash-lite",
     ).split(",")
     if m.strip()
 ]
-GEMINI_MODEL = GEMINI_MODELS[0]  # 検索グラウンディング等で使う既定モデル
 MAX_TURNS = int(os.getenv("MAX_TURNS", "6"))
 REPLY_CHARS = 400
 SEND_DELAY = 2
@@ -2156,10 +2160,19 @@ def _agent_order(prefer):
     return healthy + [a for a in order if a not in healthy]
 
 
-async def _ask_agents(prompt, tag, prefer, background=False, purpose=PURPOSE_TEXT):
-    """使えるAgentを順に試す。どれが使えるかの判断は1か所（ここ）だけ。"""
+async def _ask_agents(prompt, tag, prefer, background=False, purpose=PURPOSE_TEXT,
+                      only=""):
+    """使えるAgentを順に試す。どれが使えるかの判断は1か所（ここ）だけ。
+
+    only=（provider名）を渡すと、そのエンジンだけを使い、他所へは落とさない。
+    prefer は【希望】でしかない：_agent_order は健康なAgentを先頭に並べ替えるので、
+    希望した側が枠切れだと、黙って反対側が使われる。それで困る用途がある
+    （例：機械的な英訳。CLAUDE.mdを読むClaudeに回すと、翻訳せず会話で返す）。"""
     last = None
-    for agent in _agent_order(prefer):
+    agents = _agent_order(prefer)
+    if only:
+        agents = [a for a in agents if a.provider == only]
+    for agent in agents:
         try:
             return await agent.generate(prompt, background=background,
                                         purpose=purpose)
@@ -2188,12 +2201,23 @@ async def _ai_text_bg(prompt, tag="ai_text_bg"):
 SEARCH_RESULTS_N = int(os.getenv("SEARCH_RESULTS_N", "5"))
 
 
+def _default_gemini_model():
+    """モデルを1つだけ名指ししたい時に使う（検索グラウンディング等）。
+    定数で持つと、そのIDが消えた時に道連れで壊れる。実際に GEMINI_MODEL は
+    404のまま固定されていた（SEARCH_ENGINE=google にした瞬間に壊れる状態）。
+    今どれが使えるかは Registry だけが知っているので、そこに聞く。"""
+    for m in REGISTRY.order(PURPOSE_TEXT):
+        if not REGISTRY.blocked(m):
+            return m
+    return GEMINI_MODELS[0] if GEMINI_MODELS else ""
+
+
 def _google_search_sync(query):
     """Gemini の Google 検索グラウンディングで最新情報を取得。(要約, 出典URL群)。"""
     from google.genai import types
 
     resp = gemini_client.models.generate_content(
-        model=GEMINI_MODEL,
+        model=_default_gemini_model(),
         contents=query,
         config=types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())]
@@ -2554,6 +2578,43 @@ def _discover_gemini_image_models():
     return found
 
 
+_gemini_txt_discovered = {"done": False}
+# 会話に使うのは速い flash 系だけ。pro/tts/画像/ロボット用などを拾うと、
+# 遅い・枠が別・そもそも用途違いのモデルがローテーションに混ざる。
+_TXT_MODEL_OK_RE = re.compile("flash", re.I)
+_TXT_MODEL_NG_RE = re.compile(
+    "image|tts|audio|embedding|live|omni|robotics|computer", re.I)
+
+
+def _discover_gemini_text_models():
+    """APIに存在するテキストモデルを問い合わせて候補に足す。
+    画像側と同じ事故がテキスト側でも起きた（決め打ちの4つのうち2つが404）。
+    一覧から拾えば、こちらを直さなくても回り続ける。"""
+    if _gemini_txt_discovered["done"]:
+        return []
+    _gemini_txt_discovered["done"] = True
+    found = []
+    try:
+        for m in gemini_client.models.list():
+            name = (getattr(m, "name", "") or "").replace("models/", "")
+            if (not name or not _TXT_MODEL_OK_RE.search(name)
+                    or _TXT_MODEL_NG_RE.search(name)):
+                continue
+            acts = [str(a).lower()
+                    for a in (getattr(m, "supported_actions", None) or [])]
+            if acts and not any("generatecontent" in a for a in acts):
+                continue
+            if name not in GEMINI_MODELS:
+                found.append(name)
+    except Exception as e:  # noqa: BLE001
+        print(f"[gemini] モデル一覧を取得できません: {str(e)[:150]}")
+        return []
+    if found:
+        GEMINI_MODELS.extend(found)
+        print(f"[gemini] 使えるテキストモデルを見つけました: {found}")
+    return found
+
+
 def _gemini_image_usable():
     """いま Gemini で画像を作れる見込みがあるか（判断は Registry が持つ）。
     これを見ずに「Geminiで作って」と案内していたため、
@@ -2818,6 +2879,20 @@ def _gemini_contents_sync(contents, tag, purpose=PURPOSE_TEXT):
             except Exception as e:
                 last_err = e
                 print(f"[{tag}] {model} 失敗: {str(e)[:200]}")
+                # 割り当てが0＝待っても戻らない。使い切りとは別扱いにする。
+                if _is_zero_quota_error(e):
+                    REGISTRY.mark_dead(
+                        model, "このプランでは使えない（無料枠の割り当てが0）")
+                    break
+                # 404＝そのIDが無い。以前はここが mark_quota だったため、
+                # 消えたモデルを30分ごとに永久に叩き直していた（本番ログで33回）。
+                # 恒久的に外し、代わりに使えるモデルをAPIの一覧から探す。
+                if _is_missing_model_error(e):
+                    REGISTRY.mark_dead(model, "存在しないID（404）")
+                    for _new in _discover_gemini_text_models():
+                        if _new not in order:
+                            order.append(_new)
+                    break
                 per_day = "PerDay" in str(e) or "PerProjectPerModel" in str(e)
                 if _is_quota_error(e) and not per_day and attempt == 0:
                     time.sleep(_retry_delay(e))   # 分あたり制限 → 少し待って再挑戦
@@ -6479,12 +6554,19 @@ async def _refine_prompt(request, media_type, style="", has_ref=False):
         # 混ざる。実際に「このタスクは内部からの依頼なので、そのまま出力します。」
         # だけが返り、日本語のまま生成に投げていた（08-12 に5回）。
         # 機械的な言い換えに、運用マニュアルを持っている側を使う必要はない。
-        for _tag, _ask, _prefer in (("refine_prompt", ask, "gemini"),
-                                    ("refine_prompt_bare", bare, "gemini"),
-                                    ("refine_prompt_claude", bare, "claude")):
+        #
+        # only= で【エンジンを固定する】こと。prefer= だけでは効かない：
+        # Geminiが枠切れだと _agent_order が健康なClaudeを先頭に並べ替えるので、
+        # 3回とも Claude に行っていた。Claudeは翻訳せず「何を作るのか不完全です」
+        # と会話で返し、英語が取れず【日本語の原文がそのまま生成に投入】された
+        # （エラーログ68件中39件がこれ。08-13まで継続）。
+        # つまり「Geminiを先に」の対策は、必要な場面でだけ無効だった。
+        for _tag, _ask, _only in (("refine_prompt", ask, "gemini"),
+                                  ("refine_prompt_bare", bare, "gemini"),
+                                  ("refine_prompt_claude", bare, "claude")):
             try:
-                raw = await _ask_agents(_ask, _tag, prefer=_prefer,
-                                        background=True)
+                raw = await _ask_agents(_ask, _tag, prefer=_only,
+                                        background=True, only=_only)
             except Exception as e:  # noqa: BLE001
                 # 上限などの理由は、そのまま知らせに出す価値がある。
                 # 文字列に潰すと「なぜ直せなかったのか」が分からなくなる。

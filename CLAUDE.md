@@ -165,6 +165,8 @@ Mac で動いているボットは読まない。「ここで決めたのに Dis
 | 宙に浮いた承認をあとから拾う | `_try_approve_expired` |
 | 分類・校閲に上位モデルの枠を使わない | `PURPOSE_LIGHT` / `_light_first` |
 | 要約で足りるならログ全文を読ませない | `RECALL_DIRECT_CHARS` / `_current_summary` |
+| 消えたモデルIDを叩き続けない | `mark_dead` / `_discover_gemini_text_models` |
+| エンジンを固定した時は反対側へ落とさない | `_ask_agents(only=)` |
 
 ## ボットへの指示（プロンプト）を足すときの鉄則
 

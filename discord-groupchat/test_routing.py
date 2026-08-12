@@ -577,6 +577,15 @@ def run():
         check("通常用途はこれまでどおり全モデルを回す",
               sorted(bot.REGISTRY.order(bot.PURPOSE_TEXT)),
               ["big-flash", "small-flash-lite"])
+        # 名指しのモデルを定数で固定すると、そのIDが消えた時に道連れで壊れる
+        bot._gemini_bad_models.clear()
+        bot._gemini_cooldown.clear()
+        bot.REGISTRY.mark_dead("big-flash", "存在しないID（404）")
+        # 何度呼んでも死んだ方を返さないこと（order はローテーションするので、
+        # 1回だけ見ると偶然通ってしまう）
+        check("名指しモデルは死んだIDを避ける",
+              {bot._default_gemini_model() for _ in range(6)},
+              {"small-flash-lite"})
     finally:
         bot.GEMINI_MODELS[:] = _keep_gm
         bot._gemini_cooldown.clear()
@@ -616,6 +625,125 @@ def run():
         bot._ai_text, bot._gemini_call = _orig_ai, _orig_g2
         bot._gemini_all_cooling, bot.run_claude_cli = _orig_cool2, _orig_cli2
         bot.gen_settings["casual_lead"] = _kl2
+
+    print("■ 消えたモデルIDは恒久的に外す（テキスト側）")
+    # 本番で gemini-2.0-flash / -lite が404になったが、テキスト側は
+    # mark_quota（30分クールダウン）扱いだったため、永久に叩き直していた。
+    # Registry は「時間で戻る／戻らない」を区別する設計なのに、
+    # その区別を使っていたのは画像側だけだった。
+    _keep_gm2 = bot.GEMINI_MODELS[:]
+    _keep_cd5 = dict(bot._gemini_cooldown)
+    _keep_bad2 = set(bot._gemini_bad_models)
+    _keep_disc = dict(bot._gemini_txt_discovered)
+    _keep_cli4 = bot.gemini_client
+    try:
+        class _Boom:
+            def __init__(self, err):
+                self.err, self.tried = err, []
+
+            class _M:
+                pass
+
+            def _mk(self):
+                m = _Boom._M()
+                m.generate_content = self._gen
+                m.list = lambda: []
+                return m
+
+            def _gen(self, model=None, contents=None, **kw):
+                self.tried.append(model)
+                raise RuntimeError(self.err)
+        bot.GEMINI_MODELS[:] = ["gone-flash", "live-flash"]
+        bot._gemini_cooldown.clear()
+        bot._gemini_bad_models.clear()
+        bot._gemini_txt_discovered["done"] = True   # 一覧の問い合わせはしない
+
+        _b = _Boom("404 NOT_FOUND. models/gone-flash is not found")
+        class _C: pass
+        _c = _C(); _c.models = _b._mk(); bot.gemini_client = _c
+        try:
+            bot._gemini_contents_sync(["x"], "t")
+        except Exception:  # noqa: BLE001
+            pass
+        check("404は恒久的に外す（時間で戻さない）",
+              "gone-flash" in bot._gemini_bad_models, True)
+        check("404を枠切れ扱いにしない",
+              "gone-flash" in bot._gemini_cooldown, False)
+        check("外した理由を答えられる",
+              bot.REGISTRY.blocked("gone-flash"), "使えないID・プラン")
+        # 一度外したら、次の呼び出しではもう叩かない（1往復の無駄を消す）
+        _b.tried.clear()
+        try:
+            bot._gemini_contents_sync(["x"], "t")
+        except Exception:  # noqa: BLE001
+            pass
+        check("次からは叩き直さない", "gone-flash" in _b.tried, False)
+
+        # 割り当て0（このプランでは最初から使えない）も戻らない側
+        bot._gemini_bad_models.clear()
+        bot._gemini_cooldown.clear()
+        _b2 = _Boom("429 RESOURCE_EXHAUSTED. quotaValue: '0', "
+                    "GenerateRequestsPerDayPerProjectPerModel-FreeTier")
+        _c2 = _C(); _c2.models = _b2._mk(); bot.gemini_client = _c2
+        try:
+            bot._gemini_contents_sync(["x"], "t")
+        except Exception:  # noqa: BLE001
+            pass
+        check("割り当て0も恒久的に外す",
+              "gone-flash" in bot._gemini_bad_models, True)
+    finally:
+        bot.gemini_client = _keep_cli4
+        bot.GEMINI_MODELS[:] = _keep_gm2
+        bot._gemini_cooldown.clear()
+        bot._gemini_cooldown.update(_keep_cd5)
+        bot._gemini_bad_models.clear()
+        bot._gemini_bad_models.update(_keep_bad2)
+        bot._gemini_txt_discovered.clear()
+        bot._gemini_txt_discovered.update(_keep_disc)
+
+    print("■ エンジンを固定する only=（勝手に反対側へ落ちない）")
+    # prefer= は【希望】でしかなく、希望した側が枠切れだと黙って反対側が使われる。
+    # 機械的な英訳をClaudeに回すと、翻訳せず会話で返し、英語が取れず
+    # 【日本語の原文がそのまま生成に投入】されていた（エラーログ39件）。
+    import time as _tm_only
+    _keep_cd6 = dict(bot._gemini_cooldown)
+    try:
+        for _m in bot.GEMINI_MODELS:      # Geminiが枠切れの状況を作る
+            bot._gemini_cooldown[_m] = _tm_only.time() + 1800
+        check("枠切れだと prefer=gemini でもClaudeが先頭になる（既存の挙動）",
+              [a.provider for a in bot._agent_order("gemini")][0], "claude")
+
+        _used = []
+
+        async def _spy_cl(prompt, background=False, purpose=None):
+            _used.append("claude")
+            return "claude"
+
+        async def _spy_gm(prompt, background=False, purpose=None):
+            _used.append("gemini")
+            raise RuntimeError("Gemini の無料枠が全モデルで上限に達しています")
+        _og, _oc = bot.GEMINI_AGENT.generate, bot.CLAUDE_AGENT.generate
+        try:
+            bot.GEMINI_AGENT.generate, bot.CLAUDE_AGENT.generate = _spy_gm, _spy_cl
+            # only 無し＝これまでどおり反対側へ落ちる（既存の用途を壊さない）
+            _used.clear()
+            _aio7.run(bot._ask_agents("x", "t", prefer="gemini"))
+            check("only 無しなら従来どおり落ちる", "claude" in _used, True)
+            # only 指定＝落ちない。使えなければ理由ごと失敗する
+            _used.clear()
+            try:
+                _aio7.run(bot._ask_agents("x", "t", prefer="gemini",
+                                          only="gemini"))
+                _raised = ""
+            except Exception as _e:  # noqa: BLE001
+                _raised = str(_e)
+            check("only=gemini ならClaudeへ落ちない", _used, ["gemini"])
+            check("使えない理由はそのまま伝わる", "上限" in _raised, True)
+        finally:
+            bot.GEMINI_AGENT.generate, bot.CLAUDE_AGENT.generate = _og, _oc
+    finally:
+        bot._gemini_cooldown.clear()
+        bot._gemini_cooldown.update(_keep_cd6)
 
     print("■ recall：要約で足りるならログ全文を読ませない")
     # 以前は「前に話した〜」のたびにログ全文（最大15万字）を読ませていた。
