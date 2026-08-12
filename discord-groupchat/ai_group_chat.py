@@ -1058,13 +1058,27 @@ def _read_note(kind, n=5):
 RESEARCH_SPEAKER = "🎬映像リサーチ"
 
 
+# 取り込み済みの印。同じリサーチをもう一度入れないため＆
+# 短い版しか無い所へ全文が来たら差し替えられるようにするため。
+_NOTE_MARK_RE = re.compile(r"<!-- research:([^\s]+) len:(\d+) -->")
+
+
+def _research_key(text):
+    """リサーチの見出し（「（YouTube…リサーチ 2026-08-05）」）を鍵にする。"""
+    m = re.match(r"（[^）]{0,60}）", (text or "").strip())
+    return re.sub(r"\s+", "", m.group(0) if m else (text or "")[:40])
+
+
 def _backfill_insights_sync(cid):
     """過去のリサーチ結果を、会話ログから知見ファイルへ移す。
     自動保存を入れる前のぶんは会話ログに散らばったままなので、
     「これまでのぶんも全部保存して」で拾い直せるようにする。
-    すでに入っているものは二重に書かない。"""
+    同じものは二重に書かない。ただし手元にあるのが短い版で、
+    会話ログにより長い全文がある場合は、全文を足す（デバッグログ経由で
+    復元したぶんは600字で切れているため）。"""
     path, _title = NOTES["insight"]
     have = path.read_text(encoding="utf-8") if path.exists() else ""
+    known = {k: int(n) for k, n in _NOTE_MARK_RE.findall(have)}
     added = 0
     src = _hist_path(cid)
     if not src.exists():
@@ -1079,15 +1093,20 @@ def _backfill_insights_sync(cid):
         text = (rec.get("text") or "").strip()
         if len(text) < 80:
             continue
-        key = re.sub(r"\s+", "", text)[:60]
-        if key and re.sub(r"\s+", "", have).find(key) >= 0:
-            continue                       # もう入っている
+        key = _research_key(text)
+        # 印が無い古い書き方も見る（本文がそのまま入っているか）
+        if key not in known and re.sub(r"\s+", "", have).find(key) >= 0:
+            known[key] = 10 ** 6          # 既にある扱い（長さ不明なので上書きしない）
+        if known.get(key, 0) >= len(text):
+            continue                       # 同等以上のものが既にある
         stamp = datetime.fromtimestamp(rec.get("t", time.time()),
                                        JST).strftime("%Y-%m-%d %H:%M")
-        entry = f"\n## {stamp}\n【過去ぶん・リサーチ】\n{text[:1500]}\n"
+        entry = (f"\n## {stamp}\n<!-- research:{key} len:{len(text)} -->\n"
+                 f"【過去ぶん・リサーチ】\n{text[:2000]}\n")
         with open(path, "a", encoding="utf-8") as f:
             f.write(entry)
         have += entry
+        known[key] = len(text)
         added += 1
     return added
 
