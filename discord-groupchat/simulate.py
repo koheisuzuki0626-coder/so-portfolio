@@ -2212,6 +2212,49 @@ async def run():
     finally:
         bot._ai_text_bg = _keep_bg
 
+    # --- ㉜ 承認が宙に浮いた（14:27〜14:34の実例）---
+    #     1500字の計画を読んでいる5分の間に時間切れ →「🛑 却下されました」。
+    #     直後の「これ許可する」は会話に落ち、結局なにも実行されなかった。
+    install_stubs()
+    bot._expired_approvals.clear()
+    bot._load_last_gen = lambda cid: None
+    _ran = []
+
+    async def _resume():
+        _ran.append(True)
+
+    bot._remember_expired(1234, "エージェント実行（メモの仕組み）", _resume)
+    _r32 = await drive("これ許可する")
+    check("時間切れ後の「これ許可する」を拾う",
+          any("承認を受け取りました" in _s for _s in _r32["sent"]),
+          f"sent={_r32['sent']}")
+    check("拾ったら実際に走る", _ran == [True], f"ran={_ran}")
+    check("会話やAIに流さない", "chat" not in FIRED, f"fired={FIRED}")
+    check("一度拾ったら残らない", bot._recent_expired(1234) is None,
+          bot._recent_expired(1234))
+    # 守りを広げすぎていないか：時間切れの控えが無ければ普通の会話
+    install_stubs()
+    bot._expired_approvals.clear()
+    _r32b = await drive("これ許可する")
+    check("控えが無ければ承認扱いしない",
+          not any("承認を受け取りました" in _s for _s in _r32b["sent"]),
+          f"sent={_r32b['sent']}")
+
+    # --- ㉝ 「〜する必要がある？」に、完成済みサムネのURLを返していた ---
+    #     （14:37 と 14:54。同じ質問を2回して2回とも同じ的外れが返った）
+    install_stubs()
+    bot._load_last_gen = lambda cid: {
+        "prompt": "肩書きはドスベリ半端男", "media_type": "image",
+        "label": "デザイン（YouTubeサムネイル）", "t": _tm4.time(),
+        "url": "https://example.com/thumb.png"}
+    _r33 = await drive(
+        "そのためにロープレみたいなもので、何回も動画生成を試行する必要がある？")
+    check("考えを聞く問いにURLを返さない",
+          not any("example.com/thumb.png" in _s for _s in _r33["sent"]),
+          f"sent={_r33['sent']}")
+    check("生成も走らせない",
+          "hf_generate" not in FIRED and "image_gen" not in FIRED, f"fired={FIRED}")
+
     print("■ Agent と Model Registry（段階1）")
     # 「どちらのAIが今使えるか」の判断を1か所に集めた。
     # これまでは上限・枠切れの対処があちこちにあり、食い違っていた。

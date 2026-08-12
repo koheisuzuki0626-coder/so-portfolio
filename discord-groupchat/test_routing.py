@@ -1504,6 +1504,60 @@ def run():
                    ("画像生成の費用はいくら？", "credits")):
         check(f"{_t!r} は実データで答える", bot.classify_route(_t), _w)
 
+    print("■ 「〜する必要がある？」を状態確認にしない")
+    # 実例：「そのためにロープレみたいなもので、何回も動画生成を試行する
+    # 必要がある？」に、完成済みサムネのURLを返していた（14:37・14:54の2回）。
+    # 「ある？」は【物があるか】を聞く言い方。直前が「が・と・を」なら別の文型。
+    for _t in ("そのためにロープレみたいなもので、何回も動画生成を試行する必要がある？",
+               "この動画を作る意味がある？", "何回も試す価値がある？",
+               "その動画って見たことある？", "動画を作る余地がある？"):
+        check(f"{_t!r} は会話", bot.classify_route(_t, has_last_gen=True), None)
+    # 守りを広げすぎていないか：物の有無を聞く言い方は今まで通り状態確認
+    for _t in ("動画ある？", "サムネある？", "まだ動画ある？", "作った画像ある？",
+               "動画はある？"):
+        check(f"{_t!r} は状態確認",
+              bot.classify_route(_t, has_last_gen=True), "status")
+
+    print("■ 「これ許可する」を承認として受け取る")
+    # 実例：頭に「これ」が付いただけで承認と読めず、新しい依頼として扱われ、
+    # 承認が宙に浮いた（08-12 14:33）。指す語＋承認語＋語尾、の形で受ける。
+    for _t in ("これ許可する", "それ許可", "これでOK", "そのまま", "許可",
+               "それでいい", "これでいいです"):
+        check(f"{_t!r} は承認",
+              bool(bot._APPROVE_RE.match(bot._norm_reply(_t))), True)
+    for _t in ("これ却下する", "それはやめて", "これ中止", "やめ"):
+        check(f"{_t!r} は拒否",
+              bool(bot._DENY_RE.match(bot._norm_reply(_t))), True)
+    # 新しい依頼を承認と読み違えないこと（誤って動き出す方が実害が大きい）
+    for _t in ("これ動画作って", "それ面白いね", "これどう思う？", "その話もっと聞きたい"):
+        check(f"{_t!r} は承認でも拒否でもない",
+              bool(bot._APPROVE_RE.match(bot._norm_reply(_t)))
+              or bool(bot._DENY_RE.match(bot._norm_reply(_t))), False)
+
+    print("■ 時間切れは「却下」ではない")
+    # 実例：1500字の計画を読んでいる5分の間に切れ、「🛑 却下されました」と
+    # 出た（14:32）。本人は断っていない。あとからの「許可」で拾えるようにする。
+    check("待ち時間が延びている", bot.APPROVE_TIMEOUT >= 900, True)
+    bot._expired_approvals.clear()
+    check("何も無ければ却下と言う",
+          "却下" in bot._stopped_note(4242), True)
+    bot._remember_expired(4242, "エージェント実行（テスト）")
+    _note = bot._stopped_note(4242, "エージェント実行")
+    check("時間切れを却下と言わない", "却下" not in _note, True)
+    check("時間切れだと言う", "時間が過ぎた" in _note, True)
+    check("拾い方を示す", "許可" in _note, True)
+    check("あとからの承認を拾う",
+          bot._try_approve_expired(4242, 1, "これ許可する"), True)
+    check("一度拾ったら残さない", bot._recent_expired(4242), None)
+    bot._remember_expired(4242, "エージェント実行（テスト）")
+    check("長い発言は承認にしない",
+          bot._try_approve_expired(
+              4242, 1, "やっぱり別のことをお願いしたいんだけど動画を作って"), None)
+    check("拒否なら控えを捨てる",
+          bot._try_approve_expired(4242, 1, "やめて"), None)
+    check("捨てたら残らない", bot._recent_expired(4242), None)
+    bot._expired_approvals.clear()
+
     print("■ 「/」コマンドは、無いものは無いと答える")
     # 実例：「/memory」に、ありもしないメモリ4件を並べて答え、「/clear」に
     # 「メモリをクリアしました」と答えた（08-12 11:17〜11:20）。

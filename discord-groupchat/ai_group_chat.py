@@ -4759,7 +4759,11 @@ _STATUS_KW_RE = re.compile(
     # 「ください」は依頼形そのもので、進捗の語ではない。
     # 「鼻の高さだけ変えてあとは顔のパーツに合わせてください」が
     # 進捗確認になり、直しの指示が消えた。URLを求める言い方だけ拾う。
-    "url|ＵＲＬ|どこ|ある\\?|ある？|ちょうだい|"
+    # 「ある？」は【物があるか】を聞く言い方。「必要がある？」「価値がある？」
+    # 「見たことある？」は別の文型で、拾うと話が噛み合わない。実際に
+    # 「何回も動画生成を試行する必要がある？」に、完成済みサムネのURLを
+    # 返していた（08-12 14:37・14:54）。直前が「が・と・を」なら見送る。
+    "url|ＵＲＬ|どこ|(?<![がとを])ある[?？]|ちょうだい|"
     "(送っ|見せ|出し|貼っ|上げ)て(ください|下さい)|"
     "あとどれ|どれくらい|どのくらい|どれぐらい|どのぐらい|何分|確認して", re.I
 )
@@ -8830,24 +8834,29 @@ _pending_approvals = {}  # cid -> (future, owner_id)
 # 承認/拒否は自然な言い回しで受け取る。決まった単語の完全一致だけにしていたため、
 # 「それでお願い」が承認と認識されず5分後に自動中止される事故が実際に起きた。
 # 記号や語尾のゆれを落としてから全体一致で判定する（長い新規依頼は承認にしない）。
+# 頭に「これ」「それ」が付くだけで承認と読めなくなっていた。実際に
+# 「これ許可する」が新しい依頼として扱われ、承認が宙に浮いた（08-12 14:33）。
+# 語を1つずつ足すのではなく、【指す語＋承認語＋語尾】という形で受ける。
+_POINT_PREFIX = "(これ|それ|その|そっち|そちら|こっち|こちら)?(で|は|を|の)?"
 _APPROVE_RE = re.compile(
-    "^("
+    "^" + _POINT_PREFIX + "("
     "はい|うん|ええ|そう|ok|okay|おk|おけ|オーケー|おっけ|了解|承知|承認|許可|"
     "いい|いいよ|いいね|いいです|よし|よろしく|"
     "それ|それで|それでいい|そのまま|これで|これでいい|"
     "進めて|進めよう|やって|やろう|やりましょう|お願い|頼む|頼みます|"
     "go|ゴー|実行|start|オッケ"
     ")"
-    "(で|でも|よ|ね|な|わ|ぞ|です|ます|して|しといて|ください|下さい|"
+    "(で|でも|よ|ね|な|わ|ぞ|です|ます|する|して|しとく|しといて|"
+    "ください|下さい|"
     "しま(す|しょう)|お願い(します)?|でお願い(します)?)*$", re.I
 )
 _DENY_RE = re.compile(
-    "^("
+    "^" + _POINT_PREFIX + "("
     "いや|いいえ|ううん|やめ|止め|とめ|中止|キャンセル|cancel|no|"
     "だめ|ダメ|駄目|却下|拒否|違う|ちがう|なし|ストップ|stop|"
     "やっぱやめ|やっぱりやめ|いらない|結構"
     ")"
-    "(で|よ|ね|る|た|て|ます|です|して|ください|下さい|とく| okay)*$", re.I
+    "(で|よ|ね|る|た|て|ます|です|する|して|ください|下さい|とく| okay)*$", re.I
 )
 
 
@@ -8880,16 +8889,55 @@ def _clear_pending(cid, fut):
         del _pending_approvals[cid]
 
 
-async def _await_approval(cid, fut, timeout=310):
+# 5分は、スマホで1500字の計画を読んでいる本人には短すぎた。実際に
+# 14:27に出た計画を読んでいる間に切れ、14:33の「これ許可する」が宙に浮いた。
+APPROVE_TIMEOUT = int(os.getenv("APPROVE_TIMEOUT", "1800"))
+
+# 時間切れで流れた確認。あとから「許可」と言われた時に、そのまま実行できる
+# ようにしておく。黙って捨てると、本人は承認が消えたことに気づけない。
+_expired_approvals = {}
+EXPIRED_KEEP_SEC = 3600
+
+
+def _remember_expired(cid, what="", resume=None):
+    _expired_approvals[cid] = {"what": what or "", "resume": resume,
+                               "t": time.time()}
+
+
+def _recent_expired(cid):
+    """時間切れで流れた確認のうち、まだ拾えるもの。"""
+    rec = _expired_approvals.get(cid)
+    if rec and time.time() - rec["t"] <= EXPIRED_KEEP_SEC:
+        return rec
+    _expired_approvals.pop(cid, None)
+    return None
+
+
+def _stopped_note(cid, what="作業"):
+    """止めた理由を、起きたとおりに言う。時間切れを「却下されました」と言うと、
+    本人が断ったことにされる。実際に14:32、計画を読んでいる最中に時間切れとなり
+    「🛑 却下されました」と出て、直後の「これ許可する」が行き場を失った。"""
+    if _recent_expired(cid):
+        return (f"⏰ 返事がないまま時間が過ぎたので、{what}をいったん止めました。\n"
+                "**「許可」**と送ってもらえれば、この計画のまま実行します。")
+    return "🛑 却下されました。実行しません。"
+
+
+async def _await_approval(cid, fut, timeout=None, what="", resume=None):
     """確認の返事を待つ。同じ待ち方を4か所に書いていたのをまとめた。
     SUPERSEDED（言い直しで置き換わった印）を承認と取り違えないための
-    保険もここに入れる。1か所でも書き忘れると、頼んでいない作業が走る。"""
+    保険もここに入れる。1か所でも書き忘れると、頼んでいない作業が走る。
+    時間切れは【拒否ではない】ので、あとから拾えるように控えておく。"""
     try:
-        approved = await asyncio.wait_for(fut, timeout=timeout)
+        approved = await asyncio.wait_for(
+            fut, timeout=timeout or APPROVE_TIMEOUT)
     except asyncio.TimeoutError:
+        _remember_expired(cid, what, resume)
         approved = False
     finally:
         _clear_pending(cid, fut)
+    if approved is not False:
+        _expired_approvals.pop(cid, None)   # 返事が来たら控えは要らない
     return False if approved is SUPERSEDED else approved
 
 
@@ -9069,6 +9117,24 @@ def _try_text_approval(cid, user_id, content):
     return None
 
 
+def _try_approve_expired(cid, user_id, content):
+    """時間切れで流れた確認への、あとからの承認。承認=True / それ以外=None。
+    拒否は「もう止まっている」ので控えを捨てるだけ（返事は要らない）。"""
+    rec = _recent_expired(cid)
+    if not rec:
+        return None
+    norm = _norm_reply(content)
+    if not norm or len(norm) > 24:
+        return None      # 長い発言は新しい依頼（誤って動き出さないため）
+    if _DENY_RE.match(norm):
+        _expired_approvals.pop(cid, None)
+        return None
+    if _APPROVE_RE.match(norm):
+        _expired_approvals.pop(cid, None)
+        return True
+    return None
+
+
 # Claude CLI（サブスク）の利用上限。英語のまま出しても何が起きたか伝わらない。
 _CLAUDE_LIMIT_RE = re.compile(
     "session limit|usage limit|rate limit|quota|too many requests|"
@@ -9231,17 +9297,30 @@ async def run_claude_agent(cid, task, owner_id):
         orch, cid,
         f"🤖 タスク: {task}\n\n📋 実行プラン:\n{plan[:1500]}\n\n"
         "この計画で実行しますか？ [✅許可] を押すか「**許可**」と返信すると "
-        "**Mac上で実際に実行**します（本人のみ・5分で自動却下）。",
+        "**Mac上で実際に実行**します（本人のみ）。"
+        "返事が無いまま時間が過ぎたら、いったん止めます"
+        "（あとから「許可」と送れば、この計画のまま実行します）。",
         view=PermissionView(fut, owner_id),
     )
-    approved = await _await_approval(cid, fut)
+
+    async def _exec_now():
+        await send_as(orch, cid, "▶️ 承認されました。実行します…")
+        # CLAUDE.md 由来の再起動案内や内部ナレーションは、そのまま見せない
+        return (_strip_cli_boilerplate(await _run_claude_exec(task))
+                or "(完了・出力なし)")
+
+    async def _resume():
+        """時間切れのあとに「許可」と言われた時。計画は作り直さず、
+        承認された【その計画】をそのまま実行する。"""
+        await send_as(orch, cid, _strip_cli_boilerplate(await _exec_now())[:1900])
+
+    approved = await _await_approval(
+        cid, fut, what=f"エージェント実行（{task[:40]}）", resume=_resume)
     if not approved:
-        return "🛑 却下されました。実行しません。"
+        return _stopped_note(cid, "エージェント実行")
 
     # ③ 承認 → 実行（承認済みのためフル権限）
-    await send_as(orch, cid, "▶️ 承認されました。実行します…")
-    # CLAUDE.md 由来の再起動案内や内部ナレーションは、そのまま見せない
-    return _strip_cli_boilerplate(await _run_claude_exec(task)) or "(完了・出力なし)"
+    return await _exec_now()
 
 
 async def _run_agent_task(cid, task, owner_id):
@@ -10217,6 +10296,18 @@ async def _dispatch_message(message):
             "✅ 承認を受け付けました。進めます…" if approval else "🛑 却下を受け付けました。"
         )
         return
+    # 承認待ちが無くても、時間切れで流れた確認なら拾う。読んでいる間に
+    # 切れて「これ許可する」が行き場を失った（08-12 14:33）のを繰り返さない。
+    _exp = _recent_expired(cid)
+    if _exp and _try_approve_expired(cid, message.author.id, content) is not None:
+        _fired(cid, "時間切れ後の承認", content)
+        await message.channel.send(
+            f"✅ 承認を受け取りました。{_exp['what'] or '作業'}を実行します…")
+        add_history(cid, message.author.display_name, content)
+        if _exp.get("resume"):
+            _spawn(_exp["resume"](), cid, "時間切れ後の実行")
+        return
+
     if cid in _pending_approvals:
         # 確認待ちなのに承認/拒否と読めない発言。黙って会話に流すと
         # 「何も起きない → AIが理由を作り話する」が起きるので、状況を明示する。

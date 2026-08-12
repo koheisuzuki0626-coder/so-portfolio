@@ -161,6 +161,8 @@ Mac で動いているボットは読まない。「ここで決めたのに Dis
 | 不明点は始める前に聞き返す | `CLARIFY_SLOTS` / `_missing_slots` |
 | 無い機能を「ある」ことにしない | `_SLASH_CMD_RE` / `_no_slash_note` |
 | 収益の相談を料金照会にしない | `_INCOME_Q_RE` |
+| 時間切れを「却下」と言わない | `_stopped_note` / `_recent_expired` |
+| 宙に浮いた承認をあとから拾う | `_try_approve_expired` |
 
 ## ボットへの指示（プロンプト）を足すときの鉄則
 
