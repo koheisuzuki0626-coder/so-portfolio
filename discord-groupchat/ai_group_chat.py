@@ -384,28 +384,78 @@ def _read_full_log(cid, max_chars=RECALL_MAX_CHARS):
     return "\n".join(reversed(out))
 
 
-async def _recall_context(cid, question):
-    """過去ログ全文をGemini（大容量コンテキスト・無料枠）に読ませ、
-    質問に関係する部分を日時付きで抽出して返す。"""
-    log = _read_full_log(cid)
-    if not log:
-        return ""
-    prompt = (
-        "以下はDiscordチャンネルの過去ログ。質問に関係する出来事・決定事項・発言を、"
-        "日時付きで抜き出して簡潔にまとめる。無関係な話は省く。見つからなければ"
-        "『関連する記録なし』とだけ返す。\n\n"
-        f"質問: {question}\n\n過去ログ:\n{log}\n\n関連情報:"
-    )
+# 要約で足りるならログ全文を読ませない（recall の待ち時間を削るため）。
+# ただしログがこの長さ以下なら、要約を挟んでも呼び出しが1回増えるだけなので直行する。
+RECALL_DIRECT_CHARS = int(os.getenv("RECALL_DIRECT_CHARS", "8000"))
+# 「見つからなかった」の合図（プロンプトでこう返させている）
+_RECALL_NONE = "関連する記録なし"
+
+
+def _current_summary(cid):
+    """いま持っている長期記憶（要約）。無ければ空文字。
+    履歴を読み込む副作用を持たせないため get_history は使わない。"""
+    h = histories.get(cid)
+    if h and _has_summary(h):
+        return (h[0][1] or "").strip()
     try:
-        ans = await _gemini_call(prompt)
+        fp = _summary_path(cid)
+        if fp.exists():
+            return fp.read_text(encoding="utf-8").strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def _recall_prompt(question, body, source):
+    return (
+        f"以下はDiscordチャンネルの{source}。質問に関係する出来事・決定事項・発言を、"
+        "日時付きで抜き出して簡潔にまとめる。無関係な話は省く。見つからなければ"
+        f"『{_RECALL_NONE}』とだけ返す。\n\n"
+        f"質問: {question}\n\n{source}:\n{body}\n\n関連情報:"
+    )
+
+
+async def _recall_ask(prompt, purpose):
+    """recall の1回分。Geminiが落ちたらClaudeへ（コンテキストが小さいので短縮）。"""
+    try:
+        return await _gemini_call(prompt, "recall", purpose=purpose)
     except Exception:  # noqa: BLE001
         try:
-            # Claudeにフォールバック（コンテキストが小さいのでログを短縮）
-            ans = await run_claude_cli(prompt[-100000:])
+            return await run_claude_cli(prompt[-100000:])
         except Exception:  # noqa: BLE001
             return ""
-    ans = (ans or "").strip()
-    return f"【過去ログからの関連情報】\n{ans}" if ans else ""
+
+
+async def _recall_context(cid, question):
+    """質問に関係する過去の記録を探して文脈にする。
+
+    速度の要：以前は毎回ログ全文（最大15万字）をGeminiに読ませていた。
+    _summarize_pending が長期記憶（4000字の要約）を畳み込み続けているので、
+    多くの質問はそれだけで答えられる。まず要約を見て、そこに無かった時だけ
+    全文を読む＝当たれば待ち時間が大きく減る。
+    要約がまだ無い／ログがそもそも短いチャンネルでは、要約を挟むと呼び出しが
+    1回増えるだけなので、【状態を見て】従来どおり全文へ直行する。"""
+    log = _read_full_log(cid)
+    summary = _current_summary(cid)
+    # ① まず要約だけで答えられるか（軽い用途なので安いモデルで1回）
+    if summary and len(log) > RECALL_DIRECT_CHARS:
+        ans = (await _recall_ask(
+            _recall_prompt(question, summary, "これまでの経緯（要約）"),
+            PURPOSE_LIGHT,
+        ) or "").strip()
+        if ans and _RECALL_NONE not in ans:
+            return f"【過去ログからの関連情報】\n{ans}"
+        print("[recall] 要約に無かったので過去ログ全文を読む")
+    # ② 要約で足りなければ全文（従来どおり）
+    if not log:
+        return ""
+    ans = (await _recall_ask(
+        _recall_prompt(question, log, "過去ログ"), PURPOSE_TEXT
+    ) or "").strip()
+    # 「記録なし」をそのまま文脈に足すと、無駄にプロンプトが膨らむだけ
+    if not ans or _RECALL_NONE in ans:
+        return ""
+    return f"【過去ログからの関連情報】\n{ans}"
 
 
 # ---------- 自己修復：エラーログ＋自己診断 ----------
@@ -1898,13 +1948,31 @@ _gemini_watch = {"outage_cid": None}
 # 参照を壊さないため）、判断の入口だけをここに集約する。
 PURPOSE_TEXT = "text"
 PURPOSE_IMAGE = "image"
+# 軽い用途＝分類・校閲のように「ユーザーに見える本文を書かない」呼び出し。
+# 毎メッセージ走るのに中身は短いJSONや指摘だけなので、安いモデルで足りる。
+# 上位モデルの日次枠を「返事の本文」のために温存するのが狙い。
+PURPOSE_LIGHT = "light"
+
+_LITE_RE = re.compile("lite", re.I)
+
+
+def _light_first(models):
+    """軽い用途で試す順（lite系を先頭へ）。専用リストは作らない——
+    lite が枠切れでも通常モデルへ落ちて、必ず答えが返るようにするため
+    （＝使えるモデルの集合は PURPOSE_TEXT と同一で、全滅判定も変わらない）。"""
+    lite = [m for m in models if _LITE_RE.search(m)]
+    return lite + [m for m in models if m not in lite]
 
 
 class ModelRegistry:
     """モデルの一覧と『今使えるか』を答える。判断はここだけを見る。"""
 
     def models(self, purpose):
-        return GEMINI_IMAGE_MODELS if purpose == PURPOSE_IMAGE else GEMINI_MODELS
+        if purpose == PURPOSE_IMAGE:
+            return GEMINI_IMAGE_MODELS
+        if purpose == PURPOSE_LIGHT:
+            return _light_first(GEMINI_MODELS)
+        return GEMINI_MODELS
 
     def order(self, purpose, prefer=""):
         """試す順番。毎回ずらして負荷を分散し、前に通ったものは先頭に置く。"""
@@ -1912,10 +1980,15 @@ class ModelRegistry:
         n = len(ms)
         if not n:
             return []
-        rr = _gemini_img_rr if purpose == PURPOSE_IMAGE else _gemini_rr
-        start = rr["i"]
-        rr["i"] = (start + 1) % n
-        out = [ms[(start + k) % n] for k in range(n)]
+        if purpose == PURPOSE_LIGHT:
+            # 軽い用途だけはローテーションしない。ずらすと lite 優先が崩れ、
+            # 分類や校閲が上位モデルの枠を食ってしまう（温存の意味が消える）。
+            out = ms
+        else:
+            rr = _gemini_img_rr if purpose == PURPOSE_IMAGE else _gemini_rr
+            start = rr["i"]
+            rr["i"] = (start + 1) % n
+            out = [ms[(start + k) % n] for k in range(n)]
         if prefer in out:
             out.remove(prefer)
             out.insert(0, prefer)
@@ -1992,9 +2065,10 @@ async def _gemini_recovery_loop():
                 print(f"[gemini_watch] 復活通知の送信失敗: {e}")
 
 
-async def _gemini_call(prompt, tag="gemini"):
-    """テキスト生成（非同期）。実装は _gemini_contents_sync に集約。"""
-    text = await asyncio.to_thread(_gemini_contents_sync, [prompt], tag)
+async def _gemini_call(prompt, tag="gemini", purpose=PURPOSE_TEXT):
+    """テキスト生成（非同期）。実装は _gemini_contents_sync に集約。
+    purpose=PURPOSE_LIGHT を渡すと、分類・校閲向けに安いモデルから試す。"""
+    text = await asyncio.to_thread(_gemini_contents_sync, [prompt], tag, purpose)
     _last_engine["name"] = "Gemini"
     return text
 
@@ -2019,7 +2093,7 @@ class Agent:
     provider = ""
     capabilities = frozenset()
 
-    async def generate(self, prompt, background=False):
+    async def generate(self, prompt, background=False, purpose=PURPOSE_TEXT):
         raise NotImplementedError
 
     def health_check(self):
@@ -2039,7 +2113,9 @@ class ClaudeAgent(Agent):
         "reasoning", "coding", "planning", "synthesis", "writing", "design",
     })
 
-    async def generate(self, prompt, background=False):
+    async def generate(self, prompt, background=False, purpose=PURPOSE_TEXT):
+        # purpose は使わない。Claudeはサブスク定額で、用途ごとに
+        # 安いモデルへ落とす動機が無い（枠を分け合うのはGemini側の事情）。
         return await run_claude_cli(prompt, background=background)
 
     def health_check(self):
@@ -2058,8 +2134,8 @@ class GeminiAgent(Agent):
         "web_research", "long_context", "verification", "vision", "image",
     })
 
-    async def generate(self, prompt, background=False):
-        return await _gemini_call(prompt)
+    async def generate(self, prompt, background=False, purpose=PURPOSE_TEXT):
+        return await _gemini_call(prompt, purpose=purpose)
 
     def health_check(self):
         if not REGISTRY.usable(PURPOSE_TEXT):
@@ -2080,12 +2156,13 @@ def _agent_order(prefer):
     return healthy + [a for a in order if a not in healthy]
 
 
-async def _ask_agents(prompt, tag, prefer, background=False):
+async def _ask_agents(prompt, tag, prefer, background=False, purpose=PURPOSE_TEXT):
     """使えるAgentを順に試す。どれが使えるかの判断は1か所（ここ）だけ。"""
     last = None
     for agent in _agent_order(prefer):
         try:
-            return await agent.generate(prompt, background=background)
+            return await agent.generate(prompt, background=background,
+                                        purpose=purpose)
         except Exception as e:  # noqa: BLE001
             last = e
             if agent.provider == "claude" and _CLAUDE_LIMIT_RE.search(str(e)):
@@ -2094,10 +2171,10 @@ async def _ask_agents(prompt, tag, prefer, background=False):
     raise last if last else RuntimeError("使えるAgentがありません")
 
 
-async def _ai_text(prompt, tag="ai_text"):
+async def _ai_text(prompt, tag="ai_text", purpose=PURPOSE_TEXT):
     """テキスト生成：その時使えるエンジンを優先。
     Geminiが枠切れならClaudeへ直行する（無駄な試行と誤判定を避ける）。"""
-    return await _ask_agents(prompt, tag, prefer="gemini")
+    return await _ask_agents(prompt, tag, prefer="gemini", purpose=purpose)
 
 
 async def _ai_text_bg(prompt, tag="ai_text_bg"):
@@ -2711,7 +2788,7 @@ def _make_media_part(data, mime_type):
     return types.Part(inline_data=types.Blob(data=data, mime_type=mime_type))
 
 
-def _gemini_contents_sync(contents, tag):
+def _gemini_contents_sync(contents, tag, purpose=PURPOSE_TEXT):
     """Gemini 呼び出しの唯一の実装（テキストもメディアもここを通る）。
     contents は Part/テキストの混在リスト。無料枠の扱いは全てここに集約:
       ・枠切れモデルはクールダウンして次のモデルへローテーション（時間で自動復帰）
@@ -2719,7 +2796,7 @@ def _gemini_contents_sync(contents, tag):
       ・分あたり制限なら少し待って同じモデルで1度だけ再挑戦
     全モデル失敗時は握りつぶさず送出（無料枠切れは GeminiQuotaExceeded）。
     ※以前はテキスト用とメディア用に同じ処理が2つあり、方針が食い違っていた。"""
-    order = REGISTRY.order(PURPOSE_TEXT)
+    order = REGISTRY.order(purpose)
     if not order:
         raise RuntimeError("GEMINI_MODELS が空です")
 
@@ -5750,7 +5827,12 @@ async def _plan(history):
     )
     kind, mode, lead, search, recall, reply = "chat", "single", "claude", False, False, ""
     try:
-        raw = await _ai_text(prompt, "plan")
+        # Geminiに返事の本文まで書かせる設定のときだけ通常モデル。
+        # 分類（JSON）だけなら lite 系で足りるので、上位モデルの枠を温存する。
+        raw = await _ai_text(
+            prompt, "plan",
+            purpose=PURPOSE_TEXT if _gemini_replies_on() else PURPOSE_LIGHT,
+        )
         head, sep, tail = (raw or "").partition(_PLAN_REPLY_SEP)
         m = re.search(r"\{.*\}", head, re.S)
         d = json.loads(m.group(0)) if m else {}
@@ -7840,10 +7922,11 @@ async def _review_reply(draft, history):
     if _gemini_all_cooling():
         return draft, False
     try:
+        # 校閲が返すのは指摘だけ（本文は書き直させない）＝軽い用途なので lite 系から
         notes = await _gemini_call(
             _REVIEW_PROMPT + transcript_block(history)
             + f"\n\n【下書き】\n{draft}\n\n指摘:",
-            "review",
+            "review", purpose=PURPOSE_LIGHT,
         )
     except Exception as e:  # noqa: BLE001
         print(f"[review] 校閲に失敗（下書きを使用）: {str(e)[:120]}")

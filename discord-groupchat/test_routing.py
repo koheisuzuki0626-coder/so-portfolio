@@ -484,11 +484,11 @@ def run():
     _h = [("kohei", "サムネ作って")]
     _draft = "クロードの下書きだよ。" + "y" * 130
 
-    async def _notes(prompt, tag="gemini"):
+    async def _notes(prompt, tag="gemini", **kw):
         bot._last_engine["name"] = "Gemini"     # 裏で汚染される状況も再現
         return "・料金の根拠が無い\n・後半が繰り返し"
 
-    async def _ok(prompt, tag="gemini"):
+    async def _ok(prompt, tag="gemini", **kw):
         return "問題なし"
 
     async def _fixed_cli(prompt, background=False):
@@ -523,7 +523,7 @@ def run():
               _aio7.run(bot._review_reply(_draft, _h)), (_draft, False))
         bot._gemini_all_cooling = lambda: False
 
-        async def _rewrote(prompt, tag="gemini"):
+        async def _rewrote(prompt, tag="gemini", **kw):
             return "こちらが最終的な回答本文です。" + "z" * 400
         bot._gemini_call = _rewrote
         check("本文を書いてきたら指摘とみなさない",
@@ -546,6 +546,136 @@ def run():
     finally:
         bot._gemini_call, bot._gemini_all_cooling = _orig_g, _orig_cool
         bot.run_claude_cli = _orig_cli
+
+    print("■ 軽い用途は安いモデルから PURPOSE_LIGHT")
+    # 分類（JSONだけ）と校閲（指摘だけ）は毎メッセージ走るのに中身が短い。
+    # これで上位モデルの日次枠を食うと、肝心の【返事の本文】が枠切れになる。
+    _keep_gm = bot.GEMINI_MODELS[:]
+    _keep_cd4 = dict(bot._gemini_cooldown)
+    _keep_bad = set(bot._gemini_bad_models)
+    try:
+        bot.GEMINI_MODELS[:] = ["big-flash", "small-flash-lite"]
+        bot._gemini_cooldown.clear()
+        bot._gemini_bad_models.clear()
+        check("軽い用途は lite から試す",
+              bot.REGISTRY.order(bot.PURPOSE_LIGHT)[0], "small-flash-lite")
+        # ローテーションさせると lite 優先が崩れ、温存の意味が消える
+        check("何度呼んでも lite 優先は崩れない",
+              [bot.REGISTRY.order(bot.PURPOSE_LIGHT)[0] for _ in range(4)],
+              ["small-flash-lite"] * 4)
+        # 専用リストにしない＝lite が枠切れでも通常モデルへ落ちて答えは返る
+        check("使えるモデルの集合は通常用途と同じ",
+              sorted(bot.REGISTRY.models(bot.PURPOSE_LIGHT)),
+              sorted(bot.REGISTRY.models(bot.PURPOSE_TEXT)))
+        bot.REGISTRY.mark_quota("small-flash-lite")
+        check("lite が枠切れでも通常モデルへ落ちる",
+              bot.REGISTRY.order(bot.PURPOSE_LIGHT)[0] in
+              ("small-flash-lite", "big-flash"), True)
+        check("全滅の判定は通常用途と食い違わない",
+              bot.REGISTRY.usable(bot.PURPOSE_LIGHT),
+              bot.REGISTRY.usable(bot.PURPOSE_TEXT))
+        check("通常用途はこれまでどおり全モデルを回す",
+              sorted(bot.REGISTRY.order(bot.PURPOSE_TEXT)),
+              ["big-flash", "small-flash-lite"])
+    finally:
+        bot.GEMINI_MODELS[:] = _keep_gm
+        bot._gemini_cooldown.clear()
+        bot._gemini_cooldown.update(_keep_cd4)
+        bot._gemini_bad_models.clear()
+        bot._gemini_bad_models.update(_keep_bad)
+
+    # どの呼び出しが軽い用途を使うかは、言い方ではなく【状態】で決める
+    _seen = {}
+    _orig_ai, _orig_g2 = bot._ai_text, bot._gemini_call
+    _orig_cool2, _orig_cli2 = bot._gemini_all_cooling, bot.run_claude_cli
+    _kl2 = bot.gen_settings.get("casual_lead")
+    try:
+        async def _spy_ai(prompt, tag="ai_text", purpose=bot.PURPOSE_TEXT):
+            _seen[tag] = purpose
+            return '{"kind":"chat","mode":"single","lead":"claude"}'
+
+        async def _spy_gem(prompt, tag="gemini", purpose=bot.PURPOSE_TEXT):
+            _seen[tag] = purpose
+            return "問題なし"
+        bot._ai_text, bot._gemini_call = _spy_ai, _spy_gem
+        bot._gemini_all_cooling = lambda: False
+        # 校閲は指摘しか返さない＝常に軽い用途
+        _aio7.run(bot._review_reply(_draft, _h))
+        check("校閲は安いモデルで呼ぶ", _seen.get("review"), bot.PURPOSE_LIGHT)
+        # 分類だけなら軽い用途。長めの依頼文にして即・雑談の近道を通さない
+        _plan_h = [("kohei", "この前の動画の件、どう進めるか整理して教えてほしいです")]
+        bot.gen_settings["casual_lead"] = "claude"     # Geminiは返事を書かない
+        _aio7.run(bot._plan(_plan_h))
+        check("分類だけなら安いモデル", _seen.get("plan"), bot.PURPOSE_LIGHT)
+        # Geminiに返事の本文まで書かせる設定なら、文章の質が要るので通常モデル
+        bot.gen_settings["casual_lead"] = "gemini"
+        _aio7.run(bot._plan(_plan_h))
+        check("Geminiが返事を書く設定なら通常モデル",
+              _seen.get("plan"), bot.PURPOSE_TEXT)
+    finally:
+        bot._ai_text, bot._gemini_call = _orig_ai, _orig_g2
+        bot._gemini_all_cooling, bot.run_claude_cli = _orig_cool2, _orig_cli2
+        bot.gen_settings["casual_lead"] = _kl2
+
+    print("■ recall：要約で足りるならログ全文を読ませない")
+    # 以前は「前に話した〜」のたびにログ全文（最大15万字）を読ませていた。
+    # _summarize_pending が長期記憶を畳み込んでいるので、まず要約を見る。
+    _orig_log, _orig_sum = bot._read_full_log, bot._current_summary
+    _orig_g3, _orig_cli3 = bot._gemini_call, bot.run_claude_cli
+    try:
+        _asked = []
+
+        def _mk(answer):
+            async def _f(prompt, tag="gemini", purpose=bot.PURPOSE_TEXT):
+                _asked.append({"prompt": prompt, "purpose": purpose})
+                return answer(prompt) if callable(answer) else answer
+            return _f
+
+        async def _no_cli(prompt, background=False):
+            raise AssertionError("Claudeへ落ちてはいけない")
+        bot.run_claude_cli = _no_cli
+        _big = "[2026-08-01 10:00] kohei: " + "ログ本文" * 4000
+        bot._read_full_log = lambda cid, max_chars=None: _big
+        bot._current_summary = lambda cid: "・9月末にPVを試す約束をした"
+
+        # ① 要約で当たれば、全文は読ませない（＝速い）
+        bot._gemini_call = _mk("・9月末にPVを試す約束（2026-08-01）")
+        _out = _aio7.run(bot._recall_context(1234, "前に決めたPVの話は？"))
+        check("要約で当たれば1回で済む", len(_asked), 1)
+        check("全文は読ませていない", "ログ本文" in _asked[0]["prompt"], False)
+        check("要約の照会は安いモデル", _asked[0]["purpose"], bot.PURPOSE_LIGHT)
+        check("見つけた内容は文脈に入る", "9月末" in _out, True)
+
+        # ② 要約に無ければ全文へ落ちる（取りこぼさない＝守りが効きすぎない）
+        _asked.clear()
+        bot._gemini_call = _mk(
+            lambda p: "・全文で見つけた話" if "ログ本文" in p else "関連する記録なし")
+        _out = _aio7.run(bot._recall_context(1234, "前に決めたPVの話は？"))
+        check("要約に無ければ全文を読む", len(_asked), 2)
+        check("全文の照会は通常モデル", _asked[-1]["purpose"], bot.PURPOSE_TEXT)
+        check("全文で見つかれば文脈に入る", "全文で見つけた" in _out, True)
+
+        # ③ 「記録なし」を文脈に混ぜない（プロンプトを無駄に膨らませない）
+        _asked.clear()
+        bot._gemini_call = _mk("関連する記録なし")
+        check("記録が無ければ何も足さない",
+              _aio7.run(bot._recall_context(1234, "そんな話あった？")), "")
+
+        # ④⑤ 要約がまだ無い／ログが短いチャンネルは、従来どおり全文へ直行。
+        #     要約を挟んでも呼び出しが1回増えるだけなので、状態を見て決める。
+        _asked.clear()
+        bot._current_summary = lambda cid: ""
+        bot._gemini_call = _mk("・全文で見つけた話")
+        _aio7.run(bot._recall_context(1234, "前の話は？"))
+        check("要約が無いなら要約を挟まない", len(_asked), 1)
+        _asked.clear()
+        bot._current_summary = lambda cid: "・短いけれど要約はある"
+        bot._read_full_log = lambda cid, max_chars=None: "[t] kohei: ひとこと"
+        _aio7.run(bot._recall_context(1234, "前の話は？"))
+        check("ログが短いなら要約を挟まない", len(_asked), 1)
+    finally:
+        bot._read_full_log, bot._current_summary = _orig_log, _orig_sum
+        bot._gemini_call, bot.run_claude_cli = _orig_g3, _orig_cli3
 
     print("■ Geminiとクロードの役割分担（声はひとつ、頭は複数）")
     check("Geminiの視点担当の人格がある",

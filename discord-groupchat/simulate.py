@@ -658,7 +658,7 @@ async def run():
     print("■ E2E: 判定＋返事の1回化（速度）")
     calls = []
 
-    async def _ai_merged(prompt, tag="x"):
+    async def _ai_merged(prompt, tag="x", **kw):
         calls.append(tag)
         return ('{"kind":"chat","mode":"single","lead":"claude",'
                 '"search":false,"recall":false}\n'
@@ -674,7 +674,7 @@ async def run():
     # 区切りが無い（従来形式）なら回答フェーズにフォールバックすること
     calls.clear()
 
-    async def _ai_plan_only(prompt, tag="x"):
+    async def _ai_plan_only(prompt, tag="x", **kw):
         calls.append(tag)
         return '{"kind":"chat","mode":"single","lead":"claude"}'
     install_stubs()
@@ -2394,7 +2394,7 @@ async def run():
     _called = []
     _keep_rv = bot._gemini_call
 
-    async def _gem_rv(prompt, tag=""):
+    async def _gem_rv(prompt, tag="", **kw):
         _called.append(tag)
         return "問題なし"
     _keep_cool = bot._gemini_all_cooling

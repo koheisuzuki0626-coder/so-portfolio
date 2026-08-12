@@ -163,6 +163,8 @@ Mac で動いているボットは読まない。「ここで決めたのに Dis
 | 収益の相談を料金照会にしない | `_INCOME_Q_RE` |
 | 時間切れを「却下」と言わない | `_stopped_note` / `_recent_expired` |
 | 宙に浮いた承認をあとから拾う | `_try_approve_expired` |
+| 分類・校閲に上位モデルの枠を使わない | `PURPOSE_LIGHT` / `_light_first` |
+| 要約で足りるならログ全文を読ませない | `RECALL_DIRECT_CHARS` / `_current_summary` |
 
 ## ボットへの指示（プロンプト）を足すときの鉄則
 
