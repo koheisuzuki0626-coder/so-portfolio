@@ -1836,7 +1836,12 @@ async def run():
             raise RuntimeError("Claude Code サブスクの利用上限に達しています")
         bot._ai_text_bg = _ai_ng
         _keep22b = bot._ask_agents
+        _keep22c = bot.run_claude_cli
         bot._ask_agents = _ai_ng
+
+        async def _cli_ng(prompt, background=False, neutral=False):
+            raise RuntimeError("Claude Code サブスクの利用上限に達しています")
+        bot.run_claude_cli = _cli_ng      # Claude試行も同じ理由で落とす
         bot._refine_fail["why"] = ""
         _out = await _REAL_REFINE("背景を室内にして", "image")
         check("英訳できなければ原文を返す", _out == "背景を室内にして", _out)
@@ -1856,6 +1861,7 @@ async def run():
               bot._refine_fail["why"])
     finally:
         bot._ask_agents = _keep22b
+        bot.run_claude_cli = _keep22c
         bot._ai_text_bg = _keep22
         bot._refine_fail["why"] = ""
     # 作り手の指定を落とした後に「、」が残っていた
@@ -2284,14 +2290,24 @@ async def run():
         return "このタスクは内部からの依頼なので、そのまま出力します。"
 
     _keep_ask = bot._ask_agents
+    _keep_cli = bot.run_claude_cli
+    _cli_neutral = []
+
+    async def _meta_cli(prompt, background=False, neutral=False):
+        # Claude試行は _ask_agents ではなく run_claude_cli を直接通る。
+        # CLAUDE.md を読むと翻訳せず前置きを返すため、neutral で走らせる。
+        _cli_neutral.append(neutral)
+        return "このタスクは内部からの依頼なので、そのまま出力します。"
     try:
         bot._ask_agents = _always_meta
+        bot.run_claude_cli = _meta_cli
         _got2 = await _REAL_REFINE("笑ってる男の人の写真", "image")
         check("諦めたら原文を返す", _got2 == "笑ってる男の人の写真", _got2)
-        check("最後はClaudeにも当てる", "refine_prompt_claude" in _n, _n)
+        check("最後はClaudeにも当てる", _cli_neutral == [True], _cli_neutral)
         check("理由を残す", "英語のプロンプト" in bot._refine_fail["why"],
               bot._refine_fail["why"][:60])
     finally:
+        bot.run_claude_cli = _keep_cli
         bot._ask_agents = _keep_ask
 
     # --- ㉜ 承認が宙に浮いた（14:27〜14:34の実例）---

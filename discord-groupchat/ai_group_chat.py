@@ -1511,27 +1511,47 @@ def _model_args():
     return ["--model", m] if m else []
 
 
-async def run_claude_cli(prompt, background=False):
+async def run_claude_cli(prompt, background=False, neutral=False):
     """Claude Code CLI をヘッドレスで呼ぶ（サブスク利用・API課金なし）。
     プロンプトは stdin で渡す（長文でOSの引数上限を超えないように）。
     同時実行はセマフォで制限し、渋滞によるタイムアウトを防ぐ。
     background=True の裏方処理は追加の関門を通り、会話用の枠を空けたままにする。"""
     if background:
         async with _get_bg_sem():
-            return await _claude_cli_run(prompt)
-    return await _claude_cli_run(prompt)
+            return await _claude_cli_run(prompt, neutral=neutral)
+    return await _claude_cli_run(prompt, neutral=neutral)
 
 
-async def _claude_cli_run(prompt):
+# 機械的な作業（翻訳など）を走らせる、CLAUDE.md の無い場所。
+# claude CLI は cwd から上へ CLAUDE.md を探すので、リポジトリの外に置く。
+NEUTRAL_DIR = os.path.join(tempfile.gettempdir(), "agc_neutral")
+
+
+def _neutral_cwd():
+    try:
+        os.makedirs(NEUTRAL_DIR, exist_ok=True)
+        return NEUTRAL_DIR
+    except OSError:
+        return BASE_DIR
+
+
+async def _claude_cli_run(prompt, neutral=False):
     # cwd を固定 → discord-groupchat/.claude/settings.json（WebSearch許可）が読まれる。
     # ※ワークスペースを一度「信頼(trust)」しておかないと settings.json は無視される。
+    #
+    # neutral=True は【運用マニュアルを読ませたくない時】に使う。
+    # 事故：ただの英訳に「このタスクは内部からの依頼なので、そのまま出力します。」
+    # とだけ返し、英語が取れず日本語の原文が生成に投入された。この言い回しは
+    # CLAUDE.md（Discordボットから呼ばれた時の振る舞い）を読んだ結果で、
+    # モデルを haiku→sonnet に上げても直らなかった（08-15 も17回発生）。
+    # 機械的な言い換えに運用マニュアルは要らないので、読ませない場所で走らせる。
     async with _get_claude_sem():
         proc = await asyncio.create_subprocess_exec(
             CLAUDE_BIN, "-p", *_model_args(),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=BASE_DIR,
+            cwd=_neutral_cwd() if neutral else BASE_DIR,
         )
         try:
             out, err = await asyncio.wait_for(
@@ -6864,8 +6884,14 @@ async def _refine_prompt(request, media_type, style="", has_ref=False):
                                   ("refine_prompt_bare", bare, "gemini"),
                                   ("refine_prompt_claude", bare, "claude")):
             try:
-                raw = await _ask_agents(_ask, _tag, prefer=_only,
-                                        background=True, only=_only)
+                if _only == "claude":
+                    # 運用マニュアル（CLAUDE.md）を読ませない場所で走らせる。
+                    # 読ませると翻訳せず「内部からの依頼なので〜」と返す。
+                    raw = await run_claude_cli(_ask, background=True,
+                                               neutral=True)
+                else:
+                    raw = await _ask_agents(_ask, _tag, prefer=_only,
+                                            background=True, only=_only)
             except Exception as e:  # noqa: BLE001
                 # 上限などの理由は、そのまま知らせに出す価値がある。
                 # 文字列に潰すと「なぜ直せなかったのか」が分からなくなる。

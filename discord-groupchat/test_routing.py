@@ -662,6 +662,71 @@ def run():
     check("頼まれた形なら質問扱いにしない",
           bot._looks_like_question("この構成案をエクセルでまとめて"), False)
 
+    print("■ 機械的な作業に運用マニュアルを読ませない neutral")
+    # 事故：ただの英訳に「このタスクは内部からの依頼なので、そのまま出力します。」
+    # とだけ返し、英語が取れず【日本語の原文が生成に投入】された。
+    # この言い回しは CLAUDE.md を読んだ結果で、haiku→sonnet に上げても
+    # 直らなかった（08-15 だけで17回）。読ませない場所で走らせて断つ。
+    import os as _os3
+    _nd = bot._neutral_cwd()
+    check("中立の作業場所はリポジトリの外", _nd.startswith(bot.BASE_DIR), False)
+    # 上へ辿って CLAUDE.md が無いこと（claude CLI は親を遡って読む）
+    _p, _found = _nd, False
+    while True:
+        if _os3.path.exists(_os3.path.join(_p, "CLAUDE.md")):
+            _found = True
+            break
+        _np = _os3.path.dirname(_p)
+        if _np == _p:
+            break
+        _p = _np
+    check("上位にCLAUDE.mdが無い（読まれない）", _found, False)
+    # neutral=True が【実際に cwd を変える】こと。渡すだけで効いていないと、
+    # CLAUDE.md を読み続けて元の不具合のままになる
+    import asyncio as _aio_n
+    _cwds = []
+    _keep_spawn = _aio_n.create_subprocess_exec
+
+    class _P:
+        returncode = 0
+
+        async def communicate(self, input=None):
+            return b"a cinematic photo of a dog, 4k", b""
+
+    async def _spy_spawn(*a, **k):
+        _cwds.append(k.get("cwd"))
+        return _P()
+    try:
+        _aio_n.create_subprocess_exec = _spy_spawn
+        _aio7.run(bot.run_claude_cli("x", neutral=True))
+        _aio7.run(bot.run_claude_cli("x", neutral=False))
+        check("neutralはリポジトリ外で走る", _cwds[0] == bot._neutral_cwd(), True)
+        check("neutralでなければ従来どおり", _cwds[1], bot.BASE_DIR)
+        check("2つのcwdは別物", _cwds[0] != _cwds[1], True)
+    finally:
+        _aio_n.create_subprocess_exec = _keep_spawn
+
+    # 英訳のClaude試行が neutral で呼ばれること
+    _seen_neutral = []
+    _keep_rcc = bot.run_claude_cli
+    _keep_aa = bot._ask_agents
+
+    async def _spy_cli(prompt, background=False, neutral=False):
+        _seen_neutral.append(neutral)
+        return "a cinematic photo of a dog on the beach, golden hour, 4k"
+
+    async def _spy_agents(prompt, tag, prefer, background=False,
+                          purpose=None, only=""):
+        raise RuntimeError("Gemini の無料枠が全モデルで上限に達しています")
+    try:
+        bot.run_claude_cli, bot._ask_agents = _spy_cli, _spy_agents
+        _got = _aio7.run(bot._refine_prompt("犬の写真", "image"))
+        check("Geminiが全滅でも英語が取れる",
+              _got.startswith("a cinematic photo"), True)
+        check("Claude試行はneutralで呼ぶ", _seen_neutral, [True])
+    finally:
+        bot.run_claude_cli, bot._ask_agents = _keep_rcc, _keep_aa
+
     print("■ GitHubで中身が読めること（.xlsxはプレビューできない）")
     # 事故：フォルダを開いても .xlsx はGitHubで表示できず中身が読めない。
     # 「githubで確認できるようにしたい」と言われた。同じ表をMarkdownでも書く。
@@ -1063,20 +1128,30 @@ def run():
     async def _junk(prompt, tag="x", prefer="", **kw):
         return "このタスクは内部からの依頼なので、そのまま出力します。"
     _keep_ask2 = bot._ask_agents
+    _keep_rcc2 = bot.run_claude_cli
+
+    async def _meta_cli(prompt, background=False, neutral=False):
+        return await _meta(prompt)
+
+    async def _junk_cli(prompt, background=False, neutral=False):
+        return await _junk(prompt)
     try:
         bot._ai_text_bg = _meta
         bot._ask_agents = _meta
+        bot.run_claude_cli = _meta_cli
         _out = _aio14.run(bot._refine_prompt("鼻を高くして", "image"))
         check("前置きを飛ばして英語の行を採る",
               _out.startswith("photorealistic"), True)
         check("前置きを混ぜない", "Discordボット" in _out, False)
         bot._ai_text_bg = _junk
         bot._ask_agents = _junk
+        bot.run_claude_cli = _junk_cli
         check("英語が得られなければ原文を使う",
               _aio14.run(bot._refine_prompt("鼻を高くして", "image")), "鼻を高くして")
     finally:
         bot._ask_agents = _keep_ask2
         bot._ai_text_bg = _keep_bg2
+        bot.run_claude_cli = _keep_rcc2
     # 直前の生成を「今回の完成」と取り違える幅を狭める
     import time as _tm14
     _now2 = _tm14.time()
@@ -2552,7 +2627,7 @@ def run():
         orig = bot._claude_cli_run
         live = {"bg": 0, "peak_bg": 0, "chat_started_with_bg": False}
 
-        async def _fake(prompt):
+        async def _fake(prompt, **kw):
             is_bg = prompt.startswith("BG")
             if is_bg:
                 live["bg"] += 1
