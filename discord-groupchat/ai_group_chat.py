@@ -1238,7 +1238,8 @@ async def _share_debug_log(cid, limit=80):
     プッシュ後は Claude Code のチャット側から中身を直接読める。"""
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     now = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
-    _, head = await _git_self(["rev-parse", "--short", "HEAD"])
+    # 作業ツリーのHEADではなく、実際に動いているコードを出す
+    head = LOADED_COMMIT or (await _git_self(["rev-parse", "--short", "HEAD"]))[1]
     lines = [
         "# Discord デバッグログ（自動共有）",
         f"- 書き出し: {now}",
@@ -1484,6 +1485,30 @@ async def _backfill_channel_history(channel):
 
 # ---------- 各AIへの問い合わせ ----------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # .claude/settings.json のある場所
+
+
+def _read_head_sync():
+    """いまの git HEAD（短縮）。取れなければ空。"""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=10,
+                           cwd=BASE_DIR)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+# 【このプロセスが実際に読み込んだコミット】。起動時に1回だけ確定させ、
+# 以後 git の HEAD が動いても変わらない。
+#
+# 事故：デバッグログの「実行中のコード」も自動更新の判定も git HEAD を
+# 見ていた。Claude Code 側で `git pull`（ログを読む手順として CLAUDE.md が
+# 指示している）を打つと作業ツリーだけ最新になり、
+#   ・ログが「実行中のコード: 最新」と嘘をつく
+#   ・_remote_has_new_code が差分0と判断して自動更新が止まる
+# その結果、修正を push しても取り込まれないまま何時間も古い版が動き、
+# 「直したのに直っていない」が再発した（英訳の不具合で実際に発生）。
+LOADED_COMMIT = _read_head_sync()
 
 
 async def _reap(proc, timeout=5):
@@ -10076,8 +10101,11 @@ async def _remote_has_new_code():
     rc, _ = await _git_self(["fetch", "origin", branch])
     if rc != 0:
         return False, 0
+    # 比較の基準は作業ツリーのHEADではなく【読み込んだコミット】。
+    # HEADだと、外から git pull された時点で差分0になり更新が止まる。
+    base = LOADED_COMMIT or "HEAD"
     rc, out = await _git_self(
-        ["rev-list", "--count", f"HEAD..origin/{branch}"])
+        ["rev-list", "--count", f"{base}..origin/{branch}"])
     if rc != 0:
         return False, 0
     try:

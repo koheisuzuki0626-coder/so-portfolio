@@ -662,6 +662,37 @@ def run():
     check("頼まれた形なら質問扱いにしない",
           bot._looks_like_question("この構成案をエクセルでまとめて"), False)
 
+    print("■ 「実行中のコード」は作業ツリーではなく読み込んだ版を指す")
+    # 事故：ログの「実行中のコード」も自動更新の判定も git HEAD を見ていた。
+    # Claude Code 側で git pull（ログを読む手順）を打つと作業ツリーだけ
+    # 進み、ログは「最新」と嘘をつき、自動更新は差分0で止まった。
+    # 結果、push した修正が何時間も取り込まれず「直したのに直っていない」。
+    check("読み込んだコミットを起動時に確定させている",
+          isinstance(bot.LOADED_COMMIT, str), True)
+    _seen_rev = []
+    _keep_git2 = bot._git_self
+    _keep_loaded = bot.LOADED_COMMIT
+    try:
+        async def _git_rev(args, timeout=90, extra_env=None):
+            _seen_rev.append(list(args))
+            if args[0] == "rev-parse":
+                return 0, "現在のHEAD\n"          # pull 済みで先に進んでいる状況
+            if args[0] == "rev-list":
+                return 0, "3\n"
+            return 0, ""
+        bot._git_self = _git_rev
+        bot.LOADED_COMMIT = "古い版"
+        _has, _n = _aio7.run(bot._remote_has_new_code())
+        _rl = [a for a in _seen_rev if a[0] == "rev-list"]
+        check("差分は【読み込んだ版】と origin で測る",
+              bool(_rl) and _rl[0][-1].startswith("古い版.."), True)
+        check("作業ツリーのHEADを基準にしない",
+              bool(_rl) and not _rl[0][-1].startswith("HEAD.."), True)
+        check("古ければ更新ありと答える", (_has, _n), (True, 3))
+    finally:
+        bot._git_self = _keep_git2
+        bot.LOADED_COMMIT = _keep_loaded
+
     print("■ 機械的な作業に運用マニュアルを読ませない neutral")
     # 事故：ただの英訳に「このタスクは内部からの依頼なので、そのまま出力します。」
     # とだけ返し、英語が取れず【日本語の原文が生成に投入】された。
