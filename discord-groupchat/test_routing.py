@@ -662,6 +662,32 @@ def run():
     check("頼まれた形なら質問扱いにしない",
           bot._looks_like_question("この構成案をエクセルでまとめて"), False)
 
+    print("■ GitHubで中身が読めること（.xlsxはプレビューできない）")
+    # 事故：フォルダを開いても .xlsx はGitHubで表示できず中身が読めない。
+    # 「githubで確認できるようにしたい」と言われた。同じ表をMarkdownでも書く。
+    import tempfile as _tf2, pathlib as _pl2
+    _d = _pl2.Path(_tf2.mkdtemp()) / "案件"
+    _rows = [["列A", "列B"], ["値1", "パイプ|入り"], ["改行\nあり", "値2"]]
+    _md = bot._write_md(_rows, _d / "表.md", "表")
+    _txt = _md.read_text(encoding="utf-8")
+    check("Markdownの表になっている", "| 列A | 列B |" in _txt, True)
+    check("区切り行がある", "|---|---|" in _txt, True)
+    # セル内の | と改行は表を壊すので逃がす
+    check("パイプを逃がす", "パイプ\\|入り" in _txt, True)
+    check("改行は<br>にする", "改行<br>あり" in _txt, True)
+    check("Excel版への導線がある", "表.xlsx" in _txt, True)
+    # フォルダのREADMEに載せる＝GitHubはフォルダを開くと自動表示する
+    _rm = bot._refresh_project_readme(_d, "案件")
+    _rt = _rm.read_text(encoding="utf-8")
+    check("READMEに表が載る", "| 列A | 列B |" in _rt, True)
+    check("READMEの見出しは案件名", _rt.startswith("# 案件"), True)
+    check("READMEは自分を取り込まない", _rt.count("| 列A |"), 1)
+    # 日本語URLは変換しないとタップで飛べない（実際に飛べないURLを渡した）
+    _u = bot._github_url(bot.ARTIFACT_DIR / "スキンケアPV")
+    check("URLは日本語を変換する", "%E6%88%90%E6%9E%9C%E7%89%A9" in _u, True)
+    check("URLに生の日本語を残さない",
+          all(ord(c) < 128 for c in _u), True)
+
     print("■ 成果物は既定ブランチ(main)にも載せる")
     # 事故：成果物が作業ブランチにしか無く、スマホでGitHubを開くと既定の
     # main が出るので見つからず「まだgithubのプロジェクトに入ってない」となった。
@@ -682,7 +708,7 @@ def run():
     try:
         bot._git_self = _fake_git
         _msg = _aio7.run(bot._save_to_main(
-            bot.ARTIFACT_DIR / "案件" / "表.xlsx", "作成"))
+            [bot.ARTIFACT_DIR / "案件" / "表.xlsx"], "作成"))
         check("成功なら余計な但し書きを出さない", _msg, "")
         _cmds = [a[0] for a, _ in _git_log]
         # 作業ツリーを動かす操作が混ざっていないこと（これが一番の事故源）
@@ -715,7 +741,7 @@ def run():
             return await _fake_git(args, timeout, extra_env)
         bot._git_self = _push_ng
         _msg2 = _aio7.run(bot._save_to_main(
-            bot.ARTIFACT_DIR / "案件" / "表.xlsx", "作成"))
+            [bot.ARTIFACT_DIR / "案件" / "表.xlsx"], "作成"))
         check("mainへ入らなければ理由を返す", "失敗" in _msg2, True)
     finally:
         bot._git_self = _keep_git

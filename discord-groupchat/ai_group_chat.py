@@ -3120,6 +3120,47 @@ def _rows_from_tsv(text):
     return [r + [""] * (width - len(r)) for r in rows]
 
 
+def _md_cell(v):
+    """Markdownの表のセル。改行と | は表を壊すので逃がす。"""
+    return str(v or "").replace("|", "\\|").replace("\n", "<br>").strip()
+
+
+def _write_md(rows, path, title):
+    """同じ表をMarkdownでも書く。GitHubは .xlsx をプレビューできないので、
+    これが無いとスマホでフォルダを開いても中身が読めない
+    （実際に『githubで確認できるようにしたい』と言われた）。"""
+    head, body = rows[0], rows[1:]
+    lines = [f"# {title}", "",
+             "| " + " | ".join(_md_cell(c) for c in head) + " |",
+             "|" + "---|" * len(head)]
+    lines += ["| " + " | ".join(_md_cell(c) for c in r) + " |" for r in body]
+    lines += ["", f"※Excel版: [{path.stem}.xlsx](./{path.stem}.xlsx)"
+                  "（GitHub上では表示できないので、開くとダウンロードになります）"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _refresh_project_readme(folder, project):
+    """案件フォルダの README.md を組み直す。GitHubはフォルダを開くと
+    README.md を自動で描画するので、ここに表を載せておけば
+    【タップ0回で】中身が読める。"""
+    mds = sorted(p for p in folder.glob("*.md") if p.name != "README.md")
+    parts = [f"# {project}", "",
+             "Discordのボットが作った表。**下にそのまま表示されます**"
+             "（Excel版は各リンクから）。", ""]
+    for md in mds:
+        try:
+            # 見出しを1段下げて、README全体の階層に収める
+            parts.append(md.read_text(encoding="utf-8").replace("# ", "## ", 1))
+            parts.append("")
+        except Exception:  # noqa: BLE001
+            continue
+    readme = folder / "README.md"
+    readme.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
+    return readme
+
+
 def _write_xlsx(rows, path, title="Sheet1"):
     """行列を .xlsx に書き出す。列幅は中身に合わせて広げる
     （既定のままだと日本語が全部潰れて、開いた瞬間に読めない）。"""
@@ -3187,7 +3228,20 @@ ARTIFACT_BRANCH = os.getenv("ARTIFACT_BRANCH", "main")
 ARTIFACT_TO_MAIN = os.getenv("ARTIFACT_TO_MAIN", "1") not in ("0", "false", "no")
 
 
-async def _save_to_main(path, note):
+GITHUB_REPO_URL = os.getenv(
+    "GITHUB_REPO_URL", "https://github.com/koheisuzuki0626-coder/so-portfolio")
+
+
+def _github_url(path):
+    """GitHubで開けるURL。日本語はそのまま貼るとリンクにならず、
+    タップしても飛べない（実際に飛べないURLを渡してしまった）ので必ず変換する。"""
+    from urllib.parse import quote
+
+    rel = os.path.relpath(str(path), REPO_ROOT).replace(os.sep, "/")
+    return f"{GITHUB_REPO_URL}/tree/{ARTIFACT_BRANCH}/{quote(rel)}"
+
+
+async def _save_to_main(paths, note):
     """成果物【だけ】を main にも載せる。コードは載せない。
 
     なぜ手が込んでいるか：ボットは作業ブランチのツリーで動いているので、
@@ -3198,6 +3252,8 @@ async def _save_to_main(path, note):
     これが無いと、成果物は作業ブランチにしか無い。スマホでGitHubを開くと
     既定の main が出るので「保存しました」と言われても見つからず、
     実際に『まだgithubのプロジェクトに入ってない』となった。"""
+    # 1件だけ渡された時も動くようにする（呼び出し側の取り違えで落とさない）
+    paths = [paths] if isinstance(paths, (str, Path)) else list(paths)
     br = ARTIFACT_BRANCH
     idx = os.path.join(tempfile.gettempdir(), f"agc_idx_{os.getpid()}_{int(time.time()*1000)}")
     env = {"GIT_INDEX_FILE": idx}
@@ -3208,15 +3264,16 @@ async def _save_to_main(path, note):
         rc, out = await _git_self(["read-tree", f"origin/{br}"], extra_env=env)
         if rc != 0:
             return f"（{br} の読み込みに失敗: {out[:60]}）"
-        rc, sha = await _git_self(["hash-object", "-w", "--", str(path)])
-        if rc != 0 or not sha.strip():
-            return f"（ファイルの登録に失敗: {sha[:60]}）"
-        rel = os.path.relpath(str(path), REPO_ROOT)
-        rc, out = await _git_self(
-            ["update-index", "--add", "--cacheinfo", f"100644,{sha.strip()},{rel}"],
-            extra_env=env)
-        if rc != 0:
-            return f"（{br} への追加に失敗: {out[:60]}）"
+        for one in paths:
+            rc, sha = await _git_self(["hash-object", "-w", "--", str(one)])
+            if rc != 0 or not sha.strip():
+                return f"（ファイルの登録に失敗: {sha[:60]}）"
+            rel = os.path.relpath(str(one), REPO_ROOT)
+            rc, out = await _git_self(
+                ["update-index", "--add", "--cacheinfo",
+                 f"100644,{sha.strip()},{rel}"], extra_env=env)
+            if rc != 0:
+                return f"（{br} への追加に失敗: {out[:60]}）"
         rc, tree = await _git_self(["write-tree"], extra_env=env)
         if rc != 0 or not tree.strip():
             return f"（{br} の組み立てに失敗: {tree[:60]}）"
@@ -3237,10 +3294,12 @@ async def _save_to_main(path, note):
             pass
 
 
-async def _save_to_github(path, note):
+async def _save_to_github(paths, note):
     """成果物をGitHubへ。Macが落ちても消えず、スマホからも読めるようにする。
     自分で push した分は HEAD に含まれるので、自動更新の再起動は誘発しない。"""
-    rc, out = await _git_self(["add", "--", str(path)])
+    # 1件だけ渡された時も動くようにする（呼び出し側の取り違えで落とさない）
+    paths = [paths] if isinstance(paths, (str, Path)) else list(paths)
+    rc, out = await _git_self(["add", "--"] + [str(x) for x in paths])
     if rc != 0:
         return f"\n※GitHubへの保存に失敗しました（手元には有ります）: {out[:80]}"
     rc, out = await _git_self(["commit", "-m", note])
@@ -3252,7 +3311,7 @@ async def _save_to_github(path, note):
     if not ARTIFACT_TO_MAIN:
         return "\n※GitHubにも保存したので、スマホからも見られます。"
     # 既定ブランチにも載せる。ここまでやって初めて「スマホで見られる」
-    why = await _save_to_main(path, note)
+    why = await _save_to_main(paths, note)
     if why:
         return ("\n※GitHubに保存しました。ただし既定ブランチには載せられません"
                 f"でした{why}。作業ブランチには入っています。")
@@ -3276,19 +3335,28 @@ async def _run_sheet(cid, request, history):
             "何をまとめるか（元になる話や項目）を教えてください。")
         return
     title = title or "表"
-    path = (ARTIFACT_DIR / _sheet_slug(project, "misc")
-            / f"{_sheet_slug(title, 'sheet')}.xlsx")
+    proj = _sheet_slug(project, "misc")
+    folder = ARTIFACT_DIR / proj
+    stem = _sheet_slug(title, "sheet")
+    path = folder / f"{stem}.xlsx"
     try:
         await asyncio.to_thread(_write_xlsx, rows, path, title)
+        # GitHubは .xlsx を表示できない。同じ表をMarkdownでも置き、
+        # フォルダのREADMEにも載せる（開いた瞬間に読めるように）。
+        md = await asyncio.to_thread(_write_md, rows, folder / f"{stem}.md", title)
+        readme = await asyncio.to_thread(_refresh_project_readme, folder, project or proj)
         data = await asyncio.to_thread(path.read_bytes)
     except Exception as e:  # noqa: BLE001
         _log_error("Excelの書き出し", e)
         await send_as(orch, cid, f"⚠️ Excelの書き出しに失敗しました: {str(e)[:200]}")
         return
-    saved = await _save_to_github(path, f"{title}を作成（Discordから）")
+    saved = await _save_to_github([path, md, readme],
+                                  f"{title}を作成（Discordから）")
     rel = os.path.relpath(path, os.path.dirname(ARTIFACT_DIR))
+    view = _github_url(folder)
     body = (f"📊 **{title}** を作りました（{len(rows) - 1}行 × {len(rows[0])}列）\n"
-            f"保存先: `{rel}`{saved}")
+            f"保存先: `{rel}`{saved}\n"
+            f"GitHubで表をそのまま見る: {view}")
     channel = orch.get_channel(cid) or await orch.fetch_channel(cid)
     await channel.send(
         body[:1900],
