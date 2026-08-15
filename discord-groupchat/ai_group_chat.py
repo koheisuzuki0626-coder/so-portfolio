@@ -3228,6 +3228,9 @@ async def _run_sheet(cid, request, history):
         file=discord.File(io.BytesIO(data), filename=path.name),
     )
     add_history(cid, "Orchestrator", body)
+    # 作り終えた事実を控える。あとで「あれは作り話でした」と
+    # 捏造で否定させないため（_drop_false_denial が見る）。
+    _remember_artifact(cid, "excel", title, path)
 
 
 INSIGHTS_DIR = Path(os.getenv("INSIGHTS_DIR", os.path.join(_BASE, "insights")))
@@ -8462,6 +8465,7 @@ async def _handle_orchestrator(message, cid):
             _spawn(_do_retry(), cid, "クレジット確認")
             return
         reply = _drop_false_progress(reply, cid)
+        reply = _drop_false_denial(reply, cid)
         add_history(cid, "Orchestrator", reply)
         await send_as(orch, cid, _with_speaker(reply, plan_engine))
         return
@@ -8549,6 +8553,7 @@ async def _handle_orchestrator(message, cid):
     # 出す声はオーケストレーターひとつなので、誰が書いたかで混乱しない。
     answer, reviewed = await _review_reply(answer, history)
     answer = _drop_false_progress(answer, cid)
+    answer = _drop_false_denial(answer, cid)
     # 言い方を見ずに、状態だけで「動いていない」を明記する（最後の砦）
     answer += _reality_note(cid, latest)
     # 実際に書いたのが誰かで名乗る。クロードが枠切れでGeminiが代打に入ると
@@ -8680,7 +8685,11 @@ _NOTIFY_LATER_RE = re.compile(
 # 確認待ちが無いのに承認・権限の話をするのは、どう言おうと事実ではない。
 _FAKE_STATE_RE = re.compile(
     "許可|承認|権限|生成ボタン|実行ボタン|"
-    "(この場|こっち|ここ)では[^。\n]{0,14}(動かせ|実行でき|できな|通せ)"
+    # 「このセッション」＝自分の開発工程の作り話。実際に
+    # 「修正は用意しましたが、このセッションではまだ反映できていません」と
+    # 答えた（そんな工程は無い。ユーザーには何の意味も無い内部事情）。
+    "(この場|こっち|ここ|このセッション|今のセッション|現在のセッション)"
+    "では[^。\n]{0,14}(動かせ|実行でき|できな|通せ|反映|適用)"
 )
 # ただし「よそのサービスの話」は事実として成り立つので落とさない。
 # 落として困るのはこちら側だけなので、除外はこの短い一覧で足りる。
@@ -8764,6 +8773,96 @@ def _drop_false_progress(text, cid):
     if not out:
         return "まだ何も動かしていないよ。"
     return f"{out}\n{note}"
+
+
+# ---------- 作ったものを「無かったこと」にさせない ----------
+# 事故（08-13 05:50）：Excelを作ってDiscordに添付し、GitHubにも push した直後に、
+# 「さっきの『作りました』は実は作り話でした。一度も生成されておらず、
+#  GitHubに探しに行っても見つからなくて当然です」と【成功を捏造で否定】した。
+# 既存の守り手（_drop_false_progress / _FAKE_STATE_RE）は
+# 「やっていないのにやったと言う」方向しか見ておらず、逆向きは素通りだった。
+#
+# 言い方では守らない。【作った記録があるか】という状態で守る。
+_done_artifacts = {}          # cid -> [{"kind","title","path","t"}]
+ARTIFACT_KEEP_SEC = int(os.getenv("ARTIFACT_KEEP_SEC", "86400"))   # 既定24時間
+
+
+def _remember_artifact(cid, kind, title, path):
+    """実際に作り終えたものを控える。あとで「作っていない」と言わせないため。"""
+    arts = _done_artifacts.setdefault(cid, [])
+    arts.append({"kind": kind, "title": title or "", "path": str(path),
+                 "t": time.time()})
+    del arts[:-20]
+
+
+def _recent_artifacts(cid):
+    now = time.time()
+    return [a for a in _done_artifacts.get(cid, [])
+            if now - a["t"] <= ARTIFACT_KEEP_SEC]
+
+
+# ①自分の返事そのものを偽物だと言う。何を指すか書かなくても害しかないので、
+#   作った記録がある限り無条件に落とす（実際「実は作り話でした」だけの文だった）。
+_SELF_LIE_RE = re.compile(
+    "作り話|でっち上げ|でっちあげ|虚偽|捏造|嘘(でした|です|だった|をつ)")
+# ②作成・保存を否定する。こちらは【何について】かを見てから落とす
+#   （本当にやっていない別の作業まで否定できなくすると、今度はこちらが嘘をつく）。
+_DENY_MADE_RE = re.compile(
+    "(生成|作成|作ら|保存|出力|コミット|添付|実行|呼び出)"
+    "[^。\n]{0,12}(ていません|ていない|ておらず|てない|なかった|ません|"
+    "されず|されていません|されていない)|"
+    "一度も[^。\n]{0,12}(生成|作成|作ら|保存)|"
+    "見つからなくて当然|存在しません|存在していません")
+# その否定が【何について】言われているか。作ったものと結びつく時だけ落とす。
+# 本当にやっていない別の作業まで否定できなくすると、今度はこちらが嘘をつく。
+_ARTIFACT_WORD_RE = {
+    "excel": re.compile("エクセル|ｴｸｾﾙ|excel|xlsx|表|一覧|シート|構成案", re.I),
+}
+
+
+def _short_path(path):
+    """人に見せる保存先。リポジトリからの相対にできない時は末尾2階層だけ出す
+    （`../../../x/...` のような読めない相対パスを見せない）。"""
+    root = os.path.dirname(PROJECTS_DIR)
+    try:
+        rel = os.path.relpath(path, root)
+        if not rel.startswith(".."):
+            return rel
+    except Exception:  # noqa: BLE001
+        pass
+    p = Path(path)
+    return os.path.join(p.parent.name, p.name) if p.parent.name else p.name
+
+
+def _mentions_artifact(part, art):
+    """その文が、その成果物のことを言っているか。"""
+    for key in (art.get("title"), Path(art.get("path", "")).stem):
+        if key and len(key) >= 3 and key in part:
+            return True
+    rx = _ARTIFACT_WORD_RE.get(art.get("kind", ""))
+    return bool(rx and rx.search(part))
+
+
+def _drop_false_denial(text, cid):
+    """作った記録があるのに『作っていない・作り話だった』と書いた文を落とす。
+    記録が無ければ何もしない（＝本当にやっていない時は正直に言わせる）。"""
+    arts = _recent_artifacts(cid)
+    if not text or not arts:
+        return text
+    parts = re.split(r"(?<=[。\n])", text)
+    kept = [p for p in parts
+            if not (_SELF_LIE_RE.search(p)
+                    or (_DENY_MADE_RE.search(p)
+                        and any(_mentions_artifact(p, a) for a in arts)))]
+    if len(kept) == len(parts):
+        return text
+    out = "".join(kept).strip()
+    a = arts[-1]
+    where = _short_path(a["path"])
+    print(f"[reply] 作ったものを否定する文を落とした: channel={cid}")
+    # 落とすだけだと話が宙に浮くので、事実（どこに在るか）を必ず添える
+    fact = f"**{a['title']}** は作成済みです。保存先: `{where}`"
+    return f"{out}\n\n{fact}" if out else fact
 
 
 def _drop_ops_advice(t, user_said):

@@ -1928,9 +1928,27 @@ def run():
                 check(f"内部状態の作り話を落とす: {_text[:16]}…／{_out[:40]}",
                       not any(_w in _out for _w in ("許可", "承認", "生成ボタン")),
                       True)
+            elif _kind == "false_denial":
+                # 作った記録がある時だけ「作っていない」を落とす
+                bot._done_artifacts[4242] = [{
+                    "kind": "excel", "title": "スキンケア商品PV構成案",
+                    "path": "/r/projects/スキンケアPV/スキンケア商品PV構成案.xlsx",
+                    "t": _tm_only.time()}]
+                _out = bot._drop_false_denial(_text, 4242)
+                check(f"作ったものの否定を落とす: {_text[:16]}…／{_out[:40]}",
+                      "作成済み" in _out, True)
+                bot._done_artifacts.pop(4242, None)
             elif _kind == "keep":
                 check(f"普通の返事は落とさない: {_text[:16]}…",
                       bot._drop_false_progress(_text, 4242), _text)
+                # 作った記録があっても、普通の返事は触らないこと
+                bot._done_artifacts[4242] = [{
+                    "kind": "excel", "title": "スキンケア商品PV構成案",
+                    "path": "/r/projects/スキンケアPV/スキンケア商品PV構成案.xlsx",
+                    "t": _tm_only.time()}]
+                check(f"記録があっても普通の返事は触らない: {_text[:16]}…",
+                      bot._drop_false_denial(_text, 4242), _text)
+                bot._done_artifacts.pop(4242, None)
             elif _kind == "limit_err":
                 check(f"上限として扱う: {_text[:20]}…／{bot._gen_fail_note(_text)[:30]}",
                       "上限" in bot._gen_fail_note(_text), True)

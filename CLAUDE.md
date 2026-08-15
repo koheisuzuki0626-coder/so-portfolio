@@ -169,6 +169,7 @@ Mac で動いているボットは読まない。「ここで決めたのに Dis
 | エンジンを固定した時は反対側へ落とさない | `_ask_agents(only=)` |
 | 表の依頼を会話に落とさない | `_PLAN_TRIGGER_RE` の表・Excel語 ＋ `_plan` の `sheet` |
 | 中身が無いのに空のファイルを作らない | `_run_sheet` の `len(rows) < 2` |
+| 作ったものを「作り話だった」と否定させない | `_done_artifacts` / `_drop_false_denial` |
 
 ## ボットへの指示（プロンプト）を足すときの鉄則
 
@@ -223,7 +224,7 @@ AIは条件を無視して、その案内文自体を返事として出してし
 （実際、台帳を作った直後に「作り直しています」「背景を〜にして」の
 2件の漏れが見つかった）。
 
-種別は false_progress / fake_state / keep / limit_err / revise / chat。
+種別は false_progress / fake_state / false_denial / keep / limit_err / revise / chat。
 **keep（落としてはいけない普通の返事）も必ず一緒に足すこと。**
 守りを広げすぎて普通の会話を壊す事故を、同時に検出するため。
 
