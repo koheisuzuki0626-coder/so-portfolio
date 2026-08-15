@@ -682,7 +682,7 @@ def run():
     try:
         bot._git_self = _fake_git
         _msg = _aio7.run(bot._save_to_main(
-            bot.PROJECTS_DIR / "案件" / "表.xlsx", "作成"))
+            bot.ARTIFACT_DIR / "案件" / "表.xlsx", "作成"))
         check("成功なら余計な但し書きを出さない", _msg, "")
         _cmds = [a[0] for a, _ in _git_log]
         # 作業ツリーを動かす操作が混ざっていないこと（これが一番の事故源）
@@ -704,7 +704,7 @@ def run():
         # リポジトリ相対のパスで登録すること（BASE_DIR相対だと入る場所がずれる）
         _ui = [a for a, _ in _git_log if a[0] == "update-index"]
         check("リポジトリ相対のパスで登録する",
-              bool(_ui) and _ui[0][-1].endswith("projects/案件/表.xlsx"), True)
+              bool(_ui) and _ui[0][-1].endswith("成果物/案件/表.xlsx"), True)
 
         # 失敗しても黙らない（作業ブランチには在ることを伝える）
         _git_log.clear()
@@ -715,7 +715,7 @@ def run():
             return await _fake_git(args, timeout, extra_env)
         bot._git_self = _push_ng
         _msg2 = _aio7.run(bot._save_to_main(
-            bot.PROJECTS_DIR / "案件" / "表.xlsx", "作成"))
+            bot.ARTIFACT_DIR / "案件" / "表.xlsx", "作成"))
         check("mainへ入らなければ理由を返す", "失敗" in _msg2, True)
     finally:
         bot._git_self = _keep_git

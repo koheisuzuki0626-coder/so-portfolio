@@ -3084,8 +3084,11 @@ TREND_MAX_MINUTES = int(os.getenv("TREND_MAX_MINUTES", "20"))  # これより長
 # 原因は単純で、Excelを作る機能そのものが無かった。
 # 置き場は so-portfolio/projects/<案件>/ 。Gitで追跡するので、
 # 入院中でもスマホのGitHubから読めるし、Macが落ちても消えない。
-PROJECTS_DIR = Path(os.getenv(
-    "PROJECTS_DIR", os.path.abspath(os.path.join(_BASE, "..", "projects"))))
+# フォルダ名を「projects」にしていたら、GitHub上部の【Projectsタブ】
+# （カンバンボードの機能。ファイルとは無関係で常に空）と取り違えられ、
+# 「入ってない」と何度も報告された。名前で紛れないよう日本語にしてある。
+ARTIFACT_DIR = Path(os.getenv(
+    "ARTIFACT_DIR", os.path.abspath(os.path.join(_BASE, "..", "成果物"))))
 SHEET_MAX_ROWS = int(os.getenv("SHEET_MAX_ROWS", "200"))
 SHEET_MAX_COLS = int(os.getenv("SHEET_MAX_COLS", "20"))
 
@@ -3179,7 +3182,7 @@ async def _sheet_rows(request, history):
             _rows_from_tsv(body if sep else raw))
 
 
-REPO_ROOT = os.path.dirname(PROJECTS_DIR)
+REPO_ROOT = os.path.dirname(ARTIFACT_DIR)
 ARTIFACT_BRANCH = os.getenv("ARTIFACT_BRANCH", "main")
 ARTIFACT_TO_MAIN = os.getenv("ARTIFACT_TO_MAIN", "1") not in ("0", "false", "no")
 
@@ -3273,7 +3276,7 @@ async def _run_sheet(cid, request, history):
             "何をまとめるか（元になる話や項目）を教えてください。")
         return
     title = title or "表"
-    path = (PROJECTS_DIR / _sheet_slug(project, "misc")
+    path = (ARTIFACT_DIR / _sheet_slug(project, "misc")
             / f"{_sheet_slug(title, 'sheet')}.xlsx")
     try:
         await asyncio.to_thread(_write_xlsx, rows, path, title)
@@ -3283,7 +3286,7 @@ async def _run_sheet(cid, request, history):
         await send_as(orch, cid, f"⚠️ Excelの書き出しに失敗しました: {str(e)[:200]}")
         return
     saved = await _save_to_github(path, f"{title}を作成（Discordから）")
-    rel = os.path.relpath(path, os.path.dirname(PROJECTS_DIR))
+    rel = os.path.relpath(path, os.path.dirname(ARTIFACT_DIR))
     body = (f"📊 **{title}** を作りました（{len(rows) - 1}行 × {len(rows[0])}列）\n"
             f"保存先: `{rel}`{saved}")
     channel = orch.get_channel(cid) or await orch.fetch_channel(cid)
@@ -8887,7 +8890,7 @@ _ARTIFACT_WORD_RE = {
 def _short_path(path):
     """人に見せる保存先。リポジトリからの相対にできない時は末尾2階層だけ出す
     （`../../../x/...` のような読めない相対パスを見せない）。"""
-    root = os.path.dirname(PROJECTS_DIR)
+    root = os.path.dirname(ARTIFACT_DIR)
     try:
         rel = os.path.relpath(path, root)
         if not rel.startswith(".."):
