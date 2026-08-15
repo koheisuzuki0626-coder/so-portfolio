@@ -662,6 +662,64 @@ def run():
     check("頼まれた形なら質問扱いにしない",
           bot._looks_like_question("この構成案をエクセルでまとめて"), False)
 
+    print("■ 成果物は既定ブランチ(main)にも載せる")
+    # 事故：成果物が作業ブランチにしか無く、スマホでGitHubを開くと既定の
+    # main が出るので見つからず「まだgithubのプロジェクトに入ってない」となった。
+    # ボットは作業ブランチのツリーで動いているので、checkout してはいけない
+    # （次の再起動で434コミット前のコードに戻る）。
+    _git_log = []
+    _keep_git = bot._git_self
+
+    async def _fake_git(args, timeout=90, extra_env=None):
+        _git_log.append((list(args), extra_env or {}))
+        if args[0] == "hash-object":
+            return 0, "abc123\n"
+        if args[0] == "write-tree":
+            return 0, "tree456\n"
+        if args[0] == "commit-tree":
+            return 0, "commit789\n"
+        return 0, ""
+    try:
+        bot._git_self = _fake_git
+        _msg = _aio7.run(bot._save_to_main(
+            bot.PROJECTS_DIR / "案件" / "表.xlsx", "作成"))
+        check("成功なら余計な但し書きを出さない", _msg, "")
+        _cmds = [a[0] for a, _ in _git_log]
+        # 作業ツリーを動かす操作が混ざっていないこと（これが一番の事故源）
+        check("checkout/switch/reset を使わない",
+              [c for c in _cmds if c in ("checkout", "switch", "reset")], [])
+        check("main を読んで組み立てる", "read-tree" in _cmds and
+              "commit-tree" in _cmds and "write-tree" in _cmds, True)
+        # インデックスを別ファイルにしていること（本物のindexを壊さない）
+        _ridx = [e.get("GIT_INDEX_FILE") for a, e in _git_log
+                 if a[0] in ("read-tree", "update-index", "write-tree")]
+        check("一時インデックスを使う（本物を壊さない）",
+              bool(_ridx) and all(_ridx), True)
+        # add/commit は【作業ブランチ側】の話なので main 用には出さない
+        check("mainへは add/commit を使わない",
+              [c for c in _cmds if c in ("add", "commit")], [])
+        _push = [a for a, _ in _git_log if a[0] == "push"]
+        check("組み立てたコミットだけを main へ送る",
+              bool(_push) and _push[0][-1] == "commit789:main", True)
+        # リポジトリ相対のパスで登録すること（BASE_DIR相対だと入る場所がずれる）
+        _ui = [a for a, _ in _git_log if a[0] == "update-index"]
+        check("リポジトリ相対のパスで登録する",
+              bool(_ui) and _ui[0][-1].endswith("projects/案件/表.xlsx"), True)
+
+        # 失敗しても黙らない（作業ブランチには在ることを伝える）
+        _git_log.clear()
+
+        async def _push_ng(args, timeout=90, extra_env=None):
+            if args[0] == "push":
+                return 1, "rejected: non-fast-forward"
+            return await _fake_git(args, timeout, extra_env)
+        bot._git_self = _push_ng
+        _msg2 = _aio7.run(bot._save_to_main(
+            bot.PROJECTS_DIR / "案件" / "表.xlsx", "作成"))
+        check("mainへ入らなければ理由を返す", "失敗" in _msg2, True)
+    finally:
+        bot._git_self = _keep_git
+
     print("■ 消えたモデルIDは恒久的に外す（テキスト側）")
     # 本番で gemini-2.0-flash / -lite が404になったが、テキスト側は
     # mark_quota（30分クールダウン）扱いだったため、永久に叩き直していた。

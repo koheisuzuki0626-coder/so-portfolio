@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -3178,6 +3179,61 @@ async def _sheet_rows(request, history):
             _rows_from_tsv(body if sep else raw))
 
 
+REPO_ROOT = os.path.dirname(PROJECTS_DIR)
+ARTIFACT_BRANCH = os.getenv("ARTIFACT_BRANCH", "main")
+ARTIFACT_TO_MAIN = os.getenv("ARTIFACT_TO_MAIN", "1") not in ("0", "false", "no")
+
+
+async def _save_to_main(path, note):
+    """成果物【だけ】を main にも載せる。コードは載せない。
+
+    なぜ手が込んでいるか：ボットは作業ブランチのツリーで動いているので、
+    `git checkout main` をすると次の再起動で434コミット前のコードに戻る。
+    そこで作業ツリーには一切触らず、一時インデックスに origin/main を読み、
+    そのファイルだけ足して commit-tree でコミットを組み、push する。
+
+    これが無いと、成果物は作業ブランチにしか無い。スマホでGitHubを開くと
+    既定の main が出るので「保存しました」と言われても見つからず、
+    実際に『まだgithubのプロジェクトに入ってない』となった。"""
+    br = ARTIFACT_BRANCH
+    idx = os.path.join(tempfile.gettempdir(), f"agc_idx_{os.getpid()}_{int(time.time()*1000)}")
+    env = {"GIT_INDEX_FILE": idx}
+    try:
+        rc, out = await _git_self(["fetch", "origin", br])
+        if rc != 0:
+            return f"（{br} の取得に失敗: {out[:60]}）"
+        rc, out = await _git_self(["read-tree", f"origin/{br}"], extra_env=env)
+        if rc != 0:
+            return f"（{br} の読み込みに失敗: {out[:60]}）"
+        rc, sha = await _git_self(["hash-object", "-w", "--", str(path)])
+        if rc != 0 or not sha.strip():
+            return f"（ファイルの登録に失敗: {sha[:60]}）"
+        rel = os.path.relpath(str(path), REPO_ROOT)
+        rc, out = await _git_self(
+            ["update-index", "--add", "--cacheinfo", f"100644,{sha.strip()},{rel}"],
+            extra_env=env)
+        if rc != 0:
+            return f"（{br} への追加に失敗: {out[:60]}）"
+        rc, tree = await _git_self(["write-tree"], extra_env=env)
+        if rc != 0 or not tree.strip():
+            return f"（{br} の組み立てに失敗: {tree[:60]}）"
+        rc, commit = await _git_self(
+            ["commit-tree", tree.strip(), "-p", f"origin/{br}", "-m", note])
+        if rc != 0 or not commit.strip():
+            return f"（{br} のコミットに失敗: {commit[:60]}）"
+        rc, out = await _git_self(
+            ["push", "origin", f"{commit.strip()}:{br}"], timeout=180)
+        if rc != 0:
+            # 誰かが先に main を進めた等。作業ブランチには入っているので実害は小さい
+            return f"（{br} への反映は失敗: {out[:60]}）"
+        return ""
+    finally:
+        try:
+            os.remove(idx)
+        except OSError:
+            pass
+
+
 async def _save_to_github(path, note):
     """成果物をGitHubへ。Macが落ちても消えず、スマホからも読めるようにする。
     自分で push した分は HEAD に含まれるので、自動更新の再起動は誘発しない。"""
@@ -3190,7 +3246,15 @@ async def _save_to_github(path, note):
     rc, out = await _git_self(["push", "origin", "HEAD"], timeout=180)
     if rc != 0:
         return f"\n※手元には保存済みですが、GitHubへの反映は失敗しました: {out[:80]}"
-    return "\n※GitHubにも保存したので、スマホからも見られます。"
+    if not ARTIFACT_TO_MAIN:
+        return "\n※GitHubにも保存したので、スマホからも見られます。"
+    # 既定ブランチにも載せる。ここまでやって初めて「スマホで見られる」
+    why = await _save_to_main(path, note)
+    if why:
+        return ("\n※GitHubに保存しました。ただし既定ブランチには載せられません"
+                f"でした{why}。作業ブランチには入っています。")
+    return (f"\n※GitHubの `{ARTIFACT_BRANCH}` に保存したので、"
+            "スマホでそのまま見られます。")
 
 
 async def _run_sheet(cid, request, history):
@@ -10114,16 +10178,21 @@ def _git_fail_hint(msg):
     return ""
 
 
-async def _git_self(args, timeout=90):
+async def _git_self(args, timeout=90, extra_env=None):
     """自己改修のgit操作（ベストエフォート）。(returncode, 出力) を返す。
-    通信不良の push/fetch で永久に固まらないよう必ずタイムアウトする。"""
+    通信不良の push/fetch で永久に固まらないよう必ずタイムアウトする。
+    extra_env は GIT_INDEX_FILE を差し替える用（作業ツリーに触らずに
+    別ブランチのコミットを組み立てるため）。"""
+    env = _git_env()
+    if extra_env:
+        env = {**env, **extra_env}
     proc = await asyncio.create_subprocess_exec(
         "git", *args,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=BASE_DIR,
-        env=_git_env(),
+        env=env,
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
