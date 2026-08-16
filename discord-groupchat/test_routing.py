@@ -684,11 +684,23 @@ def run():
         bot.LOADED_COMMIT = "古い版"
         _has, _n = _aio7.run(bot._remote_has_new_code())
         _rl = [a for a in _seen_rev if a[0] == "rev-list"]
+        _rng = [x for x in (_rl[0] if _rl else []) if ".." in str(x)]
         check("差分は【読み込んだ版】と origin で測る",
-              bool(_rl) and _rl[0][-1].startswith("古い版.."), True)
+              bool(_rng) and _rng[0].startswith("古い版.."), True)
         check("作業ツリーのHEADを基準にしない",
-              bool(_rl) and not _rl[0][-1].startswith("HEAD.."), True)
+              bool(_rng) and not _rng[0].startswith("HEAD.."), True)
         check("古ければ更新ありと答える", (_has, _n), (True, 3))
+        # ボットは自分のログを3分おきに push する。それを「新しい修正」と
+        # 数えると、自分の書き込みで延々と再起動する（実際に10回続いた）。
+        check("コードのパスに限って数える",
+              bool(_rl) and "--" in _rl[0], True)
+        _paths = (_rl[0][_rl[0].index("--") + 1:]
+                  if _rl and "--" in _rl[0] else [])
+        check("Pythonのコードを見ている",
+              any(p.endswith("*.py") for p in _paths), True)
+        for _ng in ("debug", "insights", "history", "成果物"):
+            check(f"{_ng} は再起動の理由にしない",
+                  any(_ng in p for p in _paths), False)
     finally:
         bot._git_self = _keep_git2
         bot.LOADED_COMMIT = _keep_loaded

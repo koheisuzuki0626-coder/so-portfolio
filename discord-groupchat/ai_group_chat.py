@@ -10117,6 +10117,17 @@ async def _sync_to_origin():
 # 手で「再起動して」と言わせない。新しいコードが出たら自分で取り込む。
 AUTO_UPDATE_SEC = int(os.getenv("AUTO_UPDATE_SEC", "180"))
 
+# 再起動する価値があるのは【実行されるコード】が変わった時だけ。
+# ログ(debug/)・知見(insights/)・成果物・履歴はボット自身が書いて push
+# するので、ここに入れてはいけない（自分の書き込みで再起動が無限に続く）。
+CODE_PATHS = [
+    "discord-groupchat/*.py",
+    "discord-groupchat/requirements.txt",
+    "discord-groupchat/.claude/*",
+    "discord-groupchat/*.sh",
+]
+
+
 
 def _auto_update_on():
     return gen_settings.get("auto_update", True) and AUTO_UPDATE_SEC > 0
@@ -10134,8 +10145,11 @@ async def _remote_has_new_code():
     # 比較の基準は作業ツリーのHEADではなく【読み込んだコミット】。
     # HEADだと、外から git pull された時点で差分0になり更新が止まる。
     base = LOADED_COMMIT or "HEAD"
+    # 【コードが変わった時だけ】数える。ボットは自分のログや成果物を
+    # 3分おきに push するので、全コミットを数えると自分の書き込みを
+    # 「新しい修正」と誤認して延々と再起動する（実際に3分ごとに10回続いた）。
     rc, out = await _git_self(
-        ["rev-list", "--count", f"{base}..origin/{branch}"])
+        ["rev-list", "--count", f"{base}..origin/{branch}", "--"] + CODE_PATHS)
     if rc != 0:
         return False, 0
     try:
