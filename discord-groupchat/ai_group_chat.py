@@ -6444,6 +6444,22 @@ def _clear_motion_job():
         pass
 
 
+# 実測の最長のこの倍を超えたら、待っても来ないと判断する。
+# 「混んでいる」で説明できるのはせいぜい数倍まで。
+JOB_LOST_FACTOR = float(os.getenv("JOB_LOST_FACTOR", "3"))
+JOB_LOST_MIN_SEC = int(os.getenv("JOB_LOST_MIN_SEC", "1800"))   # 実測が無い時の下限
+
+
+def _job_is_lost(job, max_seen=0):
+    """このジョブは【もう戻ってこない】か。時間で判断する（状態で守る）。
+    事故：実測9分半の生成を3.8時間、「もう少し待って」と案内し続けた。"""
+    if not job or not job.get("submitted_at"):
+        return False
+    elapsed = time.time() - job["submitted_at"]
+    limit = max(max_seen * JOB_LOST_FACTOR, JOB_LOST_MIN_SEC)
+    return elapsed > limit
+
+
 def _pending_eta_msg(job):
     """まだ生成中のとき、投入からの経過時間と、実測にもとづく残り時間を返す。
     以前は『画像3分・動画12分』と決め打ちだったが、これは根拠のない数字で、
@@ -6461,6 +6477,15 @@ def _pending_eta_msg(job):
         )
     n, med, mx = st
     body = f"過去{n}回の実測は{_fmt_dur(med)}〜{_fmt_dur(mx)}。"
+    if _job_is_lost(job, mx):
+        # 事故：実測9分半の生成を226分（3.8時間）待たせ、その間ずっと
+        # 「もう少し待って」と案内し続けた。ここまで開いたら混雑ではなく消失。
+        # 待てば来るかのような案内をやめ、作り直しの導線を出す。
+        return (
+            head + body + "**これは戻ってこない可能性が高いです**"
+            "（混雑ではなく、投入が通っていないと思われます）。\n"
+            "「**やり直して**」と送れば同じ内容でもう一度投入します。"
+        )
     if elapsed >= mx:
         return (
             head + body + "過去最長を超えています"
@@ -7083,7 +7108,12 @@ async def _run_hf_generate(message, request, model, media_type, label,
             f"依頼: {request[:150]}\n実際: {_last_submitted['prompt'][:150]}\n"
             "出来上がりが違っていたら「作り直して」と送ってください。"
         )
-    disp = label if model else f"自動選定: {chosen or '？'}"
+    # モデル名が取れなかった時に「自動選定: ？」と出していた。
+    # ユーザーには何のことか分からず、進捗の問い合わせのたびに目に入る。
+    # 分からないなら名前を出さず、何を作っているかで呼ぶ。
+    disp = label if model else (f"自動選定: {chosen}" if chosen
+                                else ("画像の生成" if media_type == "image"
+                                      else "動画の生成"))
     if isinstance(result, str):  # 投入中に既にURLが返った
         _clear_motion_job()
         _update_last_gen_url(cid, result)
