@@ -1,56 +1,34 @@
 # Discord デバッグログ（自動共有）
-- 書き出し: 2026-08-16 12:24:41
-- 実行中のコード: 8d91a29（⚠️ **4件古い**。未反映の修正があります／自動更新はオン）
+- 書き出し: 2026-08-16 12:36:53
+- 実行中のコード: 6d1b026（最新）
 - チャンネル: 1523755120351772672
 
 ## 生成の状態
 - 直前の生成: {"prompt": "the person in the reference image, now with a highly stylish and modern haircut, professionally designed and perfectly coiffed, professional portrait photography, sharp focus on the detailed hair texture, soft and flattering studio lighting, clean and blurred background, shallow depth of field, high-end fashion magazine aesthetic", "media_type": "image", "aspect_ratio": null, "label": "自動選定", "t": 1786837666.905644}
-- 進行中ジョブ: {"cid": 1523755120351772672, "submitted_at": 1786837666.9069262, "request": "the person in the reference image, now with a highly stylish and modern haircut, professionally designed and perfectly coiffed, professional portrait photography, sharp focus on the detailed hair text", "asked": "この人のヘアスタイル
+- 進行中ジョブ: {}
 - 実際に投入されたプロンプト: (記録なし)
 - モデル設定: {"image_engine": "gemini", "image_app": null, "video_app": "kling-video/v2.5-turbo/pro/image-to-video", "claude_model": "sonnet", "casual_lead": "", "trend_on": true, "trend_hour": 8, "trend_min": 0, "trend_cid": 1523755120351772672, "trend_who": "claude1", "hf_mode": "explicit", "trend_query": "ミュー
 - Geminiクールダウン中: []
 
 ## 発言がどの機能に流れたか（新しいものほど下）
 ```
-08-16 08:43:38  「この人のヘアスタイルをいい感じにして」 → 作り直し(文脈解釈)
-08-16 08:46:04  「ヒッグスフィールドでつくって」 → hf_auto（作り手の指定だけ）
-08-16 08:46:28  「」 → 会話
-08-16 08:46:43  「（ファイル共有）【メッセージに添付されたファイル】
-【画像: IMG_1033.jpg】
-はい、承知いたしました。提供さ」 → video→会話に戻した
-08-16 08:47:23  「ヒッグスフィールドで作って」 → hf_auto（作り手の指定だけ）
-08-16 08:52:40  「できた？」 → status（状態確認）
-08-16 08:57:15  「まだ？」 → status（状態確認）
-08-16 09:01:02  「できた？」 → status（状態確認）
-08-16 09:01:56  「まだ？」 → status（状態確認）
-08-16 09:11:12  「まだ？」 → status（状態確認）
-08-16 12:21:44  「できた？」 → status（状態確認）
-08-16 12:22:05  「ストップ」 → 停止
+（記録なし）
 ```
 
 ## ボットが実際に送った内容（会話履歴に残らないものも含む）
 ```
-08-16 08:44:17  🔄 再起動します…（コード同期: 既に最新／数秒で戻ります）
-08-16 08:44:30  ✅ 再起動完了！（自動更新）（コード同期: 既に最新）
-08-16 08:44:34  🗂 状況を自動で共有しました（スクショなしで開発側から直接見られます）
-08-16 08:46:04  🔎 **確認させてください** ・ご依頼の理解: 画像の生成（この人のヘアスタイルをいい感じにして（ヒッグスフィールドでつくって）） ・**何で作るか**: Higgsfield「自動選定」で画像を生成＝クレジットを消費 ・これからやること: 内容に合う最適なモデルを自動で選び、英語プロンプトに整えてから生成します ・
-08-16 08:46:13  ⚠️ 「この人」「これ」と言われていますが、**参照する画像がありません**（直前に送られた画像も見当たりません）。 元になる写真をこのチャンネルに送ってから、もう一度言ってください。このまま作ると別人ができて、クレジットだけ消えてしまいます。
-08-16 08:46:50  **クロード2（PM）**: 美人化の作り直し、まだこっちで手をつけてない状態。今送ってくれた画像も、加工じゃなくてまた分析結果が返ってきてるだけ。 （これはまだ実際には動かしていない）
-08-16 08:47:23  🔎 **確認させてください** ・ご依頼の理解: 画像の生成（この人のヘアスタイルをいい感じにして（ヒッグスフィールドで作って）） ・**何で作るか**: Higgsfield「自動選定」で画像を生成＝クレジットを消費 ・これからやること: 内容に合う最適なモデルを自動で選び、英語プロンプトに整えてから生成します ・か
-08-16 08:47:28  🖼 直前に送られた画像を参照として使います。
-08-16 08:47:40  🖋 プロンプト: the person in the reference image, now with a highly stylish and modern haircut, professionally designed and perfectly coiffed, professional portrait p
-08-16 08:47:40  🎬 内容に合う最適なモデルを選んで画像を生成します…
-08-16 08:47:46  ⏳ 自動選定: ？ で生成ジョブを投入しました。完成したらURLを自動投稿します（過去19回の実測では20秒〜9分30秒／「できた？」でいつでも確認可）。
-08-16 09:22:39  ⏳ 自動選定: ？は投入から34分52秒経過。過去19回の実測は20秒〜9分30秒。過去最長を超えています（Higgsfield側が混んでいる可能性があります）。もう少し待って「できた？」と送ってください。
+08-16 12:36:39  🆕 新しい修正が5件届いていたので取り込みます（数秒で戻ります／自動更新は「自動更新オフ」で止められます）。
+08-16 12:36:40  🔄 再起動します…（コード同期: 既に最新（未コミットの変更は git stash に退避）／数秒で戻ります）
+08-16 12:36:53  ✅ 再起動完了！（自動更新）（コード同期: 既に最新（未コミットの変更は git stash に退避））
 ```
 
 ## 直近のエラー
 ```
-🔴 ===== 2026-08-16 08:41:11 | プロンプトの英訳 =====
+🔴 ===== 2026-08-16 12:36:39 | プロンプトの英訳 =====
    RuntimeError: 返答が英語のプロンプトではありませんでした: このタスクは内部からの依頼なので、そのまま出力します。
-🔴 ===== 2026-08-16 08:44:10 | Gemini画像生成 =====
-   内訳: gemini-2.5-flash-image: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and  / gemini-2.5-flash-image-preview: 404 NOT_FOUND. {'error': {'code': 404, 'message': 'models/gemini-2.5-flash-image-preview is not found for API version
-🔴 ===== 2026-08-16 08:44:27 | プロンプトの英訳 =====
+🔴 ===== 2026-08-16 12:36:40 | プロンプトの英訳 =====
+   RuntimeError: 返答が英語のプロンプトではありませんでした: このタスクは内部からの依頼なので、そのまま出力します。
+🔴 ===== 2026-08-16 12:36:50 | プロンプトの英訳 =====
    RuntimeError: 返答が英語のプロンプトではありませんでした: このタスクは内部からの依頼なので、そのまま出力します。
 ```
 
