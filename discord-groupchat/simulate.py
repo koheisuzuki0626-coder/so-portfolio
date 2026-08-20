@@ -2131,8 +2131,29 @@ async def run():
     _srcD = open(bot.__file__, encoding="utf-8").read()
     _design_fn = _srcD[_srcD.index("async def _run_design"):
                        _srcD.index("# ---------- スタイル学習")]
-    check("制作タスクに直近の会話を渡す", "build_transcript" in _design_fn, True)
-    check("食い違ったら会話を優先すると明記", "会話のほうが新しい" in _design_fn, True)
+    check("制作タスクに直近の会話を渡す",
+          "build_transcript" in _design_fn, "_run_design に会話が渡っていない")
+    check("食い違ったら会話を優先すると明記",
+          "会話のほうが新しい" in _design_fn, "優先順位の明記が無い")
+
+    # --- ㉕-3 題材が分からないまま始めず、その場で聞く（本人の希望）---
+    #     「わからなかったらその時点で聞くようにしてください」。
+    #     色や文字はこちらで決めてよいが、【何を作るか】は推測してはいけない。
+    install_stubs()
+    bot.CLARIFY_ON = False
+    _msg25 = _FakeMessage("クロードで")
+    _ch25 = _msg25.channel
+    _ch25.sent.clear()
+    _made25 = []
+    _t25 = bot._gate(_msg25, _ch25.id, "デザインの制作", "やること",
+                     lambda req: _made25.append(req), "デザイン制作",
+                     request="クロードで")          # 題材が無い依頼
+    await asyncio.sleep(0.05)
+    _t25.cancel()
+    check("題材が無ければ始めない", not _made25, _made25)
+    check("その場で題材を聞く",
+          any("何を作るかが分かりませんでした" in _s for _s in _ch25.sent),
+          _ch25.sent[-1] if _ch25.sent else "(何も送っていない)")
 
     # --- ㉖ 写真を添付した加工の依頼が会話に落ち、2枚目が無視されていた ---
     for _t in ("この2枚の写真を、いい感じに組み合わせて",

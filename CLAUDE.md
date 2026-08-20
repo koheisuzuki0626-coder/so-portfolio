@@ -183,6 +183,8 @@ Mac で動いているボットは読まない。「ここで決めたのに Dis
 | 使えないと分かっている手を勧めない | `_gemini_image_usable` |
 | 頼まれなくてもログを共有する | `_autolog_loop` |
 | 不明点は始める前に聞き返す | `CLARIFY_SLOTS` / `_missing_slots` |
+| 題材が分からないまま始めない | `_gate` の `_has_subject` チェック |
+| 題材を過去の記録から当て推量しない | `_stack_revise` は `_looks_revise` の時だけ |
 | 無い機能を「ある」ことにしない | `_SLASH_CMD_RE` / `_no_slash_note` |
 | 収益の相談を料金照会にしない | `_INCOME_Q_RE` |
 | 時間切れを「却下」と言わない | `_stopped_note` / `_recent_expired` |

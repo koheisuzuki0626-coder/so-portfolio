@@ -10122,6 +10122,21 @@ def _gate(message, cid, summary, plan, factory, label, cost="", engine="",
     その場合 factory は補った依頼文を1つ受け取る関数にすること。"""
     async def _run():
         req, extra = request, ""
+        # 【何を作るか】が分からないまま始めない。本人の希望：
+        # 「わからなかったらその時点で聞くようにしてください」。
+        # 仕上がりの好み（色・文字など）はこちらで決めてよいが、題材だけは
+        # 推測してはいけない。事故（2026-08-20）：題材が分からないまま
+        # 過去の記録から当て推量で補い、話題と無関係なものを作った。
+        if request and not _has_subject(request):
+            _set_pending_do(cid, "何を作るか", request)
+            await send_as(
+                orch, cid,
+                "❓ **何を作るかが分かりませんでした。**\n"
+                "題材を一言だけ教えてください"
+                "（例:「律速段階の図解」「商品のサムネ」）。\n"
+                "※色や文字などの細かい好みは、そのあとで聞きます。"
+            )
+            return
         if clarify and request:
             slots = _missing_slots(clarify, request)
             if slots:
