@@ -6561,13 +6561,13 @@ def _extract_video_url(text):
     return None
 
 
-_DESIGN_PATH_RE = re.compile(r"PATH:\s*(\S+\.png)")
+_LOCAL_OUT_PATH_RE = re.compile(r"PATH:\s*(\S+)")
 
 
-def _extract_design_path(text):
-    """claude出力からデザイン書き出し先のローカルPNGパスを抽出する
-    （Higgsfieldに頼らずMacローカルで書き出す方式。_extract_video_urlのURL版と対）。"""
-    m = _DESIGN_PATH_RE.search(text or "")
+def _extract_local_path(text):
+    """claude出力からローカルの書き出し先パスを抽出する
+    （Higgsfieldに頼らずMacローカルで処理する方式。_extract_video_urlのURL版と対）。"""
+    m = _LOCAL_OUT_PATH_RE.search(text or "")
     return m.group(1) if m else None
 
 
@@ -7483,60 +7483,112 @@ async def _report_result(cid, request, url, media_type, headline):
     return False
 
 
-# ---------- 完パケ編集（Higgsfieldのクラウドサンドボックスでffmpeg処理） ----------
+# ---------- 完パケ編集（Macローカルのffmpegで処理） ----------
 # 生成した素材は「撮って出し」なので、字幕・尺調整・連結・BGMといった後工程が要る。
-# Higgsfield MCP の sandbox_exec（ffmpeg / ImageMagick / faster-whisper 入りの
-# Linux環境。CPU2コア・3GB・GPU無し）で処理し、結果をアップロードして返す。
-# 生成モデルを回さないので、動画生成のクレジットは消費しない。
+# 事故（2026-08-20）：以前はHiggsfieldのクラウドサンドボックス（sandbox_exec）に
+# 頼っていたが、Discordボット（非対話セッション）はMCP接続を使えず、認証済みでも
+# 常に失敗した（デザイン制作と同じ原因。詳しくはCLAUDE.md参照）。
+# 今はMacに入っているffmpegと、切り抜き機能（_run_clip_shorts）が既に使っている
+# whisper.cpp（_transcribe_local）でローカルに処理する。生成モデルを回さないので、
+# クレジットは消費しない。
+_SUBTITLE_ASK_RE = re.compile("字幕|テロップ|文字起こし|caption|subtitle", re.I)
+
 
 async def _run_video_edit(message, instruction):
-    """完成済みの動画を、指示どおりにサンドボックスで編集して返す。"""
+    """完成済みの動画を、指示どおりMacローカルで編集して返す（Higgsfield不要）。"""
     cid = message.channel.id
     att = _find_attachment(message, SUPPORTED_VIDEO_TYPES)
     urls = _MEDIA_URL_RE.findall(instruction or "")
-    src = att.url if att else (urls[0] if urls else (_load_last_gen(cid) or {}).get("url"))
-    if not src:
+    src_url = att.url if att else (urls[0] if urls else (_load_last_gen(cid) or {}).get("url"))
+    if not src_url:
         await send_as(
             orch, cid,
             "編集する動画が見つかりません。動画を添付するか、まず生成してから"
             "「字幕つけて」「15秒に縮めて」のように指示してください。"
         )
         return
-    await send_as(orch, cid, "🎬 クラウド編集室で加工します（1〜5分）…")
-    task = (
-        "Higgsfield の MCP ツール sandbox_exec を使って動画を編集して。\n"
-        f"元動画URL: {src}\n"
-        f"編集の指示（日本語）: {instruction}\n"
-        "手順:\n"
-        "1) curl -L で /home/user/in.mp4 に取得\n"
-        "2) ffmpeg で指示どおりに編集し /home/user/out.mp4 を作る。\n"
-        "   ・字幕/テロップの指示があれば faster-whisper で書き起こし、"
-        "subtitles か drawtext で焼き込む（フォントは Metropolis か Montserrat、"
-        "縦型は下から1/4あたり・白文字＋黒縁で読みやすく）\n"
-        "   ・縦型/ショート指定があれば 1080x1920 に crop+scale する\n"
-        "   ・音楽やBGMの指示があっても、権利のある音源が無い場合は音量調整までに留める\n"
-        "   ・映像の内容そのものを作り変えることはしない（編集のみ）\n"
-        "3) media_upload で署名付きURLを取得し "
-        "curl -X PUT --upload-file /home/user/out.mp4 '<upload_url>' でアップロード\n"
-        "4) media_confirm で確定して公開URLを得る\n"
-        "※サンドボックスは呼び出し間で消えるので 1〜2 は && でつないで1回のコマンドにまとめること。\n"
-        "最終行に『URL: <公開URL>』だけを出力。失敗なら『ERROR: 理由』。"
-    )
-    out = await _run_claude_exec(task, timeout=900)
-    url = _extract_video_url(out or "")
-    if not url or (out or "").strip().splitlines()[-1].upper().startswith("ERROR"):
-        await send_as(orch, cid, f"⚠️ 編集に失敗しました: {(out or '')[-300:]}")
-        return
-    _update_last_gen_url(cid, url)
-    add_history(cid, "Orchestrator", f"（動画を編集して出力: {url}）")
-    await send_as(
-        orch, cid,
-        f"✅ 編集できました！\n{url}\n"
-        "さらに直したいときは「もう少し字幕を大きく」のように続けて言ってください。"
-    )
+    await send_as(orch, cid, "🎬 Macで加工します（1〜5分）…")
+    CLIP_DIR.mkdir(parents=True, exist_ok=True)
+    workdir = CLIP_DIR / f"edit{int(time.time())}"
+    workdir.mkdir(parents=True, exist_ok=True)
+    src = workdir / "in.mp4"
+    try:
+        if not await _download_video(cid, src_url, src, kind="url"):
+            return
+        srt_hint = ""
+        if _SUBTITLE_ASK_RE.search(instruction or ""):
+            rows = await _transcribe_local(cid, src, workdir)
+            if rows:
+                srt = workdir / "auto.srt"
+                srt.write_text(_srt_for(rows, 0, 10 ** 7), encoding="utf-8")
+                font = _clip_font()
+                style = (
+                    f"FontName={'Hiragino Sans' if font else 'sans-serif'},FontSize=15,"
+                    "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+                    "Outline=3,Shadow=0,Alignment=2,MarginV=140"
+                )
+                srt_hint = (
+                    f"\n【字幕】音声から文字起こし済みのSRTがある: {srt}\n"
+                    "自分で書き起こす必要はない。焼き込むときは ffmpeg の -vf に "
+                    f"subtitles='{srt}':force_style='{style}' を足すこと。\n"
+                )
+        out = workdir / "out.mp4"
+        task = (
+            "Macローカルの ffmpeg で動画を編集して（ffmpegはPATHに入っている）。\n"
+            f"元動画: {src}\n"
+            f"編集の指示（日本語）: {instruction}\n"
+            + srt_hint
+            + "手順:\n"
+            f"1) ffmpeg で指示どおりに編集し {out} を作る（1回のBash呼び出しでよい）\n"
+            "   ・縦型/ショート指定があれば 1080x1920 に crop+scale する\n"
+            "   ・音楽やBGMの指示があっても、権利のある音源が無い場合は音量調整までに留める\n"
+            "   ・映像の内容そのものを作り変えることはしない（編集のみ）\n"
+            f"   ・-threads {_work_threads()} を指定する\n"
+            f"2) `ls -la {out}` で出来上がったか確認する\n"
+            f"最終行に『PATH: {out}』だけを出力。失敗なら『ERROR: 理由』。"
+        )
+        out_text = await _run_claude_exec(task, timeout=900)
+        last = (out_text or "").strip().splitlines()[-1:] or [""]
+        if not out.exists() or last[0].upper().startswith("ERROR"):
+            await send_as(orch, cid, _claude_fail_note(
+                "動画の編集", (out_text or "")[-300:]))
+            return
+        if out.stat().st_size > CLIP_MAX_MB * 1024 * 1024:
+            small = workdir / "out_small.mp4"
+            ok2, log2 = await _sh([
+                "ffmpeg", "-nostdin", "-y", "-threads", str(_work_threads()),
+                "-i", str(out), "-vf", "scale=-2:720",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+                "-c:a", "aac", "-b:a", "96k", str(small)], heavy=True)
+            if ok2 and small.exists() and small.stat().st_size <= CLIP_MAX_MB * 1024 * 1024:
+                out = small
+            else:
+                await send_as(
+                    orch, cid,
+                    f"⚠️ 編集はできましたが、Discordの上限（{CLIP_MAX_MB}MB）に"
+                    f"収まりませんでした（{out.stat().st_size / 1048576:.0f}MB）: {log2[-200:]}"
+                )
+                return
+        data = out.read_bytes()
+        url = await send_image_bytes(
+            cid,
+            "✅ 編集できました！さらに直したいときは"
+            "「もう少し字幕を大きく」のように続けて言ってください。",
+            data, f"edit_{int(time.time())}.mp4",
+        )
+        if not url:
+            await send_as(orch, cid, "⚠️ 編集はできましたが、Discordへの送信に失敗しました。")
+            return
+        _update_last_gen_url(cid, url)
+        add_history(cid, "Orchestrator", f"（動画を編集して出力: {url}）")
+    finally:
+        try:
+            shutil.rmtree(workdir, ignore_errors=True)
+        except Exception:  # noqa: BLE001
+            pass
 
 
-# ---------- デザイン制作（ClaudeがHTMLで設計 → サンドボックスで画像化） ----------
+# ---------- デザイン制作（ClaudeがHTMLで設計 → Macローカルで画像化） ----------
 # 生成AIは「文字がきれいに入った絵」が苦手（サムネ・バナー・図解・価格表など）。
 # そこは画像生成ではなく、ClaudeにHTML/CSSで組ませて、Higgsfieldの
 # サンドボックス（Playwright + ヘッドレスChromium）で書き出すのが確実。
@@ -7726,7 +7778,7 @@ async def _run_design(message, request):
         + "\n最終行に『PATH: /tmp/design_out.png』だけを出力。失敗なら『ERROR: 理由』。"
     )
     out = await _run_claude_exec(task, timeout=900, model=DESIGN_MODEL or None)
-    png_path = _extract_design_path(out or "")
+    png_path = _extract_local_path(out or "")
     last = (out or "").strip().splitlines()[-1:] or [""]
     if not png_path or last[0].upper().startswith("ERROR") or not os.path.exists(png_path):
         await send_as(orch, cid, _claude_fail_note(

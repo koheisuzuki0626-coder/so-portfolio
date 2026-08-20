@@ -151,7 +151,7 @@ ROUTE_CASES = [
     ("モーションコントロールで作りたい", "motion_ask", {}),
     ("この動きで生成して", "motion",
      {"has_video_att": True, "has_attachments": True}),
-    # 完パケ編集（Higgsfieldのクラウド編集室・ffmpeg）
+    # 完パケ編集（Macローカルのffmpeg）
     ("字幕つけて", "edit", {"has_last_gen": True}),
     ("テロップ入れて", "edit", {"has_last_gen": True}),
     ("15秒に縮めて", "edit", {"has_last_gen": True}),
@@ -1131,6 +1131,17 @@ def run():
     check("日本語が出るフォントを使う",
           any("ヒラギノ" in f for f in bot.CLIP_FONTS), True)
     check("Discordの上限に収める", bot.CLIP_MAX_MB <= 25, True)
+
+    print("■ 完パケ編集もHiggsfieldのMCPサンドボックスを使わない")
+    # 事故（2026-08-20）：デザイン制作と同じ原因で、動画編集
+    # （字幕つけて/15秒に縮めて等）もHiggsfieldのsandbox_exec依存で
+    # 常に失敗していた。Macローカルのffmpeg/whisper.cppに切り替えた。
+    _edit_fn = _src6[_src6.index("async def _run_video_edit"):
+                     _src6.index("# ---------- デザイン制作（")]
+    for _ng in ("sandbox_exec", "media_upload", "media_confirm"):
+        check(f"動画編集は {_ng} を使わない", _ng in _edit_fn, False)
+    for _ok in ("_download_video", "_transcribe_local", "ffmpeg"):
+        check(f"動画編集はローカルの {_ok} を使う", _ok in _edit_fn, True)
 
     print("■ 直しの指示が進捗確認に化けないこと")
     # 事故：「顔が違うので、鼻の高さだけ変えてあとは顔のパーツに合わせてください」が
