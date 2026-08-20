@@ -5489,7 +5489,9 @@ def _request_with_context(req, cid):
     return f"{prev}（{req}）" if prev else req
 # 作り手を名指しできる対象物（絵・デザインの両方）
 _VISUAL_NOUN_RE = re.compile(
-    "サムネ|thumbnail|バナー|画像|イラスト|ロゴ|絵|写真|アイコン|デザイン|"
+    # 「静止画」は動画と対で使われる語。これが無いと「クロードで静止画を作って
+    # …動画にする」が、文中の「動画」だけを見て動画生成へ流れた（2026-08-20）
+    "サムネ|thumbnail|バナー|画像|静止画|イラスト|ロゴ|絵|写真|アイコン|デザイン|"
     "ポスター|チラシ|フライヤー|表紙|カバー|スライド|図解|価格表|料金表|名刺|"
     "相関図|関係図|家系図|系図|系統図|組織図|構成図|フローチャート|チャート|"
     "図表|ダイアグラム|マインドマップ|ロードマップ|年表|タイムライン|"
@@ -5643,6 +5645,15 @@ def _hf_explicit_only():
     return (gen_settings.get("hf_mode") or HF_MODE_DEFAULT) != "auto"
 
 
+def _hf_blocked():
+    """ヒッグスフィールドを一切使わない設定か（「ヒッグスフィールドは使わない」）。
+    事故（2026-08-20）：既定が既に explicit だったため、本人が
+    「ヒッグスフィールドは使わない」と言っても設定は何も変わらず、
+    直後の依頼がそのまま Higgsfield の動画生成へ流れた。
+    はっきり断られた時は【使わない】という状態を持ち、名指し以外では通さない。"""
+    return (gen_settings.get("hf_mode") or HF_MODE_DEFAULT) == "never"
+
+
 _AUTO_UPDATE_RE = re.compile("自動(更新|アップデート|反映)|オートアップデート")
 _OFF_RE = re.compile("オフ|off|止め|やめ|停止|切っ|しないで|無効", re.I)
 
@@ -5661,7 +5672,9 @@ def _match_hf_mode(text):
     """発言からヒッグスフィールドの使い方の切替を読む。(値, 表示) か None。"""
     t = text or ""
     if _HF_OFF_RE.search(t):
-        return "explicit", "頼まれた時だけ使う"
+        # 既定が既に explicit なので、ここで explicit を返すと
+        # 「使わない」と言っても何も変わらなかった（実際に直後に使われた）。
+        return "never", "使わない（名指ししない限り選ばない）"
     if _HF_ON_RE.search(t):
         return "auto", "必要なら自動で使う"
     return None
@@ -6087,6 +6100,25 @@ def _r_generate(c):
     # 質問では発動しない。モデル名の指定があっても同じ（質問が先）。
     if c.is_question:
         return None
+    # 作り手を名指ししているなら、その指定を最優先する。
+    # 事故（2026-08-20）：「3枚クロードで静止画を作成して、カメラをパンしたり
+    # ズームしたりして動画にする」で、文中の「動画」だけを見て Higgsfield の
+    # 動画生成（クレジット消費）へ流れた。本人は【クロードで静止画を作り、
+    # そのあと自分たちで ffmpeg で動画化する】と言っていたのに、
+    # 名指しが無視されていた。名指しは自動判定より常に優先する。
+    # ただし「ヒッグスフィールドで作って」のような作り手だけの言い直しは、
+    # 直前の依頼を引き継ぐ _r_maker_only に任せる（何を作るかがここに無い）。
+    named = _route_by_maker(c.text) if _has_subject(c.text) else None
+    # クロードは動画そのものを作れない。「クロードで動画作って」は従来どおり
+    # 通常の生成へ落とす。ただし「クロードで静止画を作って…動画にする」の
+    # ように【作る対象が静止画】なら、文中に動画の語があってもクロードのまま
+    # （本人は書き出した静止画を自分たちで ffmpeg で動画化するつもりだった）。
+    if (named == "design"
+            and re.search("動画|映像|ムービー|クリップ|PV|ＰＶ", c.text)
+            and not _VISUAL_NOUN_RE.search(c.text)):
+        named = None
+    if named:
+        return named
     if _match_gen_model(c.text):
         return "hf_model"
     # 画像は Gemini（無料枠）優先。「geminiで画像作って」もここ
@@ -6098,6 +6130,10 @@ def _r_generate(c):
     # 媒体が明示されていればAI判定に落とさず生成へ（速度と確実性）
     media_noun = re.search("動画|映像|ムービー|クリップ|PV|ＰＶ", c.text)
     if auto_kw or c.has_video_att or c.has_image_att or media_noun:
+        # 「ヒッグスフィールドは使わない」と言われている間は、名指しが無い限り
+        # 自動選定へ流さない（クレジットを勝手に使わないため）。
+        if _hf_blocked() and not _HF_NAMED_RE.search(c.text):
+            return None
         return "hf_auto"
 
 
@@ -7196,6 +7232,19 @@ def _save_last_gen(cid, prompt, media_type, aspect_ratio, label):
 
 def _load_last_gen(cid):
     return _read_json(_LASTGEN_FILE).get(str(cid))
+
+
+def _clear_last_gen(cid):
+    """直前の生成の記録を捨てる。
+    事故（2026-08-20）：1時間前の「髪型」の画像プロンプトが残り続け、
+    話題が「律速段階の工場ライン」に移ったあとの『作り直して』が、
+    その古い髪型プロンプトを引きずり出して別物を作ろうとした。
+    仕切り直しを頼まれたら、次の『作り直して』が過去を掘り返さないよう捨てる。"""
+    data = _read_json(_LASTGEN_FILE)
+    if data.pop(str(cid), None) is not None:
+        _write_json(_LASTGEN_FILE, data, "lastgen")
+        return True
+    return False
 
 
 def _update_last_gen_url(cid, url):
@@ -10626,12 +10675,49 @@ def _is_stop_phrase(content):
     return norm in _STOP_PHRASES
 
 
-async def _do_stop(message, cid):
+# 仕切り直しの申し出。停止に加えて、確認待ちと【直前の生成の記憶】まで捨てる。
+# 事故（2026-08-20）：「一旦全部タスクはリセット」と言われたのに、
+# 1時間前の髪型プロンプトが残り続け、そのあとの『作り直して』が
+# 話題と無関係な髪型の画像を作ろうとした。
+_START_OVER_RE = re.compile(
+    "(一旦|いったん|一回|いっかい|全部|ぜんぶ|)\\s*"
+    "(タスク|作業|依頼|やりかけ|やりかけの|話|それ)?\\s*"
+    "(は|を|も|)\\s*(リセット|白紙|クリア|仕切り直)")
+# 仕切り直しと取り違えてはいけないもの。
+#  ・質問（「リセットってどういう意味？」「上限がリセットされる時刻は？」）
+#  ・別機能の「スタイルをリセットして」（学習した作風を白紙に戻すコマンド）
+#  ・こちらが起こす動作ではない話（枠・上限が「リセットされる」）
+_START_OVER_NG_RE = re.compile("スタイル|作風|上限|枠|クールダウン|され(る|た|ます)")
+
+
+def _is_reset_phrase(content):
+    t = _strip_media_context(content or "")
+    if not _START_OVER_RE.search(t):
+        return False
+    if _START_OVER_NG_RE.search(t) or _looks_like_question(t):
+        return False
+    return True
+
+
+async def _do_stop(message, cid, reset=False):
     state["stop"] = True
     # 文字起こしや切り出しが走っていたら、それも止める。
     # 止められないと、CPUを占有したまま「再起動」すら届かなくなる。
     killed = stop_heavy_procs()
     note = f"（重い処理を{killed}件止めました）" if killed else ""
+    if reset:
+        # 確認待ちと直前の生成を捨てる＝次の「作り直して」が過去を掘り返さない
+        _pending_approvals.pop(cid, None)
+        _pending_do.pop(cid, None)
+        cleared = _clear_last_gen(cid)
+        projects.pop(cid, None)
+        await message.channel.send(
+            f"🧹 仕切り直しました{note}。"
+            + ("直前の生成の記憶も消したので、次は白紙から始めます。"
+               if cleared else "進行中のものはありません。")
+            + "\n次に何を作るか、そのまま言ってください。"
+        )
+        return
     if projects.pop(cid, None):
         await message.channel.send(
             f"⏹️ 進行中の作業を停止しました{note}。以降は通常の会話に戻ります。"
@@ -11159,6 +11245,10 @@ async def _dispatch_message(message):
     if content == "!stop" or _is_stop_phrase(content):
         _fired(cid, "停止", content)
         await _do_stop(message, cid)
+        return
+    if _is_reset_phrase(content):
+        _fired(cid, "仕切り直し", content)
+        await _do_stop(message, cid, reset=True)
         return
     if content == "!restart" or _is_restart_phrase(content):
         _fired(cid, "再起動", content)

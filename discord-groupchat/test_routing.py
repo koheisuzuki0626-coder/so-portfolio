@@ -1847,9 +1847,13 @@ def run():
     check("既定は『頼まれた時だけ』", bot._hf_explicit_only(), True)
     _keep_hf = bot.gen_settings.get("hf_mode")
     try:
+        # 2026-08-20 変更：以前はここで explicit（＝既定と同じ）を返していたため、
+        # 「使わない」と言っても設定が何も変わらず、直後に実際に使われた。
+        # はっきり断られた時は never（名指し以外では選ばない）にする。
         for _t in ("ヒッグスフィールドは使わないで", "安易にヒッグスフィールド使わないで欲しい",
                    "higgsfieldは使うな"):
-            check(f"{_t[:16]!r}… で絞る", bot._match_hf_mode(_t)[0], "explicit")
+            check(f"{_t[:16]!r}… で使わない設定になる",
+                  bot._match_hf_mode(_t)[0], "never")
         check("使っていいと言われたら戻す",
               bot._match_hf_mode("ヒッグスフィールドを使っていいよ")[0], "auto")
         for _t in ("ヒッグスフィールドで動画作って", "ヒッグスフィールドってなに"):
@@ -2577,6 +2581,51 @@ def run():
     check("クレジット消費だと分かる", "クレジットを消費" in _txt3, True)
     _txt4 = _aio6.run(_confirm_text(""))
     check("指定が無ければ従来どおり", "何で作るか" in _txt4, False)
+
+    print("■ 作り手の名指しは、文中の媒体名より強い")
+    # 事故（2026-08-20）：「3枚クロードで静止画を作成して、カメラをパンしたり
+    # ズームしたりして動画にする」が、文中の「動画」だけを見て Higgsfield の
+    # 動画生成（クレジット消費）へ流れた。本人はクロードで静止画を作り、
+    # そのあと自分たちで ffmpeg で動画化するつもりだった。
+    check("クロード名指し＋文中に動画→クロードのまま",
+          bot.classify_route(
+              "3枚クロードで静止画を作成して、カメラをパンしたりズームしたりして動画にする"),
+          "design")
+    check("静止画も視覚物として扱う",
+          bool(bot._VISUAL_NOUN_RE.search("静止画")), True)
+    check("名指しが無ければ従来どおり生成へ",
+          bot.classify_route("動画作って"), "hf_auto")
+
+    print("■ 「ヒッグスフィールドは使わない」が実際に効くこと")
+    # 事故（2026-08-20）：既定が既に explicit だったため「使わない」と言っても
+    # 設定は何も変わらず、直後の依頼がそのまま Higgsfield へ流れた
+    check("『使わない』は never になる",
+          bot._match_hf_mode("ヒッグスフィールドは使わない")[0], "never")
+    _keep_mode = bot.gen_settings.get("hf_mode")
+    try:
+        bot.gen_settings["hf_mode"] = "never"
+        check("never なら自動選定へ流さない",
+              bot.classify_route("動画作って"), None)
+        check("never でも名指しなら通す",
+              bot.classify_route("ヒッグスフィールドで動画作って"), "hf_auto")
+        bot.gen_settings["hf_mode"] = "explicit"
+        check("explicit なら従来どおり", bot.classify_route("動画作って"), "hf_auto")
+    finally:
+        bot.gen_settings["hf_mode"] = _keep_mode
+
+    print("■ 仕切り直し（古い生成の記憶を引きずらない）")
+    # 事故（2026-08-20）：「一旦全部タスクはリセット」と言ったのに、1時間前の
+    # 髪型プロンプトが残り続け、そのあとの『作り直して』がそれを掘り返した
+    for _t in ("一旦全部タスクはリセット", "リセットして", "全部白紙にして",
+               "一旦クリア", "仕切り直そう",
+               "一旦全部タスクはリセット\n\nまず動画の構成案を作ろう"):
+        check(f"仕切り直しとして拾う: {_t[:14]!r}", bot._is_reset_phrase(_t), True)
+    # 別機能・質問・こちらが起こす動作でない話は拾わない
+    for _t in ("リセットってどういう意味？", "スタイルをリセットして",
+               "上限がリセットされる時刻は？", "枠はいつリセットされる",
+               "動画作って", "おはよう", "ありがとう"):
+        check(f"仕切り直しにしない: {_t[:14]!r}", bot._is_reset_phrase(_t), False)
+    check("記憶を捨てる道具がある", callable(bot._clear_last_gen), True)
 
     print("■ デザインの作り直し（誰に作らせるかの指定を守る）")
     # 実際に起きた事故：「クロードで作り直して」を作風の指定と読んで
