@@ -2108,6 +2108,32 @@ async def run():
           _c25 is not None and "背景を室内" not in _c25[0][1],
           _c25[0][1] if _c25 else "")
 
+    # --- ㉕-2 短い発言を「直前の生成の手直し」と当て推量して別物を作った ---
+    #     （2026-08-20 の実例）構成案（律速段階・工場ライン）を決めた直後の
+    #     「クロードで作って、1枚目ができたら送って」（20字）が、話題と無関係な
+    #     13分前のスキンケアの英語プロンプトに積み上がり、全く違う内容が出来た。
+    #     本人の言う「1枚目」は会話中の構成案のカット1であって、直前の生成物ではない。
+    _stale = ("person with radiant, glowing skin applying premium skincare "
+              "product, luxury skincare brand aesthetic")
+    install_stubs()
+    bot.CLARIFY_ON = False
+    bot._load_last_gen = lambda cid: {
+        "prompt": _stale, "media_type": "image",
+        "label": "デザイン（YouTubeサムネイル）", "t": _tm4.time(),
+        "url": "https://example.com/skincare.png"}
+    await drive("構成案は律速段階のテーマ。工場ラインの3カット構成でいこう")
+    await drive("クロードで作って、1枚目ができたら送って")
+    _c25b = last_call("design")
+    check("短い発言でも、無関係な直前の生成に積み上げない",
+          _c25b is not None and "skincare" not in _c25b[0][1],
+          _c25b[0][1] if _c25b else f"fired={FIRED}")
+    # 会話を見て作れるよう、直近のやり取りを制作タスクに渡していること
+    _srcD = open(bot.__file__, encoding="utf-8").read()
+    _design_fn = _srcD[_srcD.index("async def _run_design"):
+                       _srcD.index("# ---------- スタイル学習")]
+    check("制作タスクに直近の会話を渡す", "build_transcript" in _design_fn, True)
+    check("食い違ったら会話を優先すると明記", "会話のほうが新しい" in _design_fn, True)
+
     # --- ㉖ 写真を添付した加工の依頼が会話に落ち、2枚目が無視されていた ---
     for _t in ("この2枚の写真を、いい感じに組み合わせて",
                "この写真の背景を消して", "この写真を明るくして"):

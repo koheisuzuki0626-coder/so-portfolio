@@ -7790,11 +7790,23 @@ async def _run_design(message, request):
     png_path = workdir / "out.png"
     try:
         style = _style_snippet()
+        # 直近の会話を渡す。「1枚目」「さっきの構成案の1カット目」のように、
+        # 何を作るかが会話の中で決まっていることが多いため。
+        # 事故（2026-08-20）：構成案（律速段階・工場ライン）を決めた直後に
+        # 「1枚目ができたら送って」と頼まれたのに、会話を一切見ずに
+        # 無関係な13分前のプロンプトで作り、全く違う内容が出来た。
+        convo = build_transcript(get_history(cid)[-12:])
         task = (
             "デザイン制作をして。画像生成モデルは使わず、自分でHTML/CSSを書いて"
             "スクリーンショットとして書き出すこと（文字が崩れないのが目的）。\n"
             f"依頼（日本語）: {request}\n"
             f"仕上がりサイズ: {w}x{h}px（{label}）\n"
+            + (f"""【直近の会話（古い順。何を作るかはここで決まっていることが多い）】
+{convo}
+【最重要】上の会話で構成案・カット割り・テーマが決まっているなら、必ずそれに
+従うこと。「1枚目」「1カット目」は、その構成案の最初のカットを指す。
+依頼文と会話が食い違う場合は【会話のほうが新しい】ので会話を優先する。
+会話に無い題材を勝手に持ち出さない。\n""" if convo.strip() else "")
             + (f"これまでに学習した勝ちパターン:\n{style}\n" if style else "")
             + DESIGN_CRAFT_RULES
             # 生成時間のほとんどはHTMLを書く時間なので、短く書かせるのが一番効く
@@ -11449,9 +11461,16 @@ async def _dispatch_message(message):
         # ずっと前の「背景を室内に変えて」が引きずり出されて別物が出来た。
         if not _has_subject(content):
             _req = _request_with_context(content, cid)
-        elif _prev and (_looks_revise(content)
-                        or len(_strip_media_context(content)) < 25):
+        elif _prev and _looks_revise(content):
             _req = _stack_revise(_prev, content)
+        # 以前はここに「短い発言（25字未満）なら直前の生成の手直し」という
+        # 当て推量があった。事故（2026-08-20）：構成案（律速段階・工場ライン）を
+        # 決めた直後の「クロードで作って、1枚目ができたら送って」（20字）が、
+        # 話題と無関係な【13分前のスキンケアの英語プロンプト】に積み上がり、
+        # 全く違う内容が生成された。本人の言う「1枚目」は会話中の構成案の
+        # カット1であって、直前の生成物ではない。
+        # 短い手直し（「背景を暗くして」等）は _r_design_tweak / _r_revise が
+        # 手前で拾うので、ここで長さを見て推測する必要はない。
         _w, _h, _label = _design_size(_req)
         _gate(message, cid, f"デザインの制作（{_req[:40]}）",
               f"ClaudeがHTMLでレイアウトを組み、{_label} {_w}×{_h} の画像に"
