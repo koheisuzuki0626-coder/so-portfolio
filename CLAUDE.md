@@ -363,6 +363,31 @@ Gitの履歴に残る（`_save_to_github`）。
 `_plan` は短い発言をAIに渡す前に雑談へ落とすので、ここに無いと
 「構成案エクセルで」(8字) が**AIを呼ぶ前に**会話になる（実際に4回起きた）。
 
+## Discordボット（非対話セッション）はMCP接続を使えない
+
+**事実：`claude -p`（非対話・ヘッドレス）は、アカウント側でMCP接続
+（Higgsfield・Adobe等）が認証済みであっても、その接続を一切使えない。**
+「認証していない」というエラーが出ても、それは診断が間違っている
+可能性が高い（実際にこのチャット＝インタラクティブなセッションで確認したら
+認証済みだった。2026-08-20、デザイン制作の書き出しで発生）。
+
+つまり `sandbox_exec` / `media_upload` / `media_confirm` のような
+MCPツールに頼る機能は、Discordボットからは**再認証しても直らない**。
+このリポジトリでは：
+- **動画・画像生成**（Higgsfield）は MCP ではなく **REST API**
+  （`HIGGSFIELD_API_KEY`/`HIGGSFIELD_API_SECRET`）を直接叩いているので
+  Discordボットからも動く
+- **デザイン制作**（HTML→PNG）は以前 Higgsfield の MCP サンドボックス
+  （`sandbox_exec`）を使っていたが、上記の理由で常に失敗していた。
+  今は Mac ローカルの Playwright（`discord-groupchat/tools/html_to_png.py`、
+  venv にインストール済み）でHTML→PNGを書き出す方式に変更済み。
+  macOSは日本語フォント（Hiragino Sans）を標準で持っているので、
+  Higgsfieldのサンドボックスと違ってフォント導入も不要になった。
+
+**新しい機能でMCPツールを使いたくなったら、Discordボット（非対話）から
+呼ぶ前に必ず「REST APIかローカル実行で代替できないか」を先に検討すること。**
+MCP前提の機能はDiscordから一生動かない。
+
 ## discord-groupchat の基本
 
 - Discord Bot 3体（オーケストレーター / Claude / Gemini）を1つの Python プロセスで動かす

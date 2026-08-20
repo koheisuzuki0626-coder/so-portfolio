@@ -40,6 +40,7 @@ cd discord-groupchat
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+python3 -m playwright install chromium   # デザイン制作（HTML→PNG）に使う
 ```
 
 ### 2. Discord Bot を3体作る

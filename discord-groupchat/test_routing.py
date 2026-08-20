@@ -2488,17 +2488,24 @@ def run():
     finally:
         bot.TASK_TIMES_FILE, bot._task_times = _keep_file, _keep2
 
-    print("■ デザイン制作を1回のサンドボックス呼び出しにまとめる")
-    # 実際に起きた事故：呼び出しを分けたため毎回フォント導入からやり直しになり、
-    # 7分経っても終わらなかった
+    print("■ デザイン制作は Higgsfield なしでMacローカルに書き出す")
+    # 事故（2026-08-20）：以前はHiggsfieldのクラウドサンドボックス（sandbox_exec）に
+    # 頼っていたが、Discordボット（非対話セッション）はMCP接続を使えず、
+    # アカウントが認証済みでも常に失敗していた。ローカルのPlaywrightに切り替えた。
     _sn = bot.DESIGN_SETUP_SNIPPET
     check("1つのスクリプトにまとまっている", "一括スクリプト" in _sn, True)
-    check("アップロードまで同じスクリプトで行う", "upload-file" in _sn, True)
     check("HTMLの差し替え位置が示されている", "<<'HTML'" in _sn, True)
-    check("完了の目印がある", "echo DONE" in _sn, True)
-    check("はみ出しを自動検査する", "LAYOUT_NG" in _sn, True)
-    check("検査は同じ実行の中で行う（往復を増やさない）",
-          _sn.index("LAYOUT_NG") < _sn.index("echo DONE"), True)
+    check("ローカルの書き出しスクリプトを呼ぶ", "html_to_png.py" in _sn, True)
+    check("venv経由で実行する", "venv/bin/python3" in _sn, True)
+    for _gone in ("sandbox_exec", "media_upload", "media_confirm", "UPLOAD_URL"):
+        check(f"Higgsfield依存({_gone})が残っていない", _gone in _sn, False)
+    import pathlib as _pl10
+    _tool = (_pl10.Path(__file__).parent / "tools" / "html_to_png.py").read_text(
+        encoding="utf-8")
+    check("はみ出しを自動検査する", "LAYOUT_NG" in _tool, True)
+    check("解像度倍率を使う", "device_scale_factor" in _tool, True)
+    check("フォント読み込み完了を待つ", "document.fonts.ready" in _tool, True)
+    check("高品質縮小(LANCZOS)を使う", "LANCZOS" in _tool, True)
 
     print("■ 確認画面に『何で作るか』が出ること")
     import asyncio as _aio6
@@ -2627,15 +2634,11 @@ def run():
     check("進行中だと言わせない", "言ってはいけない" in _empty, True)
     check("正直に言う言い方も示す", "まだ手をつけていない" in _empty, True)
 
-    print("■ デザインの画質設定（サンドボックスで実測した手順を保つ）")
+    print("■ デザインの画質設定（ローカルPlaywrightの書き出し手順を保つ）")
     check("2倍で描いてから縮小する", bot.DESIGN_SCALE >= 2, True)
-    _snip = bot.DESIGN_SETUP_SNIPPET
-    check("日本語フォント(Noto Sans JP)を入れる", "Noto+Sans+JP" in _snip, True)
-    check("太いウェイト(900)も入れる", "900" in _snip, True)
-    check("解像度倍率を使う", "deviceScaleFactor" in _snip, True)
-    check("フォント読み込み完了を待つ", "document.fonts.ready" in _snip, True)
-    check("高品質縮小(LANCZOS)を使う", "LANCZOS" in _snip, True)
-    check("playwrightのパス解決を含む", "npm root -g" in _snip or True, True)
+    check("macOS標準の日本語フォント(Hiragino Sans)を使う",
+          "Hiragino Sans" in bot.DESIGN_CRAFT_RULES, True)
+    check("太いウェイト(900)も入れる", "900" in bot.DESIGN_CRAFT_RULES, True)
     check("作法にコントラストの指示がある", "コントラスト" in bot.DESIGN_CRAFT_RULES, True)
     check("絵文字を禁止（豆腐対策）", "絵文字" in bot.DESIGN_CRAFT_RULES, True)
 

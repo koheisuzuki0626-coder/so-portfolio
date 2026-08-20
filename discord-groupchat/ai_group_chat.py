@@ -6561,6 +6561,16 @@ def _extract_video_url(text):
     return None
 
 
+_DESIGN_PATH_RE = re.compile(r"PATH:\s*(\S+\.png)")
+
+
+def _extract_design_path(text):
+    """claude出力からデザイン書き出し先のローカルPNGパスを抽出する
+    （Higgsfieldに頼らずMacローカルで書き出す方式。_extract_video_urlのURL版と対）。"""
+    m = _DESIGN_PATH_RE.search(text or "")
+    return m.group(1) if m else None
+
+
 async def _mcp_motion_control(image_url, video_url, request):
     """Higgsfield MCP経由でモーション転写ジョブを投入する（完了は待たない）。
     claude CLI に MCP ツールを呼ばせる（要: Mac側で一度 claude mcp add ＋認証）。
@@ -7588,62 +7598,28 @@ DESIGN_SCALE = int(os.getenv("DESIGN_SCALE", "2"))
 # 空にすると会話用と同じになる。品質を上げたいなら sonnet や opus にする。
 DESIGN_MODEL = os.getenv("DESIGN_MODEL", "sonnet")
 
-# サンドボックスの実測結果に基づく準備手順。ここは毎回そのまま実行させる。
-#  ・素の環境の日本語フォントは IPAGothic / Unifont / WenQuanYi（中国語字形）だけで、
-#    太いウェイトが無く古く見える。Noto Sans JP（Black含む）を入れると別物になる。
-#  ・`npx playwright screenshot` には解像度倍率の指定が無いので、
-#    deviceScaleFactor を使う小さなスクリプトを置いて呼ぶ。
-DESIGN_SETUP_SNIPPET = """【一括スクリプト】sandbox_exec に、これを1回だけ渡す。
+# 事故（2026-08-20）：以前はHiggsfieldのクラウドサンドボックス（sandbox_exec）で
+# HTML→PNGを書き出していたが、Discordボット（claude -p、非対話）はMCP接続を
+# 使えず、アカウントが認証済みでも常に失敗した（"Higgsfieldコネクタが未認証"と
+# 表示されたが、実際には認証済みで、非対話セッションの構造的な制約が原因だった）。
+# 今は Mac ローカルの Playwright（tools/html_to_png.py）でHTML→PNGを書き出す。
+# macOSは日本語フォント（Hiragino Sans）を標準で持っているので、Higgsfieldの
+# サンドボックスと違ってフォント導入も不要（毎回のダウンロードが消えて速くなった）。
+DESIGN_SETUP_SNIPPET = """【一括スクリプト】これをBashで1回実行すること。
 HTMLの中身（<<'HTML' 〜 HTML の間）だけを依頼に合わせて差し替えること。
-UPLOAD_URL は media_upload で取得した署名付きURLに置き換える。
 
-cd /home/user && mkdir -p ~/.fonts && \\
-curl -sL -A "Mozilla/5.0" \\
- "https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap" \\
- -o css.txt && i=0 && \\
-for u in $(grep -o 'https://fonts.gstatic.com/[^)]*' css.txt); do \\
- i=$((i+1)); curl -sL "$u" -o ~/.fonts/noto$i.ttf; done && fc-cache -f >/dev/null 2>&1 && \\
-cat > s.js <<'JS'
-const { chromium } = require('playwright');
-(async () => {
-  const [html, out, w, h, scale] = process.argv.slice(2);
-  const b = await chromium.launch();
-  const p = await b.newPage({ viewport:{width:+w,height:+h}, deviceScaleFactor:+scale });
-  await p.goto('file://'+html);
-  await p.evaluate(() => document.fonts.ready);
-  await p.waitForTimeout(300);
-  const bad = await p.evaluate(({vw, vh}) => {
-    const d = document.documentElement, out = [];
-    if (d.scrollWidth > vw + 2) out.push('横に' + (d.scrollWidth - vw) + 'pxはみ出し');
-    if (d.scrollHeight > vh + 2) out.push('縦に' + (d.scrollHeight - vh) + 'pxはみ出し');
-    for (const el of document.querySelectorAll('body *')) {
-      const r = el.getBoundingClientRect();
-      if (r.width && (r.right > vw + 2 || r.bottom > vh + 2 || r.left < -2 || r.top < -2))
-        out.push('はみ出し: ' + el.tagName + '.' + (el.className || ''));
-    }
-    return out.slice(0, 5);
-  }, {vw: +w, vh: +h});
-  await p.screenshot({ path: out });
-  await b.close();
-  console.log(bad.length ? 'LAYOUT_NG: ' + bad.join(' / ') : 'LAYOUT_OK');
-})();
-JS
-cat > d.html <<'HTML'
-（ここに自己完結のHTMLを書く。font-family に 'Noto Sans JP' を指定する）
+cat > /tmp/design_in.html <<'HTML'
+（ここに自己完結のHTMLを書く。font-family に 'Hiragino Sans' を指定する）
 HTML
-export NODE_PATH=$(npm root -g) && \\
-node s.js /home/user/d.html /home/user/out.png WIDTH HEIGHT SCALE && \\
-python3 -c "from PIL import Image; im=Image.open('/home/user/out.png'); \\
-im.resize((WIDTH,HEIGHT), Image.LANCZOS).save('/home/user/out.png')" && \\
-curl -sS -X PUT --upload-file /home/user/out.png 'UPLOAD_URL' -w 'upload=%{http_code}\\n' && \\
-echo DONE
+cd DESIGN_BASE_DIR && venv/bin/python3 tools/html_to_png.py \\
+  /tmp/design_in.html /tmp/design_out.png WIDTH HEIGHT SCALE
 """
 
 # 仕上がりの質を決める作法。これが無いと「情報は合っているが素人っぽい」絵になる。
 DESIGN_CRAFT_RULES = (
     "【デザインの作法】\n"
-    "・フォントは 'Noto Sans JP' を基本にし、見出しは font-weight:900、"
-    "本文は 400〜700。欧文は Montserrat を混ぜてよい\n"
+    "・フォントは 'Hiragino Sans' を基本にし（macOS標準の高品質な日本語フォント）、"
+    "見出しは font-weight:900、本文は 400〜700。欧文は Montserrat を混ぜてよい\n"
     "・文字の階層をはっきりつける（主役の見出しは、次に大きい要素の2倍以上）。"
     "全部を同じ大きさにしない\n"
     "・色は3色以内＋アクセント1色。背景と文字のコントラストを強く取る"
@@ -7729,48 +7705,53 @@ async def _run_design(message, request):
            "凡例を隅に置く。箱は重ねない・線は交差を最小にする。"
            "事実関係は史実・公開情報に基づき、確実でないことは書かない。\n"
            if _DIAGRAM_RE.search(request or "") else "")
-        + "【最重要】サンドボックスは呼び出しごとに消えるうえ、1回の呼び出しが重い。"
-        "so 準備・HTML作成・書き出し・アップロードを【1回の sandbox_exec に"
-        "全部まとめる】こと。分けると毎回フォント導入からやり直しになり、"
-        "何分も余計にかかる（実際に7分かかっても終わらない事故が起きた）。\n"
-        "手順:\n"
-        "1) 先に media_upload を呼んで、アップロード用の署名付きURLを取得しておく\n"
-        f"2) sandbox_exec を【1回だけ】呼び、下の【一括スクリプト】を実行する。"
+        + "手順:\n"
+        f"1) 下の【一括スクリプト】をBashで実行する。"
         f"HTMLの中身だけを依頼に合わせて差し替えること\n"
-        "3) 出力の LAYOUT_OK / LAYOUT_NG を見る。NG ならはみ出している要素が"
-        "書かれているので、HTMLを直してもう一度2を実行する（最大2回）\n"
-        "4) media_confirm で確定して公開URLを得る\n"
+        "2) 出力の LAYOUT_OK / LAYOUT_NG を見る。NG ならはみ出している要素が"
+        "書かれているので、HTMLを直してもう一度1を実行する（最大2回）\n"
         "※HTMLは自己完結（外部CDN・外部画像を使わない）。"
         f"body と .canvas は {w}x{h}px 固定、margin:0、overflow:hidden。\n"
         + ("【使う画像】次のURLの画像を素材として使うこと。"
-           "同じ sandbox_exec の中で curl -sL で ~/img1.jpg のように落としてから、"
-           "<img src=\"/home/user/img1.jpg\"> のようにローカルのパスで参照する"
+           "先に `curl -sL <URL> -o /tmp/design_img1.jpg` のように落としてから、"
+           "<img src=\"/tmp/design_img1.jpg\"> のようにローカルのパスで参照する"
            "（外からの読み込みは禁止だが、この素材だけは先に落として使う）。"
            "人物写真は object-fit: cover で切り抜き、顔が切れないように配置する。\n"
            + "".join(f"  画像{i + 1}: {u}\n" for i, u in enumerate(refs))
            if refs else "")
-        + "※やり直しが必要なときも、1回の sandbox_exec にまとめ直すこと。\n\n"
-        # JSの波括弧があるので format ではなく置換で埋める
-        + DESIGN_SETUP_SNIPPET.replace("WIDTH", str(w)).replace("HEIGHT", str(h))
+        + "\n"
+        + DESIGN_SETUP_SNIPPET.replace("DESIGN_BASE_DIR", BASE_DIR)
+                              .replace("WIDTH", str(w)).replace("HEIGHT", str(h))
                               .replace("SCALE", str(DESIGN_SCALE))
-        + "\n最終行に『URL: <公開URL>』だけを出力。失敗なら『ERROR: 理由』。"
+        + "\n最終行に『PATH: /tmp/design_out.png』だけを出力。失敗なら『ERROR: 理由』。"
     )
     out = await _run_claude_exec(task, timeout=900, model=DESIGN_MODEL or None)
-    url = _extract_video_url(out or "")
+    png_path = _extract_design_path(out or "")
     last = (out or "").strip().splitlines()[-1:] or [""]
-    if not url or last[0].upper().startswith("ERROR"):
+    if not png_path or last[0].upper().startswith("ERROR") or not os.path.exists(png_path):
         await send_as(orch, cid, _claude_fail_note(
             "デザインの書き出し", (out or "")[-300:]))
+        return
+    try:
+        with open(png_path, "rb") as f:
+            data = f.read()
+    finally:
+        try:
+            os.remove(png_path)
+        except OSError:
+            pass
+    caption = (
+        f"✅ デザインができました！（{label} {w}×{h}）\n"
+        "直したいときは「文字をもっと大きく」「背景を暗くして」のように"
+        "続けて言ってください。"
+    )
+    url = await send_image_bytes(cid, caption, data, f"design_{int(time.time())}.png")
+    if not url:
+        await send_as(orch, cid, "⚠️ 画像はできましたが、Discordへの送信に失敗しました。")
         return
     _save_last_gen(cid, request, "image", f"{w}:{h}", f"デザイン（{label}）")
     _update_last_gen_url(cid, url)
     add_history(cid, "Orchestrator", f"（デザインを制作: {request[:60]} / {url}）")
-    await send_as(
-        orch, cid,
-        f"✅ デザインができました！（{label} {w}×{h}）\n{url}\n"
-        "直したいときは「文字をもっと大きく」「背景を暗くして」のように"
-        "続けて言ってください。"
-    )
 
 
 # ---------- スタイル学習（参考動画から勝ちパターンを抽出して以降の生成に反映） ----------
