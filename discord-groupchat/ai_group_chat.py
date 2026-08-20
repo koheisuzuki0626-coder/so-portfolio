@@ -8724,6 +8724,7 @@ async def _handle_orchestrator(message, cid):
             return
         reply = _drop_false_progress(reply, cid)
         reply = _drop_false_denial(reply, cid)
+        reply = _drop_false_file_claim(reply, cid)
         add_history(cid, "Orchestrator", reply)
         await send_as(orch, cid, _with_speaker(reply, plan_engine))
         return
@@ -8812,6 +8813,7 @@ async def _handle_orchestrator(message, cid):
     answer, reviewed = await _review_reply(answer, history)
     answer = _drop_false_progress(answer, cid)
     answer = _drop_false_denial(answer, cid)
+    answer = _drop_false_file_claim(answer, cid)
     # 言い方を見ずに、状態だけで「動いていない」を明記する（最後の砦）
     answer += _reality_note(cid, latest)
     # 実際に書いたのが誰かで名乗る。クロードが枠切れでGeminiが代打に入ると
@@ -9031,6 +9033,45 @@ def _drop_false_progress(text, cid):
     if not out:
         return "まだ何も動かしていないよ。"
     return f"{out}\n{note}"
+
+
+# 会話パスの claude CLI には --dangerously-skip-permissions が無いため、
+# ファイルの書き込みは常に弾かれる（人がいない非対話セッションなので許可できない）。
+# それを「パーミッション待ち」のように婉曲に言われると、_TOOL_DENIED_RE の
+# 言い方チェックでは拾えず、「できました」だけが残って完了したように見えてしまう。
+# 事故（2026-08-20）：bottleneck_01.html を「できました」
+# 「保存する準備ができてます（パーミッション待ち）」と報告したが、
+# ファイルは一度も書き込まれていなかった。
+# 言い方を数え上げず、【そのパスが実際に存在するか】という状態だけで判定する。
+_LOCAL_FILE_PATH_RE = re.compile(
+    r"/Users/[\w./\-]+\.\w{2,5}|discord-groupchat/[\w./\-]+\.\w{2,5}|"
+    r"成果物/[\w./\-]+\.\w{2,5}"
+)
+_FILE_DONE_CLAIM_RE = re.compile(
+    "できました|できてます|作成しました|保存しました|保存する準備ができ|"
+    "保存できました|生成しました|完成しました"
+)
+_REPO_ROOT = os.path.dirname(BASE_DIR)
+
+
+def _resolve_claimed_path(p):
+    return p if p.startswith("/") else os.path.join(_REPO_ROOT, p)
+
+
+def _drop_false_file_claim(text, cid=None):
+    """会話パスが『できました・保存しました』と書いたファイルが、
+    実際にはディスクに存在しない時、その完了報告を落とす。"""
+    if not text or not _FILE_DONE_CLAIM_RE.search(text):
+        return text
+    paths = _LOCAL_FILE_PATH_RE.findall(text)
+    if not paths:
+        return text
+    missing = [p for p in paths if not os.path.exists(_resolve_claimed_path(p))]
+    if not missing:
+        return text
+    print(f"[reply] 存在しないファイルへの完了報告を落とした: {missing}")
+    return ("会話のこのやり取りにはファイルを書き込む権限がありません。"
+            "実際に作ってほしいときは「作って」とはっきり頼んでください。")
 
 
 # ---------- 作ったものを「無かったこと」にさせない ----------

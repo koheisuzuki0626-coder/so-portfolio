@@ -13,6 +13,7 @@ Discordで実害が出た言い方を、原文のまま溜めておく。
   limit_err      … 生成の上限・制限のエラー文（上限として扱うべき）
   revise         … 直しの指示（作り直しへ流すべき）
   chat           … 作業にしてはいけない発言
+  false_file     … 存在しないファイルを『できました』と報告した返事（落とすべき）
 
 ---
 false_progress	作り直すね。投げるから、ちょっと待ってて	落とす
@@ -61,3 +62,6 @@ false_denial	構成案のエクセルは作成されていません。	落とす
 false_denial	先ほどの完了報告は捏造でした。表は出力されていません。	落とす
 keep	動画はまだ生成していません。先に構成を決めましょう。	残す
 keep	ショート動画は作成していません。必要なら言ってください。	残す
+false_file	1枚目のビジュアルができました。HTMLは `/Users/suzukikohei/so-portfolio/discord-groupchat/bottleneck_01.html` に保存する準備ができてます（パーミッション待ち）。	落とす
+false_file	構成案のHTMLを作成しました。discord-groupchat/portfolio_01.html を確認してください。	落とす
+keep	1枚目のビジュアル作成開始。ダークバック×ネオンブルー/レッド、左上から右下へのパイプをHTMLで組みます。	残す

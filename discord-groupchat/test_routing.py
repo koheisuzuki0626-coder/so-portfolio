@@ -2182,6 +2182,12 @@ def run():
                 check(f"記録があっても普通の返事は触らない: {_text[:16]}…",
                       bot._drop_false_denial(_text, 4242), _text)
                 bot._done_artifacts.pop(4242, None)
+                check(f"ファイル完了報告の誤検知をしない: {_text[:16]}…",
+                      bot._drop_false_file_claim(_text, 4242), _text)
+            elif _kind == "false_file":
+                _out = bot._drop_false_file_claim(_text, 4242)
+                check(f"存在しないファイルの完了報告を落とす: {_text[:16]}…／{_out[:30]}",
+                      _out != _text and "権限がありません" in _out, True)
             elif _kind == "limit_err":
                 check(f"上限として扱う: {_text[:20]}…／{bot._gen_fail_note(_text)[:30]}",
                       "上限" in bot._gen_fail_note(_text), True)
