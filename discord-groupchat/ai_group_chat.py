@@ -877,6 +877,14 @@ def _recent_errors(n=3):
 # 目的：不具合のたびにユーザーがスクショを撮る手間をなくす。
 DEBUG_DIR = Path(_BASE) / "debug"
 DEBUG_LOG = DEBUG_DIR / "discord_log.md"
+# 1発言600字で切っていたため、長いリサーチ結果が尻切れになり、
+# あとから知見ファイルへ取り込む時に600字までしか復元できなかった。
+LOG_MSG_CHARS = int(os.getenv("LOG_MSG_CHARS", "1500"))
+# 話しているチャンネルが1つとは限らない。実際に「生成は動いているのに
+# ログの会話は止まったまま」という食い違いが起き、原因を追えなかった。
+LOG_OTHER_CHANNELS = int(os.getenv("LOG_OTHER_CHANNELS", "5"))
+LOG_OTHER_MSGS = int(os.getenv("LOG_OTHER_MSGS", "15"))
+LOG_MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", "400000"))
 
 
 def _recent_messages(cid, limit=80):
@@ -1235,6 +1243,24 @@ async def _run_note(cid, kind, body, who="kohei"):
             + note)
 
 
+def _other_channels(cid, n=LOG_OTHER_CHANNELS):
+    """いま見ているチャンネル以外で、最近動きのあったチャンネル。
+    新しく触られたものから順に返す。"""
+    out = []
+    try:
+        rows = []
+        for f in HISTORY_DIR.glob("*.jsonl"):
+            if f.stem == str(cid) or not f.stem.isdigit():
+                continue
+            rows.append((f.stat().st_mtime, f.stem))
+        rows.sort(reverse=True)
+        cutoff = time.time() - 7 * 86400      # 1週間より古いものは出さない
+        out = [c for t, c in rows[:n] if t >= cutoff]
+    except Exception as e:  # noqa: BLE001
+        print(f"[debuglog] 他チャンネルの一覧に失敗: {e}")
+    return out
+
+
 async def _share_debug_log(cid, limit=80):
     """直近の会話・エラー・生成状態をリポジトリに書き出してプッシュする。
     プッシュ後は Claude Code のチャット側から中身を直接読める。"""
@@ -1257,24 +1283,38 @@ async def _share_debug_log(cid, limit=80):
         "",
         "## 発言がどの機能に流れたか（新しいものほど下）",
         "```",
-        _fired_recent(cid, 12),
+        _fired_recent(cid, 40),
         "```",
         "",
         "## ボットが実際に送った内容（会話履歴に残らないものも含む）",
         "```",
-        _sent_recent(cid, 12),
+        _sent_recent(cid, 40),
         "```",
         "",
         "## 直近のエラー",
         "```",
-        _recent_errors(3)[:4000],
+        _recent_errors(10)[:12000],
         "```",
         "",
         f"## 直近の会話（{limit}件まで）",
     ]
     for ts, who, text in _recent_messages(cid, limit):
-        lines.append(f"- **{ts} {who}**: {text[:600]}")
-    DEBUG_LOG.write_text("\n".join(lines), encoding="utf-8")
+        lines.append(f"- **{ts} {who}**: {text[:LOG_MSG_CHARS]}")
+    # 話し相手が別のチャンネルにいることがある。ここを出さないと
+    # 「生成は動いているのに会話は止まったまま」の食い違いを追えない。
+    for other in _other_channels(cid):
+        rows = _recent_messages(other, LOG_OTHER_MSGS)
+        if not rows:
+            continue
+        lines += ["", f"## 別チャンネル {other} の直近（{len(rows)}件）"]
+        for ts, who, text in rows:
+            lines.append(f"- **{ts} {who}**: {text[:400]}")
+    body = "\n".join(lines)
+    if len(body.encode("utf-8")) > LOG_MAX_BYTES:
+        # 毎回プッシュするので、際限なく太らせない（リポジトリが膨らむ）
+        body = (body.encode("utf-8")[:LOG_MAX_BYTES].decode("utf-8", "ignore")
+                + "\n\n…（長すぎるのでここで切りました）")
+    DEBUG_LOG.write_text(body, encoding="utf-8")
 
     # _git_self は discord-groupchat/ で動くので、パスもそこからの相対にする
     # （リポジトリroot基準にすると git add がファイルを見つけられない）

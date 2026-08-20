@@ -2061,6 +2061,37 @@ def run():
     check("捨てたら残らない", bot._recent_expired(4242), None)
     bot._expired_approvals.clear()
 
+    print("■ デバッグログの取りこぼしを減らす")
+    # 実例：8/12、生成は動いているのにログの会話は14:54で止まっていて、
+    # 何が起きたのか追えなかった。1チャンネル・600字では足りない。
+    check("1発言の文字数を広げた", bot.LOG_MSG_CHARS >= 1500, True)
+    check("他チャンネルも出す", bot.LOG_OTHER_CHANNELS >= 1, True)
+    check("際限なく太らせない", 0 < bot.LOG_MAX_BYTES <= 2_000_000, True)
+    _srcL = open(bot.__file__, encoding="utf-8").read()
+    check("会話の切り出しに設定を使う", "text[:LOG_MSG_CHARS]" in _srcL, True)
+    check("発言の流れを増やした", "_fired_recent(cid, 40)" in _srcL, True)
+    check("送信内容も増やした", "_sent_recent(cid, 40)" in _srcL, True)
+    check("エラーも増やした", "_recent_errors(10)" in _srcL, True)
+    # 自分のチャンネルは「他」に入れない／数字でないファイルは拾わない
+    import tempfile as _tf5, pathlib as _pl5, time as _tm5
+    _keepH = bot.HISTORY_DIR
+    try:
+        bot.HISTORY_DIR = _pl5.Path(_tf5.mkdtemp())
+        for _n in ("1111", "2222", "notes"):
+            (bot.HISTORY_DIR / f"{_n}.jsonl").write_text("{}\n", encoding="utf-8")
+        _got = bot._other_channels(1111)
+        check("自分のチャンネルは除く", "1111" in _got, False)
+        check("他のチャンネルは拾う", "2222" in _got, True)
+        check("チャンネルIDでないものは拾わない", "notes" in _got, False)
+        # 1週間より古いものは出さない（散らかるだけなので）
+        _old = bot.HISTORY_DIR / "3333.jsonl"
+        _old.write_text("{}\n", encoding="utf-8")
+        import os as _os5
+        _os5.utime(_old, (_tm5.time() - 30 * 86400,) * 2)
+        check("古いチャンネルは出さない", "3333" in bot._other_channels(1111), False)
+    finally:
+        bot.HISTORY_DIR = _keepH
+
     print("■ 「/」コマンドは、無いものは無いと答える")
     # 実例：「/memory」に、ありもしないメモリ4件を並べて答え、「/clear」に
     # 「メモリをクリアしました」と答えた（08-12 11:17〜11:20）。
