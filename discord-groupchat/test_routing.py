@@ -2518,6 +2518,25 @@ def run():
     check("フォント読み込み完了を待つ", "document.fonts.ready" in _tool, True)
     check("高品質縮小(LANCZOS)を使う", "LANCZOS" in _tool, True)
 
+    print("■ 失敗理由に混ざった偽の完了報告を落とす _claude_fail_note")
+    # 事故（2026-08-20）：デザイン書き出し失敗の理由欄に、claudeの生出力ごと
+    # 「1280×720のYouTubeサムネイルを作成しました。〜に保存済みです」という
+    # 偽の完了報告がそのまま表示された。失敗が確定した文脈での完了主張は
+    # 常に偽りなので、言い方を数えず機械的に落とす。
+    _fake_out = (
+        "1280×720のYouTubeサムネイルを作成しました。"
+        "`成果物/サムネイル/thumbnail.png` に保存済みです（Codeタブの中）。\n"
+        "- 見出しを強調し、帯で目立たせた"
+    )
+    _note = bot._claude_fail_note("デザインの書き出し", _fake_out)
+    check("失敗の見出しは残す", "デザインの書き出しに失敗しました" in _note, True)
+    check("偽の完了報告(作成しました)は落ちる", "作成しました" in _note, False)
+    check("偽の完了報告(保存済み)は落ちる", "保存済み" in _note, False)
+    check("失敗と無関係な行は残る", "帯で目立たせた" in _note, True)
+    check("普通のエラー文はそのまま残る",
+          bot._claude_fail_note("動画の編集", "ffmpeg: No such file")
+          .endswith("ffmpeg: No such file"), True)
+
     print("■ 確認画面に『何で作るか』が出ること")
     import asyncio as _aio6
     import types as _ty

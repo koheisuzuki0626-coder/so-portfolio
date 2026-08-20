@@ -6561,16 +6561,6 @@ def _extract_video_url(text):
     return None
 
 
-_LOCAL_OUT_PATH_RE = re.compile(r"PATH:\s*(\S+)")
-
-
-def _extract_local_path(text):
-    """claude出力からローカルの書き出し先パスを抽出する
-    （Higgsfieldに頼らずMacローカルで処理する方式。_extract_video_urlのURL版と対）。"""
-    m = _LOCAL_OUT_PATH_RE.search(text or "")
-    return m.group(1) if m else None
-
-
 async def _mcp_motion_control(image_url, video_url, request):
     """Higgsfield MCP経由でモーション転写ジョブを投入する（完了は待たない）。
     claude CLI に MCP ツールを呼ばせる（要: Mac側で一度 claude mcp add ＋認証）。
@@ -7590,9 +7580,10 @@ async def _run_video_edit(message, instruction):
 
 # ---------- デザイン制作（ClaudeがHTMLで設計 → Macローカルで画像化） ----------
 # 生成AIは「文字がきれいに入った絵」が苦手（サムネ・バナー・図解・価格表など）。
-# そこは画像生成ではなく、ClaudeにHTML/CSSで組ませて、Higgsfieldの
-# サンドボックス（Playwright + ヘッドレスChromium）で書き出すのが確実。
+# そこは画像生成ではなく、ClaudeにHTML/CSSで組ませて、Macローカルの
+# Playwright（ヘッドレスChromium。tools/html_to_png.py）で書き出すのが確実。
 # 生成モデルを回さないのでクレジットは消費しない。
+DESIGN_DIR = HISTORY_DIR / "design"   # 実行ごとに使い捨てる作業フォルダの親
 DESIGN_SIZES = {
     "thumbnail": (1280, 720, "YouTubeサムネイル"),
     "short": (1080, 1920, "縦型（ショート/ストーリー）"),
@@ -7657,14 +7648,21 @@ DESIGN_MODEL = os.getenv("DESIGN_MODEL", "sonnet")
 # 今は Mac ローカルの Playwright（tools/html_to_png.py）でHTML→PNGを書き出す。
 # macOSは日本語フォント（Hiragino Sans）を標準で持っているので、Higgsfieldの
 # サンドボックスと違ってフォント導入も不要（毎回のダウンロードが消えて速くなった）。
+# 事故（2026-08-20）：この後の最終行「PATH: ...」をAIの自己判断で無視され、
+# 独自に 成果物/サムネイル/... へ保存して「保存済みです」とだけ報告したことが
+# あった（悪気はなく、他の機能の慣習に引っ張られた）。ボット側は必ずこの
+# DESIGN_OUT_PATH（Python側で先に決めた絶対パス）の実在だけを見て判定するので、
+# AIがどこに書こうと、この決め打ちのパスに書かれていなければ失敗として扱う。
 DESIGN_SETUP_SNIPPET = """【一括スクリプト】これをBashで1回実行すること。
 HTMLの中身（<<'HTML' 〜 HTML の間）だけを依頼に合わせて差し替えること。
+出力先は必ず指定のパス（DESIGN_OUT_PATH）にすること。他の場所（成果物/ 等）へは
+保存しない・コピーしない（ボット側がそこだけを見て完了判定するため）。
 
-cat > /tmp/design_in.html <<'HTML'
+cat > DESIGN_IN_PATH <<'HTML'
 （ここに自己完結のHTMLを書く。font-family に 'Hiragino Sans' を指定する）
 HTML
 cd DESIGN_BASE_DIR && venv/bin/python3 tools/html_to_png.py \\
-  /tmp/design_in.html /tmp/design_out.png WIDTH HEIGHT SCALE
+  DESIGN_IN_PATH DESIGN_OUT_PATH WIDTH HEIGHT SCALE
 """
 
 # 仕上がりの質を決める作法。これが無いと「情報は合っているが素人っぽい」絵になる。
@@ -7717,7 +7715,7 @@ def _design_refs(message, request):
 
 
 async def _run_design(message, request):
-    """ClaudeがHTMLでデザインを組み、サンドボックスでPNGに書き出して返す。"""
+    """ClaudeがHTMLでデザインを組み、Macローカルの書き出しスクリプトでPNGにする。"""
     cid = message.channel.id
     refs = _design_refs(message, request)
     # 写真を入れてほしいのに素材が無いなら、2分かけて失敗する前に聞く。
@@ -7736,74 +7734,83 @@ async def _run_design(message, request):
         f"🎨 デザインを作ります（{label} {w}×{h}）。HTMLで組んで画像に書き出します"
         f"（{_eta_hint('デザイン制作')}）…"
     )
-    style = _style_snippet()
-    task = (
-        "デザイン制作をして。画像生成モデルは使わず、自分でHTML/CSSを書いて"
-        "スクリーンショットとして書き出すこと（文字が崩れないのが目的）。\n"
-        f"依頼（日本語）: {request}\n"
-        f"仕上がりサイズ: {w}x{h}px（{label}）\n"
-        + (f"これまでに学習した勝ちパターン:\n{style}\n" if style else "")
-        + DESIGN_CRAFT_RULES
-        # 生成時間のほとんどはHTMLを書く時間なので、短く書かせるのが一番効く
-        + "【速さのために守ること】\n"
-        "・HTMLは120行以内。コメント・未使用のCSS・冗長な入れ子は書かない\n"
-        "・下書きや説明文を出力しない。いきなり最終版のHTMLを書く\n"
-        "・一度で仕上げる。LAYOUT_NG が出たときだけ直す（最大2回）\n"
-        "・調べ物やファイル探索はしない。必要な情報はこの指示に全部ある\n"
-        + ("【図の描き方】人物や項目は箱（角丸・枠線・背景色）で置き、"
-           "関係は線と矢印で結ぶ。線はインラインSVGで引く"
-           "（外部ライブラリやMermaidは使わない）。"
-           "関係の種類（兄弟・親子・主従・対立など）は線の色と短いラベルで示し、"
-           "凡例を隅に置く。箱は重ねない・線は交差を最小にする。"
-           "事実関係は史実・公開情報に基づき、確実でないことは書かない。\n"
-           if _DIAGRAM_RE.search(request or "") else "")
-        + "手順:\n"
-        f"1) 下の【一括スクリプト】をBashで実行する。"
-        f"HTMLの中身だけを依頼に合わせて差し替えること\n"
-        "2) 出力の LAYOUT_OK / LAYOUT_NG を見る。NG ならはみ出している要素が"
-        "書かれているので、HTMLを直してもう一度1を実行する（最大2回）\n"
-        "※HTMLは自己完結（外部CDN・外部画像を使わない）。"
-        f"body と .canvas は {w}x{h}px 固定、margin:0、overflow:hidden。\n"
-        + ("【使う画像】次のURLの画像を素材として使うこと。"
-           "先に `curl -sL <URL> -o /tmp/design_img1.jpg` のように落としてから、"
-           "<img src=\"/tmp/design_img1.jpg\"> のようにローカルのパスで参照する"
-           "（外からの読み込みは禁止だが、この素材だけは先に落として使う）。"
-           "人物写真は object-fit: cover で切り抜き、顔が切れないように配置する。\n"
-           + "".join(f"  画像{i + 1}: {u}\n" for i, u in enumerate(refs))
-           if refs else "")
-        + "\n"
-        + DESIGN_SETUP_SNIPPET.replace("DESIGN_BASE_DIR", BASE_DIR)
-                              .replace("WIDTH", str(w)).replace("HEIGHT", str(h))
-                              .replace("SCALE", str(DESIGN_SCALE))
-        + "\n最終行に『PATH: /tmp/design_out.png』だけを出力。失敗なら『ERROR: 理由』。"
-    )
-    out = await _run_claude_exec(task, timeout=900, model=DESIGN_MODEL or None)
-    png_path = _extract_local_path(out or "")
-    last = (out or "").strip().splitlines()[-1:] or [""]
-    if not png_path or last[0].upper().startswith("ERROR") or not os.path.exists(png_path):
-        await send_as(orch, cid, _claude_fail_note(
-            "デザインの書き出し", (out or "")[-300:]))
-        return
+    DESIGN_DIR.mkdir(parents=True, exist_ok=True)
+    workdir = DESIGN_DIR / str(int(time.time()))
+    workdir.mkdir(parents=True, exist_ok=True)
+    html_path = workdir / "in.html"
+    png_path = workdir / "out.png"
     try:
-        with open(png_path, "rb") as f:
-            data = f.read()
+        style = _style_snippet()
+        task = (
+            "デザイン制作をして。画像生成モデルは使わず、自分でHTML/CSSを書いて"
+            "スクリーンショットとして書き出すこと（文字が崩れないのが目的）。\n"
+            f"依頼（日本語）: {request}\n"
+            f"仕上がりサイズ: {w}x{h}px（{label}）\n"
+            + (f"これまでに学習した勝ちパターン:\n{style}\n" if style else "")
+            + DESIGN_CRAFT_RULES
+            # 生成時間のほとんどはHTMLを書く時間なので、短く書かせるのが一番効く
+            + "【速さのために守ること】\n"
+            "・HTMLは120行以内。コメント・未使用のCSS・冗長な入れ子は書かない\n"
+            "・下書きや説明文を出力しない。いきなり最終版のHTMLを書く\n"
+            "・一度で仕上げる。LAYOUT_NG が出たときだけ直す（最大2回）\n"
+            "・調べ物やファイル探索はしない。必要な情報はこの指示に全部ある\n"
+            + ("【図の描き方】人物や項目は箱（角丸・枠線・背景色）で置き、"
+               "関係は線と矢印で結ぶ。線はインラインSVGで引く"
+               "（外部ライブラリやMermaidは使わない）。"
+               "関係の種類（兄弟・親子・主従・対立など）は線の色と短いラベルで示し、"
+               "凡例を隅に置く。箱は重ねない・線は交差を最小にする。"
+               "事実関係は史実・公開情報に基づき、確実でないことは書かない。\n"
+               if _DIAGRAM_RE.search(request or "") else "")
+            + "手順:\n"
+            f"1) 下の【一括スクリプト】をBashで実行する。"
+            f"HTMLの中身だけを依頼に合わせて差し替えること\n"
+            "2) 出力の LAYOUT_OK / LAYOUT_NG を見る。NG ならはみ出している要素が"
+            "書かれているので、HTMLを直してもう一度1を実行する（最大2回）\n"
+            "※HTMLは自己完結（外部CDN・外部画像を使わない）。"
+            f"body と .canvas は {w}x{h}px 固定、margin:0、overflow:hidden。\n"
+            + ("【使う画像】次のURLの画像を素材として使うこと。"
+               f"先に `curl -sL <URL> -o {workdir}/img1.jpg` のように落としてから、"
+               f"<img src=\"{workdir}/img1.jpg\"> のようにローカルのパスで参照する"
+               "（外からの読み込みは禁止だが、この素材だけは先に落として使う）。"
+               "人物写真は object-fit: cover で切り抜き、顔が切れないように配置する。\n"
+               + "".join(f"  画像{i + 1}: {u}\n" for i, u in enumerate(refs))
+               if refs else "")
+            + "\n"
+            + DESIGN_SETUP_SNIPPET.replace("DESIGN_BASE_DIR", BASE_DIR)
+                                  .replace("DESIGN_IN_PATH", str(html_path))
+                                  .replace("DESIGN_OUT_PATH", str(png_path))
+                                  .replace("WIDTH", str(w)).replace("HEIGHT", str(h))
+                                  .replace("SCALE", str(DESIGN_SCALE))
+            + f"\n最終行に『PATH: {png_path}』だけを出力。失敗なら『ERROR: 理由』。"
+        )
+        out = await _run_claude_exec(task, timeout=900, model=DESIGN_MODEL or None)
+        # 完了判定は【Python側で先に決めた絶対パスが実在するか】だけを見る。
+        # AIの最終行の自己申告（PATH:/ERROR:）は言い方でしかなく、勝手な場所に
+        # 保存して「保存済みです」とだけ書かれても、ここが実在しなければ失敗として扱う
+        # （事故：成果物/サムネイル/…へ独自保存し、指定パスには無かった。2026-08-20）。
+        last = (out or "").strip().splitlines()[-1:] or [""]
+        if not png_path.exists() or last[0].upper().startswith("ERROR"):
+            await send_as(orch, cid, _claude_fail_note(
+                "デザインの書き出し", (out or "")[-300:]))
+            return
+        data = png_path.read_bytes()
+        caption = (
+            f"✅ デザインができました！（{label} {w}×{h}）\n"
+            "直したいときは「文字をもっと大きく」「背景を暗くして」のように"
+            "続けて言ってください。"
+        )
+        url = await send_image_bytes(cid, caption, data, f"design_{int(time.time())}.png")
+        if not url:
+            await send_as(orch, cid, "⚠️ 画像はできましたが、Discordへの送信に失敗しました。")
+            return
+        _save_last_gen(cid, request, "image", f"{w}:{h}", f"デザイン（{label}）")
+        _update_last_gen_url(cid, url)
+        add_history(cid, "Orchestrator", f"（デザインを制作: {request[:60]} / {url}）")
     finally:
         try:
-            os.remove(png_path)
-        except OSError:
+            shutil.rmtree(workdir, ignore_errors=True)
+        except Exception:  # noqa: BLE001
             pass
-    caption = (
-        f"✅ デザインができました！（{label} {w}×{h}）\n"
-        "直したいときは「文字をもっと大きく」「背景を暗くして」のように"
-        "続けて言ってください。"
-    )
-    url = await send_image_bytes(cid, caption, data, f"design_{int(time.time())}.png")
-    if not url:
-        await send_as(orch, cid, "⚠️ 画像はできましたが、Discordへの送信に失敗しました。")
-        return
-    _save_last_gen(cid, request, "image", f"{w}:{h}", f"デザイン（{label}）")
-    _update_last_gen_url(cid, url)
-    add_history(cid, "Orchestrator", f"（デザインを制作: {request[:60]} / {url}）")
 
 
 # ---------- スタイル学習（参考動画から勝ちパターンを抽出して以降の生成に反映） ----------
@@ -9090,7 +9097,7 @@ _LOCAL_FILE_PATH_RE = re.compile(
 )
 _FILE_DONE_CLAIM_RE = re.compile(
     "できました|できてます|作成しました|保存しました|保存する準備ができ|"
-    "保存できました|生成しました|完成しました"
+    "保存できました|保存済み|生成しました|完成しました"
 )
 _REPO_ROOT = os.path.dirname(BASE_DIR)
 
@@ -9930,8 +9937,19 @@ _CLAUDE_RESET_RE = re.compile(r"resets?\s+([0-9]{1,2}(?::[0-9]{2})?\s*[ap]m)", r
 
 
 def _claude_fail_note(what, err):
-    """クロード側の失敗を、何が起きたか分かる言い方にする。"""
+    """クロード側の失敗を、何が起きたか分かる言い方にする。
+    事故（2026-08-20）：デザイン書き出しが失敗した理由欄に、claudeの生出力の
+    一部として「1280×720のYouTubeサムネイルを作成しました。〜に保存済みです」
+    という【偽の完了報告】がそのまま混ざって出た。ここに来る時点で失敗は
+    確定しているので、混じっている完了主張はどれも偽り。状態（失敗確定）で
+    判定して機械的に落とす（言い方の追加が要らない）。"""
     err = (err or "").strip()
+    if err:
+        parts = re.split(r"(?<=[。\n])", err)
+        kept = [p for p in parts if not _FILE_DONE_CLAIM_RE.search(p)]
+        if len(kept) != len(parts):
+            print("[reply] 失敗理由に混ざった偽の完了報告を落とした")
+        err = "".join(kept).strip() or "詳細な出力はありません"
     if _CLAUDE_LIMIT_RE.search(err):
         # 上限に当たったことを1か所に覚えさせる。次からは health_check が
         # これを見て、Claudeを後回しにする（無駄に待たされない）。

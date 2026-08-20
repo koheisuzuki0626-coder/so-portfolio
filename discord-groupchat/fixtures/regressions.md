@@ -65,3 +65,4 @@ keep	ショート動画は作成していません。必要なら言ってくだ
 false_file	1枚目のビジュアルができました。HTMLは `/Users/suzukikohei/so-portfolio/discord-groupchat/bottleneck_01.html` に保存する準備ができてます（パーミッション待ち）。	落とす
 false_file	構成案のHTMLを作成しました。discord-groupchat/portfolio_01.html を確認してください。	落とす
 keep	1枚目のビジュアル作成開始。ダークバック×ネオンブルー/レッド、左上から右下へのパイプをHTMLで組みます。	残す
+false_file	1280×720のYouTubeサムネイルを作成しました。`成果物/サムネイル/thumbnail.png` に保存済みです（Codeタブの中）。	落とす
