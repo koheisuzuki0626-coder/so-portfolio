@@ -2660,6 +2660,42 @@ def run():
     check(f"目次と実物の節が一致（実物{len(_real)}／目次{len(_listed)}）",
           _listed, _real)
 
+    print("■ 「動画化して」で、作った静止画が動画になること")
+    # 事故（2026-08-22）：2日にわたり「HTMLで3枚作ってffmpegで繋げます」と
+    # 案内し続けていたのに【その機能が実装されていなかった】。
+    # 「動画化して」は行き先が無く、デザインの作り直しに流れて
+    # 同じ絵を作り続け、最後はエラーで終わった。
+    _LGS = {"has_last_gen": True, "last_was_design": True}
+    for _t in ("ok、じゃあこの3枚をつかって動画化して", "ストップ、動画化してほしい",
+               "動画化して", "3枚をつなげて動画にして", "スライドショーにして",
+               "6秒の動画にして"):
+        check(f"動画化へ流す: {_t[:16]!r}",
+              bot.classify_route(_t, **_LGS), "slideshow")
+    # 誤爆よけ：可否の質問・新規の動画生成・素材が無い時は流さない
+    check("可否の質問にしない", bot.classify_route("動画化できる？", **_LGS), None)
+    check("やり方の質問にしない",
+          bot.classify_route("動画どうやってつなげるの？", **_LGS), None)
+    check("新規の動画生成は従来どおり", bot.classify_route("動画作って"), "hf_auto")
+    check("素材が無ければ流さない", bot.classify_route("動画化して"), None)
+    check("見た目の手直しは従来どおり",
+          bot.classify_route("文字を大きくして", **_LGS), "design")
+    check("勝手に始まらないよう関門に入れる", "slideshow" in bot.ACT_ROUTES, True)
+    # 組み立てた ffmpeg の引数が壊れていないこと（尺が爆発した事故の再発防止）
+    import pathlib as _plS
+    _cmd = bot._kenburns_cmd([_plS.Path("a.png"), _plS.Path("b.png")],
+                             _plS.Path("o.mp4"), 1080, 1920, 2.0, 0.5)
+    _fc = _cmd[_cmd.index("-filter_complex") + 1]
+    check("1枚につき1回だけ食わせる（-loopを使わない）", "-loop" in _cmd, False)
+    check("クロスフェードでつなぐ", "xfade" in _fc, True)
+    check("ゆっくり寄る動きを付ける", "zoompan" in _fc, True)
+    check("出力の縦横を指定する", "s=1080x1920" in _fc, True)
+    check("1枚でも組める", "null[out]" in
+          bot._kenburns_cmd([_plS.Path("a.png")], _plS.Path("o.mp4"),
+                            1080, 1920, 2.0, 0.5)[
+              bot._kenburns_cmd([_plS.Path("a.png")], _plS.Path("o.mp4"),
+                                1080, 1920, 2.0, 0.5).index(
+                  "-filter_complex") + 1], True)
+
     print("■ 提案に「ok」と答えたら、合意した作業が始まること")
     # 事故（2026-08-21）：構成案に合意したあと「ok」を3回送っても何も始まらず、
     # ボットは「1枚目制作開始します」と言い続けるだけだった。

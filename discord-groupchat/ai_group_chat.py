@@ -45,6 +45,7 @@ MESSAGE CONTENT INTENT はオーケストレーター用にだけONにすれば�
   ・生成物の自動検品（依頼と出来上がりをGeminiが照合）
   ・完パケ編集（Macローカルのffmpegで処理）
   ・デザイン制作（ClaudeがHTMLで設計 → Macローカルで画像化）
+  ・静止画をつないで動画にする（Macのffmpegで完結・クレジット不要）
   ・スタイル学習（参考動画から勝ちパターンを抽出して以降の生成に反映）
   ・広告代理店モード（企画→CM制作→バズ度シミュレーション）
   ・ショート量産ライン（スタイリッシュ/アート系 × YouTube Shorts）
@@ -5566,7 +5567,7 @@ def _match_gen_model(content):
 # 「リサーチはクロード1にして」などが作業を起こしていた。
 ACT_ROUTES = frozenset({
     "design", "image", "hf_auto", "hf_model", "revise", "edit", "short",
-    "ad", "motion", "style_learn", "clip", "virality",
+    "ad", "motion", "style_learn", "clip", "virality", "slideshow",
 })
 
 
@@ -6078,6 +6079,31 @@ _CODE_WORK_RE = re.compile(
     "リポジトリ|テスト|設定を(足|追加|変え)|作り込")
 
 
+# 「作った静止画をつないで動画にして」の言い方。
+# 事故（2026-08-22）：2日間「ffmpegで繋げます」と案内していたのに機能が無く、
+# 「動画化して」が【デザインの作り直し】に流れて同じ絵を作り続けていた。
+_SLIDESHOW_RE = re.compile(
+    "動画化|動画にして|動画にする|ムービーにして|"
+    "スライドショー|繋げて|つなげて|繋いで|つないで|連結")
+
+
+def _r_slideshow(c):
+    """作った静止画をつないで動画にする。
+    「作り直し」より先に見る（先に見ないと、同じ絵を作り直して終わる）。"""
+    if c.is_question:
+        return None
+    if not _SLIDESHOW_RE.search(c.text):
+        return None
+    # 新しく絵を作れという依頼ではないこと（「動画作って」は生成へ）
+    if re.search("生成して|作って$|作成して", c.text) and not _SLIDESHOW_RE.search(
+            c.text):
+        return None
+    # 素材がある時だけ（直前がデザイン／制作の相談中／画像を添付している）
+    if c.last_was_design or c.design_ctx or c.has_image_att:
+        return "slideshow"
+    return None
+
+
 def _r_do_proposal(c):
     """ボットが直前に出した提案を『それやって』で実行に移す。
 
@@ -6133,6 +6159,9 @@ ROUTE_RULES = (
     ("説明を求める質問", _r_explain_question),
     ("状態確認", _r_status),
     ("切り抜き", _r_clip),
+    # 「動画化して」は作り直しより先に見る。後ろに置くと、同じ絵を
+    # 作り直して終わる（実際に2回そうなった。2026-08-22）
+    ("静止画を動画に", _r_slideshow),
     ("完パケ編集", _r_edit),
     ("作り直し", _r_revise),
     ("デザインの手直し", _r_design_tweak),
@@ -7741,6 +7770,136 @@ async def _run_design(message, request):
             shutil.rmtree(workdir, ignore_errors=True)
         except Exception:  # noqa: BLE001
             pass
+
+
+# ---------- 静止画をつないで動画にする（Macのffmpegで完結・クレジット不要） ----------
+# 2日にわたり「HTMLで3枚作って、ffmpegで繋げます」と案内し続けていたのに、
+# 【その機能が実装されていなかった】。本人が「動画化して」と何度頼んでも
+# デザインの作り直しに流れ、最後はエラーで終わっていた（2026-08-22 05:05）。
+SLIDESHOW_SEC = float(os.getenv("SLIDESHOW_SEC", "2.0"))    # 1枚あたりの表示秒
+SLIDESHOW_FADE = float(os.getenv("SLIDESHOW_FADE", "0.5"))  # 重なり（秒）
+SLIDESHOW_MAX = 8                                           # つなぐ上限
+_DESIGN_MADE_RE = re.compile(r"（デザインを制作: .*? / (https?://\S+?)）")
+
+
+def _recent_design_urls(cid, n=SLIDESHOW_MAX):
+    """このチャンネルで作ったデザイン画像のURLを、古い順に返す。
+    add_history に「（デザインを制作: … / URL）」の形で残してあるものを拾う。"""
+    urls = []
+    for name, text in get_history(cid) or []:
+        for m in _DESIGN_MADE_RE.finditer(text or ""):
+            u = m.group(1)
+            if u not in urls:
+                urls.append(u)
+    return urls[-n:]
+
+
+def _kenburns_cmd(paths, out, w, h, sec, fade):
+    """静止画をKen Burns（ゆっくり寄る）＋クロスフェードで1本にする ffmpeg 引数。
+    ・zoompan は【1枚につき1回だけ】食わせる。-loop と併用すると
+      入力フレームごとに d 枚を吐いて尺が爆発する（実測161秒になった）
+    ・各クリップは sec+fade の長さにし、fade ぶん重ねてつなぐ"""
+    fps = 30
+    clip = sec + fade
+    frames = max(2, int(round(clip * fps)))
+    big_w, big_h = int(w * 1.1) // 2 * 2, int(h * 1.1) // 2 * 2
+    args = ["ffmpeg", "-nostdin", "-y", "-threads", str(_work_threads())]
+    for p in paths:
+        args += ["-i", str(p)]
+    parts = []
+    for i in range(len(paths)):
+        parts.append(
+            f"[{i}:v]scale={big_w}:{big_h}:force_original_aspect_ratio=increase,"
+            f"crop={big_w}:{big_h},"
+            f"zoompan=z='min(zoom+0.0012,1.10)':d={frames}:s={w}x{h}:fps={fps},"
+            f"setsar=1[v{i}]"
+        )
+    last = "v0"
+    for i in range(1, len(paths)):
+        offset = round(sec * i, 3)
+        tag = f"x{i}" if i < len(paths) - 1 else "out"
+        parts.append(f"[{last}][v{i}]xfade=transition=fade:"
+                     f"duration={fade}:offset={offset}[{tag}]")
+        last = tag
+    if len(paths) == 1:
+        parts.append("[v0]null[out]")
+    args += ["-filter_complex", ";".join(parts), "-map", "[out]",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)]
+    return args
+
+
+async def _run_slideshow(message, request):
+    """作ったデザイン画像を、Macのffmpegでつないで動画にする（クレジット不要）。"""
+    cid = message.channel.id
+    urls = [a.url for a in (getattr(message, "attachments", None) or [])
+            if Path(getattr(a, "filename", "")).suffix.lower()
+            in SUPPORTED_IMAGE_TYPES] or _recent_design_urls(cid)
+    if len(urls) < 1:
+        await send_as(
+            orch, cid,
+            "🎞 **つなぐ画像が見つかりません。**\n"
+            "先にデザインを作るか、使いたい画像をこのチャンネルに添付して"
+            "もう一度「動画化して」と言ってください。"
+        )
+        _set_pending_do(cid, "つなぐ画像", request)
+        return
+    n = re.search(r"([0-9０-９]+)\s*秒", request or "")
+    total = float(n.group(1).translate(str.maketrans("０-９", "0-9"))) if n else 0
+    sec = round(total / len(urls), 2) if total else SLIDESHOW_SEC
+    sec = min(max(sec, 0.6), 10.0)
+    CLIP_DIR.mkdir(parents=True, exist_ok=True)
+    workdir = CLIP_DIR / f"slide{int(time.time())}"
+    workdir.mkdir(parents=True, exist_ok=True)
+    try:
+        await send_as(
+            orch, cid,
+            f"🎞 {len(urls)}枚をつないで動画にします"
+            f"（1枚{sec}秒・ゆっくり寄る動き＋クロスフェード／Macで処理・"
+            "クレジットは使いません）…"
+        )
+        paths = []
+        for i, u in enumerate(urls, 1):
+            p = workdir / f"img{i}.png"
+            ok, note = await _download_to_file(u, p)
+            if ok and p.exists():
+                paths.append(p)
+            else:
+                print(f"[slideshow] 取得できず飛ばす: {note} {u[:60]}")
+        if not paths:
+            await send_as(orch, cid, "⚠️ 画像を取得できませんでした。")
+            return
+        w, h = await asyncio.to_thread(_image_size, paths[0])
+        out = workdir / "slideshow.mp4"
+        ok, log = await _sh(_kenburns_cmd(paths, out, w, h, sec, SLIDESHOW_FADE),
+                            timeout=900, heavy=True)
+        if not ok or not out.exists():
+            await send_as(orch, cid, f"⚠️ 動画にできませんでした: {log[-300:]}")
+            return
+        url = await send_image_bytes(
+            cid,
+            f"✅ {len(paths)}枚を動画にしました（{w}×{h}・"
+            f"約{round(sec * len(paths) + SLIDESHOW_FADE, 1)}秒）\n"
+            "「もっとゆっくり」「1枚3秒で」のように言えば作り直せます。",
+            out.read_bytes(), f"slideshow_{int(time.time())}.mp4",
+        )
+        if url:
+            _update_last_gen_url(cid, url)
+            add_history(cid, "Orchestrator",
+                        f"（静止画{len(paths)}枚を動画にした / {url}）")
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _image_size(path):
+    """画像の縦横。読めなければ縦型の既定値。"""
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            w, h = im.size
+        return (w // 2 * 2, h // 2 * 2)
+    except Exception:  # noqa: BLE001
+        return (1080, 1920)
 
 
 # ---------- スタイル学習（参考動画から勝ちパターンを抽出して以降の生成に反映） ----------
@@ -11311,6 +11470,15 @@ async def _dispatch_message(message):
               "そのまま縦型9:16のCM動画を生成します",
               lambda: _run_ad_make(message, content), "広告制作",
               "Higgsfieldのクレジットを消費します")
+        return
+
+    if route == "slideshow":
+        add_history(cid, message.author.display_name, content)
+        _gate(message, cid, f"静止画をつないで動画にする（{content[:40]}）",
+              "作った画像をMacのffmpegでつなぎ、ゆっくり寄る動きと"
+              "クロスフェードを付けて1本の動画にします",
+              lambda: _run_slideshow(message, content), "動画化",
+              "無料（生成モデルを使わないのでクレジットは消費しません）")
         return
 
     if route == "edit":
