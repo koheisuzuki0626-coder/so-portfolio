@@ -5,6 +5,7 @@ Discordのボットが作った画像・動画の置き場。
 ## 動画
 
 - [slideshow_0822_075212.mp4](./slideshow_0822_075212.mp4)（GitHubでは開くとダウンロードになります）
+- [slideshow_0822_081527.mp4](./slideshow_0822_081527.mp4)（GitHubでは開くとダウンロードになります）
 
 ## 画像
 
