@@ -5826,16 +5826,21 @@ class RouteCtx:
 
     __slots__ = ("text", "cid", "has_attachments", "has_video_att",
                  "has_image_att", "has_job", "has_last_gen", "after_credits",
-                 "has_running", "last_was_design", "is_question", "status_kw",
-                 "short_ask", "status_ctx", "fix_now", "learn_strict",
-                 "learn_loose")
+                 "has_running", "last_was_design", "design_ctx", "is_question",
+                 "status_kw", "short_ask", "status_ctx", "fix_now",
+                 "learn_strict", "learn_loose")
 
     def __init__(self, content, *, has_attachments=False, has_video_att=False,
                  has_image_att=False, has_job=False, has_last_gen=False,
                  after_credits=False, has_running=False, last_was_design=False,
-                 cid=None):
+                 design_ctx=False, cid=None):
         self.text = content or ""
         self.cid = cid
+        # 直近の会話がビジュアル制作の相談か（構成案・カット割り・図解など）。
+        # last_was_design は【前に1枚作れていること】が前提なので、
+        # 構成案を決めた直後の「1枚目」＝まだ1枚も作っていない状態では
+        # 永久に真にならない（鶏と卵）。会話の文脈も見る。
+        self.design_ctx = design_ctx
         self.has_attachments = has_attachments
         self.has_video_att = has_video_att
         self.has_image_att = has_image_att
@@ -6111,6 +6116,26 @@ _PLAN_ITEM_RE = re.compile(
     r"[0-9０-９一二三四五六七八九十]\s*カット目")
 # 「始めて」という体言止めの合図。制作の流れの中でだけ意味を持つ。
 _START_WORK_RE = re.compile("制作開始|作成開始|生成開始|着手して|作り始めて")
+# 直近の会話が「ビジュアルを作る相談」か。構成案を決めた直後の「作成開始」を
+# 拾うために使う（まだ1枚も作っていないので last_was_design では拾えない）。
+_DESIGN_TALK_RE = re.compile(
+    "構成案|カット割|絵コンテ|ビジュアル|図解|サムネ|バナー|ポスター|"
+    "デザイン|レイアウト|配色|ダークバック|ネオン|テロップ|"
+    r"[0-9０-９一二三四五六七八九十]\s*枚目|カット\s*[0-9０-９一二三四五六七八九十]")
+DESIGN_TALK_TURNS = 8      # さかのぼって見る発言数
+
+
+def _in_design_talk(cid):
+    """直近のやり取りが、ビジュアル制作の相談かどうか。
+    「何を作るか」は会話の中で決まっていることが多く、その流れの中でだけ
+    「作成開始」「1枚目やろう」を制作の合図として受け取る。"""
+    if cid is None:
+        return False
+    try:
+        rows = get_history(cid)[-DESIGN_TALK_TURNS:]
+    except Exception:  # noqa: BLE001
+        return False
+    return any(_DESIGN_TALK_RE.search(t or "") for _n, t in rows)
 
 
 def _r_plan_item(c):
@@ -6120,12 +6145,24 @@ def _r_plan_item(c):
     どの規則にも当たらず会話に落ち、ボットは「作ります」と言い続けるのに
     一度も動かなかった。作り手を名指ししていれば _r_maker_named が拾うが、
     名指ししない普通の言い方が素通りしていた。
-    直前がデザイン（30分以内）の時だけなので、普通の雑談には効かない。"""
-    if not c.last_was_design or c.is_question:
+    直前がデザイン（30分以内）か、直近の会話がビジュアル制作の相談の時だけ
+    なので、普通の雑談には効かない。
+
+    事故（2026-08-21）：last_was_design だけを条件にしていたため、構成案を
+    決めた直後の「作成開始」＝【まだ1枚も作っていない状態】では永久に
+    発動しなかった（鶏と卵）。結果 AI 判定に落ちて exec（コードを触る作業）に
+    分類され、「何を作成するのか不明確です」と3回聞き返す堂々巡りになった。"""
+    if c.is_question or not (c.last_was_design or c.design_ctx):
         return None
     if _START_WORK_RE.search(c.text):
         return "design"
     if _PLAN_ITEM_RE.search(c.text) and _GEN_INTENT2_RE.search(c.text):
+        return "design"
+    # 「その内容で今すぐここで作成して」のように、会話で決めた内容を指して
+    # 作れと言う言い方。何を作るかは会話の中にある。
+    if (_GEN_INTENT2_RE.search(c.text) and _wants_action(c.text)
+            and re.search("その内容|その仕様|さっきの|それで|上の内容|決めた内容",
+                          c.text)):
         return "design"
 
 
@@ -7721,6 +7758,29 @@ _DIAGRAM_RE = re.compile(
     "図表|図解|ダイアグラム|マインドマップ|ロードマップ|年表|タイムライン")
 
 
+_SIZE_HINT_RE = re.compile(
+    "縦型|縦長|ショート|ストーリー|リール|9:16|tiktok|正方形|スクエア|1:1|"
+    "インスタ|instagram|スライド|資料|プレゼン|発表|チラシ|フライヤー|"
+    "ポスター|A4|印刷|サムネ|バナー", re.I)
+
+
+def _design_size_with_context(text, cid):
+    """サイズの指定が依頼文に無ければ、直近の会話から拾う。
+    事故（2026-08-21）：「9:16ね」と別の発言で伝えたあと「作成開始」と言ったら、
+    短い依頼文だけを見て既定のYouTubeサムネイル（1280x720・横）になっていた。
+    指定は会話の中で小分けに伝えられるので、そこも見る。"""
+    if _SIZE_HINT_RE.search(text or "") or cid is None:
+        return _design_size(text)
+    try:
+        rows = get_history(cid)[-DESIGN_TALK_TURNS:]
+    except Exception:  # noqa: BLE001
+        return _design_size(text)
+    for _n, t in reversed(rows):          # 新しい指定を優先する
+        if _SIZE_HINT_RE.search(t or ""):
+            return _design_size(t)
+    return _design_size(text)
+
+
 def _design_size(text):
     """発言から仕上がりサイズを決める。既定はYouTubeサムネイル。"""
     t = text or ""
@@ -7851,7 +7911,7 @@ async def _run_design(message, request):
         )
         _set_pending_do(cid, "使う写真", request)
         return
-    w, h, label = _design_size(request)
+    w, h, label = _design_size_with_context(request, cid)
     await send_as(
         orch, cid,
         f"🎨 デザインを作ります（{label} {w}×{h}）。HTMLで組んで画像に書き出します"
@@ -11397,6 +11457,7 @@ async def _dispatch_message(message):
             str((_lg_rec or {}).get("label", "")).startswith("デザイン")
             and time.time() - (_lg_rec or {}).get("t", 0) < 1800
         ),
+        design_ctx=_in_design_talk(cid),
     )
     # 依頼待ち中に動画が添付された（キーワード無し）ケースもモーション実行に接続
     pm = _pending_motion.get(cid)
@@ -11560,7 +11621,7 @@ async def _dispatch_message(message):
         # カット1であって、直前の生成物ではない。
         # 短い手直し（「背景を暗くして」等）は _r_design_tweak / _r_revise が
         # 手前で拾うので、ここで長さを見て推測する必要はない。
-        _w, _h, _label = _design_size(_req)
+        _w, _h, _label = _design_size_with_context(_req, cid)
         _gate(message, cid, f"デザインの制作（{_req[:40]}）",
               f"ClaudeがHTMLでレイアウトを組み、{_label} {_w}×{_h} の画像に"
               "書き出して投稿します（文字が崩れないので、サムネ・バナー向き）",
