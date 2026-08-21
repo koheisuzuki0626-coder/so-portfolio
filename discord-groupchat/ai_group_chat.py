@@ -8831,6 +8831,25 @@ async def _report_gen_status(channel, cid, author_name=None, said=None):
         return True
     if lg.get("url"):
         label = lg.get("label") or "生成"
+        # 聞かれている媒体と、手元にあるものが違うなら、そう言う。
+        # 事故（2026-08-22）：「動画を見せて」に対し、直近の【静止画】を
+        # 「もう完成しています」と3回続けて出した。動画は中止されていて
+        # 存在しないのに、あるかのように見せていた。
+        want = _said_media(said or "")
+        have = lg.get("media_type") or ""
+        if want and have and want != have:
+            _w = "動画" if want == "video" else "画像"
+            _h = "画像" if have == "image" else "動画"
+            await channel.send(
+                f"📭 **{_w}はまだ作っていません。**"
+                f"（手元にあるのは直近の{_h}「{label}」だけです）\n"
+                + ("作るなら「**動画化して**」と言ってください。"
+                   "その画像をつないで動画にします。\n" if want == "video" else "")
+                + f"念のため、その{_h}はこちら:\n{lg['url']}"
+            )
+            add_history(cid, "Orchestrator",
+                        f"（{_w}は未作成である旨を伝えた）")
+            return True
         await channel.send(
             f"✅ 直近の「{label}」はもう完成しています:\n{lg['url']}\n"
             "続けるなら「バズ度分析して」で効果予測、"

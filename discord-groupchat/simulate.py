@@ -2714,6 +2714,34 @@ async def run():
           bot.ERROR_LOG.exists() and "わざと壊す" in bot.ERROR_LOG.read_text())
     check("on_message自体は例外を外に出さない", r["err"] is None, f"例外={r['err']}")
 
+    print("■ 「動画を見せて」に静止画を出さない（聞かれた媒体を見る）")
+    # 事故（2026-08-22）：動画は中止されて存在しないのに、「動画を見せて」に
+    # 対して直近の【静止画】を「もう完成しています」と3回続けて出した。
+    _keepJ, _keepG = bot._load_motion_job, bot._load_last_gen
+    try:
+        bot._load_motion_job = lambda: None
+        bot._load_last_gen = lambda cid: {
+            "url": "https://example.com/design.png", "media_type": "image",
+            "label": "デザイン（縦型（ショート/ストーリー））"}
+        _chM = _channel(5551)
+        _chM.sent.clear()
+        await bot._report_gen_status(_chM, 5551, said="動画を見せて",
+                                     author_name=None)
+        _m = _chM.sent[0] if _chM.sent else ""
+        check("動画は未作成だと言う", "動画はまだ作っていません" in _m, _m[:80])
+        check("作り方を案内する", "動画化して" in _m, _m[:80])
+        check("静止画を完成物として出さない",
+              "もう完成しています" not in _m, _m[:80])
+        # 画像を聞かれた時／媒体を言わない時は、これまでどおり出す
+        for _q in ("画像見せて", "見せて"):
+            _chM.sent.clear()
+            await bot._report_gen_status(_chM, 5551, said=_q, author_name=None)
+            check(f"{_q!r} は完成物を出す",
+                  "もう完成しています" in (_chM.sent[0] if _chM.sent else ""),
+                  _chM.sent[:1])
+    finally:
+        bot._load_motion_job, bot._load_last_gen = _keepJ, _keepG
+
     print("■ 連投は最後の1通だけが答える（2回続けて発言しない）")
     # 事故（2026-08-21）：「6秒にしないときつくない？」「静止画3枚でしょ？」と
     # 続けて送ったら、1通ずつ返事をしてボットが2回続けて発言した。

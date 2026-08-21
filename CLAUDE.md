@@ -192,6 +192,7 @@ Mac で動いているボットは読まない。「ここで決めたのに Dis
 | 連投に1通ずつ返事をしない | `_wait_for_burst`（最後の1通だけ答える） |
 | 提案に「ok」で合意した作業が始まる | `_BARE_GO_RE` / `_r_do_proposal` |
 | 案内した機能が実際に在る（動画化） | `_r_slideshow` / `_run_slideshow` |
+| 聞かれた媒体と違うものを出さない | `_report_gen_status` の `_said_media` 照合 |
 | 収益の相談を料金照会にしない | `_INCOME_Q_RE` |
 | 時間切れを「却下」と言わない | `_stopped_note` / `_recent_expired` |
 | 宙に浮いた承認をあとから拾う | `_try_approve_expired` |
