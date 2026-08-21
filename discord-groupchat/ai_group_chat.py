@@ -7842,7 +7842,9 @@ async def _run_design(message, request):
 # 2日にわたり「HTMLで3枚作って、ffmpegで繋げます」と案内し続けていたのに、
 # 【その機能が実装されていなかった】。本人が「動画化して」と何度頼んでも
 # デザインの作り直しに流れ、最後はエラーで終わっていた（2026-08-22 05:05）。
-SLIDESHOW_SEC = float(os.getenv("SLIDESHOW_SEC", "2.0"))    # 1枚あたりの表示秒
+# 1枚あたりの表示秒。2秒だと見出しとサブコピーを読み切る前に切り替わる
+# （実際に6秒版を見て短いと分かったので3秒にした。2026-08-22）
+SLIDESHOW_SEC = float(os.getenv("SLIDESHOW_SEC", "3.0"))    # 1枚あたりの表示秒
 SLIDESHOW_FADE = float(os.getenv("SLIDESHOW_FADE", "0.5"))  # 重なり（秒）
 SLIDESHOW_MAX = 8                                           # つなぐ上限
 # 依頼文には改行が入る（「…欲しい\n【指定】9:16」）。`.` は既定で改行に
@@ -7880,24 +7882,34 @@ def _wanted_count(text):
     return n if 1 <= n <= SLIDESHOW_MAX else None
 
 
+SLIDESHOW_ZOOM = 1.09        # 寄り切った時の倍率
+
+
 def _kenburns_cmd(paths, out, w, h, sec, fade):
-    """静止画をKen Burns（ゆっくり寄る）＋クロスフェードで1本にする ffmpeg 引数。
+    """静止画をKen Burns（ゆっくり寄る／引く）＋クロスフェードで1本にする。
     ・zoompan は【1枚につき1回だけ】食わせる。-loop と併用すると
       入力フレームごとに d 枚を吐いて尺が爆発する（実測161秒になった）
-    ・各クリップは sec+fade の長さにし、fade ぶん重ねてつなぐ"""
+    ・各クリップは sec+fade の長さにし、fade ぶん重ねてつなぐ
+    ・寄る／引くを1枚おきに入れ替える。全部同じ向きだと単調で、
+      場面の切り替わりが伝わらない（6秒版を見て分かった。2026-08-22）"""
     fps = 30
     clip = sec + fade
     frames = max(2, int(round(clip * fps)))
     big_w, big_h = int(w * 1.1) // 2 * 2, int(h * 1.1) // 2 * 2
+    step = round((SLIDESHOW_ZOOM - 1.0) / max(1, frames - 1), 6)
     args = ["ffmpeg", "-nostdin", "-y", "-threads", str(_work_threads())]
     for p in paths:
         args += ["-i", str(p)]
     parts = []
     for i in range(len(paths)):
+        if i % 2 == 0:                       # 寄る
+            z = f"min(zoom+{step},{SLIDESHOW_ZOOM})"
+        else:                                # 引く（1枚目の位置から戻す）
+            z = f"if(eq(on,1),{SLIDESHOW_ZOOM},max(zoom-{step},1.0))"
         parts.append(
             f"[{i}:v]scale={big_w}:{big_h}:force_original_aspect_ratio=increase,"
             f"crop={big_w}:{big_h},"
-            f"zoompan=z='min(zoom+0.0012,1.10)':d={frames}:s={w}x{h}:fps={fps},"
+            f"zoompan=z='{z}':d={frames}:s={w}x{h}:fps={fps},"
             f"setsar=1[v{i}]"
         )
     last = "v0"
@@ -7909,8 +7921,9 @@ def _kenburns_cmd(paths, out, w, h, sec, fade):
         last = tag
     if len(paths) == 1:
         parts.append("[v0]null[out]")
+    # 文字が主役なので、粗いとテロップが滲む。少し時間をかけてでも綺麗に出す
     args += ["-filter_complex", ";".join(parts), "-map", "[out]",
-             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+             "-c:v", "libx264", "-preset", "slow", "-crf", "20",
              "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)]
     return args
 
