@@ -4454,7 +4454,9 @@ async def _download_video(cid, url, dest, kind="youtube"):
                 dest.unlink()
             dest.symlink_to(src)         # コピーしない（1GBを二重に置かない）
         except Exception:  # noqa: BLE001
-            shutil.copy2(src, dest)
+            # 最大1GBのコピーをそのまま await 無しで走らせると、その間
+            # ボット全体（会話も「再起動」も）が止まる。別スレッドへ逃がす。
+            await asyncio.to_thread(shutil.copy2, src, dest)
         return True
 
     if kind == "url":
