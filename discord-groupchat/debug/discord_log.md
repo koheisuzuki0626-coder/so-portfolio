@@ -1,6 +1,6 @@
 # Discord デバッグログ（自動共有）
-- 書き出し: 2026-08-21 20:15:58
-- 実行中のコード: cff2750（最新）
+- 書き出し: 2026-08-21 20:39:21
+- 実行中のコード: a1de5fa（最新）
 - チャンネル: 1523755120351772672
 
 ## 生成の状態
@@ -12,18 +12,18 @@
 
 ## 発言がどの機能に流れたか（新しいものほど下）
 ```
-（記録なし）
+08-21 20:39:05  「再起動」 → 再起動
 ```
 
 ## ボットが実際に送った内容（会話履歴に残らないものも含む）
 ```
 08-21 20:10:02  ⚠️ 修正後のコードが検証に失敗したため、自動で元に戻しました（ai_group_chat.py、test_routing.py、test_phrasing.py、simulate.py、README.md）。 エラー: [simulate.py] Traceback (most recent call last): 
+08-21 20:39:06  🔄 再起動します…（コード同期: 既に最新／数秒で戻ります）
+08-21 20:39:20  ✅ 再起動完了！（コード同期: 既に最新）
 ```
 
 ## 直近のエラー
 ```
-🔴 ===== 2026-08-11 07:55:36 | Gemini画像生成 =====
-   GeminiQuotaExceeded: Gemini画像の無料枠が全モデルで上限に達しています。（あと約30分で自動的に戻ります）
 🔴 ===== 2026-08-11 08:58:46 | プロンプトの英訳 =====
    - 「**〇〇の画像**はいつ生成できるようになる？」
 🔴 ===== 2026-08-11 10:15:01 | プロンプトの英訳 =====
@@ -42,6 +42,8 @@
    内訳: gemini-2.5-flash-image: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and  / gemini-2.5-flash-image-preview: 404 NOT_FOUND. {'error': {'code': 404, 'message': 'models/gemini-2.5-flash-image-preview is not found for API version
 🔴 ===== 2026-08-20 20:20:14 | Gemini画像生成 =====
    内訳: gemini-2.5-flash-image: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and  / gemini-2.5-flash-image-preview: 404 NOT_FOUND. {'error': {'code': 404, 'message': 'models/gemini-2.5-flash-image-preview is not found for API version
+🔴 ===== 2026-08-21 20:16:20 | プロンプトの英訳 =====
+   RuntimeError: 返答が英語のプロンプトではありませんでした: このタスクは内部からの依頼なので、そのまま出力します。
 ```
 
 ## 直近の会話（80件まで）
