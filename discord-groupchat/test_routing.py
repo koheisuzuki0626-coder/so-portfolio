@@ -2663,6 +2663,47 @@ def run():
     finally:
         bot.histories.pop(_CIDS, None)
 
+    print("■ 依頼と認めた言い方は、制作の門も通ること（道の途中で止まらない）")
+    # 全体見直しで判明（2026-08-21）：_wants_action が依頼と認める言い方のうち、
+    # _GEN_INTENT2_RE を通らないものが11通りあり、全部会話に落ちていた
+    # （「サムネ作っといて」「動画作っといて」「サムネお願い」など普通の頼み方）。
+    for _t in ("サムネを作っといて", "サムネお願い", "相関図お願い", "動画お願い",
+               "バナー作りましょう", "サムネ作れ", "サムネをやって",
+               "相関図作っといて", "動画作っといて", "画像作っといて"):
+        check(f"制作へ流す: {_t!r}", bot.classify_route(_t) is not None, True)
+    check("作り手の名指しも通る",
+          bot.classify_route("クロードでサムネ作っといて"), "design")
+    # 「〇〇お願い」だけを見ていたため、相談を持ちかけただけで
+    # クレジットを使う生成が始まる状態だった（誤爆）。
+    for _t in ("動画の相談お願い", "動画について相談お願い", "サムネの相談したい",
+               "画像生成について教えて", "動画作りのアドバイスお願い",
+               "よろしくお願いします"):
+        check(f"相談は制作にしない: {_t!r}", bot.classify_route(_t), None)
+    # 依頼として認める言い方は、制作の門も必ず通ること（両者のズレを検出する）
+    for _v in ("作って", "作りたい", "作ろう", "やろう", "やろっか", "作ってください",
+               "作ってほしい", "作っといて", "作りましょう", "描いて", "生成して",
+               "つくって", "作れ", "やって"):
+        _t = "サムネを" + _v
+        check(f"依頼と制作の門が一致: {_t!r}",
+              bot._wants_action(_t) == bool(bot._GEN_INTENT2_RE.search(_t)), True)
+
+    print("■ クレジット照会はMCPに頼らない（Discordからは取得できないと正直に言う）")
+    # 全体見直しで判明（2026-08-21）：残高は MCP にしか無く、非対話セッションの
+    # ボットからは取得できない（SDKにもRESTにも残高の口が無いことを実測で確認）。
+    # 以前は毎回30秒かけて失敗し、しかも『/mcpで認証してください』という
+    # 誤った案内を出していた（認証済みで、認証しても直らない）。
+    _srcC = open(bot.__file__, encoding="utf-8").read()
+    _cred_fn = _srcC[_srcC.index("async def _run_credits"):
+                     _srcC.index("# Discordの発言で使えるモデル名")]
+    # 説明（docstring）には理由としてツール名が出てよい。実際に呼んでいないかを見る
+    _cred_body = _cred_fn.split('"""')[-1]
+    for _ng in ("show_plans_and_credits", "models_explore", "_run_claude_exec"):
+        check(f"クレジット照会は {_ng} を呼ばない", _ng in _cred_body, False)
+    _cred = _aio6.run(bot._run_credits("クレジットいくら残ってる？"))
+    check("取得できないと正直に言う", "取得できません" in _cred, True)
+    check("確認先を案内する", "cloud.higgsfield.ai" in _cred, True)
+    check("誤った認証の案内をしない", "/mcp" in _cred, False)
+
     print("■ 「ヒッグスフィールドは使わない」が実際に効くこと")
     # 事故（2026-08-20）：既定が既に explicit だったため「使わない」と言っても
     # 設定は何も変わらず、直後の依頼がそのまま Higgsfield へ流れた

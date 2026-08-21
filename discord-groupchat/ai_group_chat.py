@@ -1793,9 +1793,10 @@ BOT_CAPABILITIES = (
 BOT_GLOSSARY = (
     "【この環境の用語】\n"
     "・Higgsfield（ヒッグスフィールド）＝動画・画像を生成するプラットフォーム。"
-    "このボットはMCP経由で使う。生成するとクレジットを消費する。"
-    "ffmpegやPlaywrightが入ったクラウドLinux（sandbox_exec）も使えて、"
-    "動画の編集やデザインの画像化はそこで行う\n"
+    "生成は公式SDK（REST）経由で行う。生成するとクレジットを消費する。"
+    "※残クレジットの照会と、クラウドのサンドボックス（sandbox_exec）は"
+    "MCP接続にしか無く、このボット（非対話セッション）からは使えない。"
+    "動画の編集とデザインの画像化は、Mac上のffmpeg / Playwrightで行う\n"
     "・クレジット＝Higgsfieldの利用単位。動画1本で10〜25程度\n"
     "・Veo / Kling / Seedance / Sora＝Higgsfieldで使える動画モデル\n"
     "・Nano Banana / Soul / Seedream＝画像モデル\n"
@@ -5532,7 +5533,16 @@ _GEN_INTENT2_RE = re.compile(
     # 前回 _wants_action（依頼の形）には「作ろう」を足したが、
     # 制作の規則を通す門である ここ を直し忘れていた（＝道の途中で止まっていた）。
     "作ろう|つくろう|作ろっか|つくろっか|やろう|やろっか|やりましょう|"
-    "制作開始|作成開始|生成開始|着手して"
+    "制作開始|作成開始|生成開始|着手して|"
+    # 「〜といて」「〜ましょう」「命令形」「やって」。
+    # 見直しで判明（2026-08-21）：_wants_action は依頼と認めるのに、この門を
+    # 通らないため「サムネ作っといて」「動画作っといて」「サムネお願い」
+    # 「バナー作りましょう」「サムネ作れ」が全部会話に落ちていた
+    # （＝今日直したのと同じ「道の途中で止まる」抜け方）。
+    "作っといて|作っておいて|つくっといて|つくっておいて|"
+    "作りましょう|つくりましょう|"
+    "やって|やっといて|やっておいて|"
+    "(作|描|書)れ[。、!！]*$"
 )
 # 生成依頼から「何を作るか」以外の言葉（エンジン名・媒体名・依頼表現）を落とす。
 # 「geminiで画像生成して」のように主題が無い依頼を検出して聞き返すために使う。
@@ -6170,9 +6180,11 @@ def _r_design(c):
     """デザイン制作（文字が主役のもの。画像生成AIは文字が苦手なので
     ClaudeにHTMLで組ませてスクリーンショットする）。
     「猫のイラスト作って」のような絵の依頼は従来どおり画像生成へ。"""
+    # 「〇〇お願い」は、対象物の語を数え上げるとサムネ・相関図などが漏れる。
+    # 見直しで判明（2026-08-21）：「サムネお願い」「相関図お願い」が
+    # この列挙に無く、会話に落ちていた。対象物は _VISUAL_NOUN_RE で見る。
     if (_GEN_INTENT2_RE.search(c.text)
-            or re.search(r"(デザイン|バナー|ポスター|チラシ|フライヤー|スライド|"
-                         r"名刺|表紙|図解)\S{0,6}お願い", c.text)
+            or (_VISUAL_NOUN_RE.search(c.text) and re.search("お願い", c.text))
             ) and not c.is_question and (
         _DESIGN_NOUN_RE.search(c.text)
         # 「ロゴをデザインして」のような絵の依頼は、従来どおり画像生成に任せる
@@ -6189,8 +6201,15 @@ def _r_generate(c):
     「動画お願い」もAI判定に落とさず生成として扱う。"""
     if re.search("モーション|この動き|動きを", c.text):
         return None
+    # 「動画の【相談】お願い」「動画の【話】お願い」は制作の依頼ではない。
+    # 見直しで判明（2026-08-21）：「〇〇お願い」だけを見ていたので、
+    # 相談を持ちかけただけでクレジットを使う生成が始まる状態だった。
+    if re.search("相談|質問|意見|アドバイス|教えて", c.text):
+        return None
     if not (_GEN_INTENT2_RE.search(c.text)
-            or re.search(r"(動画|映像|画像|イラスト|ロゴ|写真)\S{0,8}お願い", c.text)):
+            # 対象物の語を数え上げると漏れる（サムネが入っていなかった）
+            or (_VISUAL_NOUN_RE.search(c.text) and re.search("お願い", c.text))
+            or re.search(r"(動画|映像)\S{0,8}お願い", c.text)):
         return None
     # 「どうやって動画作ってるの？」「veo3の料金いくら？」のような
     # 質問では発動しない。モデル名の指定があっても同じ（質問が先）。
@@ -6838,49 +6857,37 @@ def _strip_cli_boilerplate(text):
     return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
 
 
+HF_CONSOLE_URL = "https://cloud.higgsfield.ai"
+
+
 async def _run_credits(content, history=None):
-    """Higgsfieldのプラン・残クレジットと、モデル別の消費量を実データで答える。
-    「veo3で1本いくら？」のような質問に、生成を始めずに数字だけ返すための経路。
-    数字は必ずMCPツールの返り値から取り、無ければ『不明』と言わせる
-    （推測の金額を答えるのが一番まずいため）。"""
-    hit = _match_gen_model(content)
-    if hit:
-        focus = f"特に {hit[2]}（モデルID: {hit[0]}）で1本生成したときの消費クレジット。"
-    elif re.search("画像|イラスト|写真|ロゴ|アイコン|サムネ", content):
-        focus = ("特に画像モデル（Nano Banana 2 / Soul v2 / Seedream v4）の"
-                 "1枚あたりの消費クレジット。")
-    else:
-        focus = ("よく使う動画モデル（Veo 3 / Kling / Seedance / Sora 2）の"
-                 "1本あたりの消費クレジットも分かれば併せて。")
-    # 「画像生成はどうなの？」のような続きの質問を正しく解釈させるため直近を渡す
-    ctx = (f"直前の会話:\n{build_transcript((history or [])[-6:])}\n\n" if history else "")
-    task = (
-        f"{ctx}ユーザーの最新の質問: 「{content}」\n"
-        "Higgsfield の MCP ツールを使って、この質問に必要な料金・残高の情報を調べて。\n"
-        "1) show_plans_and_credits を呼び、プラン名・残クレジット・更新日を確認する。\n"
-        "2) models_explore でモデルの情報を見て、1回の生成あたりの消費クレジットを確認する。\n"
-        f"{focus}\n"
-        "【厳守】数字はツールの返り値に実際にあったものだけを書く。"
-        "ツールが返さなかった項目は『不明』と書き、推測や記憶による金額を"
-        "書いてはいけない。ツール自体が使えなかったときは"
-        "『Higgsfieldに接続できませんでした』とだけ書く。\n"
-        "【厳守】生成ツール（generate_image / generate_video 等）を実際に実行しては"
-        "いけない。料金の確認だけで、1クレジットも消費しないこと。\n"
-        f"日本語で{REPLY_CHARS}字以内、箇条書きで簡潔に。前置き・説明は不要。"
-    )
-    # こちらが実際に見た事実（今日すでに日次上限で弾かれている等）は、
-    # 問い合わせの結果より確かなので必ず添える。
-    # 事故：08:17に上限で失敗した直後に「制限はいつ解除される？」と聞かれ、
-    # 「詳しい情報が手元にありません」と答えていた。知っていたのに。
+    """クレジット残高の照会に、こちらが【実際に知っていること】だけで答える。
+
+    残高そのものはDiscordからは取得できない。理由：
+      ・Higgsfield の残高は MCP ツール（balance / show_plans_and_credits）にしか
+        無く、公式SDK（higgsfield_client）にも REST にも残高の口が無い
+        （2026-08-21 に実際に全エンドポイントを叩いて確認済み）
+      ・Discordボットは非対話セッション（claude -p）なのでMCPを使えない
+        （認証済みでも使えない。CLAUDE.md 参照）
+
+    以前はここで claude exec に MCP を叩かせており、毎回30秒かけて失敗し、
+    しかも『/mcp で認証してください』という【誤った案内】を出していた
+    （実際には認証済みで、認証しても直らない）。推測の数字を出すよりは、
+    知らないことを知らないと言い、確認先を出すほうが役に立つ。"""
     known = _hf_limit_note()
-    known = f"{known}\n（返ってきた理由: {_hf_limit['why'][:150]}）\n\n" if known else ""
-    out = await _run_claude_exec(task, timeout=240)
-    if not out or out.startswith("⚠️"):
-        return (known + "⚠️ Higgsfieldのクレジット情報を取得できませんでした。"
-                f"（{_claude_fail_note('クレジットの照会', out or '応答なし')}）")
-    out = _strip_cli_boilerplate(out)
-    return (known + "💳 " + out) if out else (
-        known + "⚠️ クレジット情報を読み取れませんでした。")
+    if known:
+        why = _hf_limit.get("why") or ""
+        known = f"{known}\n（返ってきた理由: {why[:150]}）\n\n" if why else known + "\n\n"
+    return (
+        known
+        + "💳 **残クレジットはDiscordからは取得できません。**\n"
+        f"確認はこちら → {HF_CONSOLE_URL}\n"
+        "（残高はHiggsfieldのMCP接続にしか無く、ボットの動いている"
+        "非対話セッションからは接続できないためです。認証の問題ではないので、"
+        "認証し直しても取得できるようにはなりません。）\n\n"
+        "消費量の目安は聞かれても**推測では答えません**。実際に生成を投入すれば、"
+        "足りない場合は「クレジットが枯渇しています」と返るので、そこで分かります。"
+    )
 
 
 # Discordの発言で使えるモデル名 → (MCPモデルID, 種別, 表示名)
