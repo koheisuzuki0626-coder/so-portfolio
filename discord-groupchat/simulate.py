@@ -91,6 +91,19 @@ _stub("aiohttp", ClientSession=object, ClientTimeout=lambda **k: None)
 
 import ai_group_chat as bot  # noqa: E402
 
+
+def bot_src():
+    """ボットの実装ソースを1つの文字列にして返す（test_routing.py と同じ）。
+    実装を別モジュールへ切り出しても、ソースを検査するテストが壊れないようにする。"""
+    import pathlib
+    root = pathlib.Path(bot.__file__).parent
+    parts = []
+    for name in sorted(p.name for p in root.glob("*.py")):
+        if name.startswith("test_") or name in ("simulate.py",):
+            continue
+        parts.append((root / name).read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
 # 本物の実装を控えておく（スタブに差し替えたあとでも中身を検証するため）
 _REAL_GEN_IMG = bot._gemini_generate_image_sync
 _REAL_REFINE = bot._refine_prompt
@@ -2133,7 +2146,7 @@ async def run():
           _c25b is not None and "skincare" not in _c25b[0][1],
           _c25b[0][1] if _c25b else f"fired={FIRED}")
     # 会話を見て作れるよう、直近のやり取りを制作タスクに渡していること
-    _srcD = open(bot.__file__, encoding="utf-8").read()
+    _srcD = bot_src()
     _design_fn = _srcD[_srcD.index("async def _run_design"):
                        _srcD.index("# ---------- スタイル学習")]
     check("制作タスクに直近の会話を渡す",

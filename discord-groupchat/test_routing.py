@@ -76,6 +76,24 @@ _stub("aiohttp", ClientSession=object, ClientTimeout=lambda **k: None)
 import ai_group_chat as bot  # noqa: E402
 
 
+def bot_src():
+    """ボットの実装ソースを1つの文字列にして返す。
+
+    「この関数はもう〇〇を呼んでいないこと」のように、ソースを文字列として
+    検査しているテストが多数ある。実装を別モジュールへ切り出すと
+    ai_group_chat.py だけを読む書き方では中身を見失うので、
+    このディレクトリの実装ファイルを全部つないで渡す
+    （テストが『どのファイルに書いてあるか』に依存しないようにする）。"""
+    import pathlib
+    root = pathlib.Path(bot.__file__).parent
+    parts = []
+    for name in sorted(p.name for p in root.glob("*.py")):
+        if name.startswith("test_") or name in ("simulate.py",):
+            continue
+        parts.append((root / name).read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
 # ---- テストデータ: (発言, 期待ルート, 追加フラグ) ----
 # 期待ルート: status/hf_model/hf_auto/motion/motion_ask/plan(=AIへ)
 # フラグ: has_job / has_video_att / has_image_att / has_attachments
@@ -1093,7 +1111,7 @@ def run():
           bot.classify_route("ヒッグスフィールドでサムネ作って", **_L), "hf_auto")
     check("直前の依頼が無ければ何も起こさない",
           bot.classify_route("ヒッグスフィールドで作って"), None)
-    _src4 = open(bot.__file__, encoding="utf-8").read()
+    _src4 = bot_src()
     check("題材は直前の依頼から補う", "_request_with_context" in _src4, True)
 
     print("■ 長い動画の切り抜き（Mac上で完結・クレジット不要）")
@@ -1122,7 +1140,7 @@ def run():
     check("区間内の字幕だけ残す", "これはテスト" in _srt and "次の場面" not in _srt, True)
     check("区間の頭を0秒に寄せる", "00:00:02" in _srt, True)
     # 生成モデルを使わない＝クレジットを消費しない
-    _src6 = open(bot.__file__, encoding="utf-8").read()
+    _src6 = bot_src()
     _clip_fn = _src6[_src6.index("async def _run_clip_shorts"):
                      _src6.index("# 切り抜きには「いつ何を言ったか」")]
     for _ng in ("_mcp_generate_submit", "_mcp_gen_and_wait", "hf_wrapper",
@@ -1254,7 +1272,7 @@ def run():
           bot._url_is_stale("https://x/plain.png", _now), False)
     check("投入時刻が無ければ止めない",
           bot._url_is_stale("https://x/hf_20260804_201331_c161.png", None), False)
-    _srcO = open(bot.__file__, encoding="utf-8").read()
+    _srcO = bot_src()
     check("監視側で弾く", "_url_is_stale(vurl, token)" in _srcO, True)
 
     print("■ 『作り直すね、待ってて』も作り話として落とす")
@@ -1279,7 +1297,7 @@ def run():
     # 事故：「この人の鼻を高くしてほしい」＋写真 に対し、英語プロンプトが
     # 勝手に "a man" と書き、結果（女性＝写真どおり）を
     # 「依頼の男性と異なる」と警告した。自分の創作を基準に誤判定していた。
-    _srcN = open(bot.__file__, encoding="utf-8").read()
+    _srcN = bot_src()
     check("元の依頼を保持する", "asked = request" in _srcN, True)
     check("照合に元の依頼を渡す",
           "_report_result(cid, asked, result" in _srcN, True)
@@ -1329,7 +1347,7 @@ def run():
     finally:
         bot._ask_agents = _keep_ask1
         bot._ai_text_bg = _keep_bg
-    _srcM = open(bot.__file__, encoding="utf-8").read()
+    _srcM = bot_src()
     check("生成側から参照の有無を渡す",
           "has_ref=bool(refs)" in _srcM, True)
 
@@ -1341,7 +1359,7 @@ def run():
         check(f"{_t!r} は何かを指している", bool(bot._POINTS_AT_RE.search(_t)), True)
     for _t in ("猫の画像を作って", "夕暮れの海の動画", "バズる動画作って"):
         check(f"{_t!r} は指していない", bool(bot._POINTS_AT_RE.search(_t)), False)
-    _srcL = open(bot.__file__, encoding="utf-8").read()
+    _srcL = bot_src()
     check("参照が無ければ作る前に止める",
           "参照する画像がありません" in _srcL, True)
     check("何が足りないかを覚える",
@@ -1384,7 +1402,7 @@ def run():
                "毎日のリサーチやめて", "自動リサーチいつやってる？",
                "卵スープのレシピ教えて", "ジャンルの話をしてた"):
         check(f"{_t!r} はジャンル設定にしない", bot._match_trend_genre(_t), None)
-    _srcK = open(bot.__file__, encoding="utf-8").read()
+    _srcK = bot_src()
     check("毎日の実行にジャンルを渡す",
           'gen_settings.get("trend_query") or None' in _srcK, True)
     check("毎日の実行では分析済みを飛ばす",
@@ -1405,7 +1423,7 @@ def run():
     check("いつ戻るかを出す", "12pm" in _n, True)
     check("理由が分からない時も代打だと言う",
           "代わりに答えています" in bot._limit_note("timeout"), True)
-    _srcJ = open(bot.__file__, encoding="utf-8").read()
+    _srcJ = bot_src()
     check("実際に書いた側で名乗る", '_who = _wrote.get("name")' in _srcJ, True)
     check("代打の時だけ注記を足す",
           'if _who == GEMINI_STANDIN:' in _srcJ, True)
@@ -1421,7 +1439,7 @@ def run():
     ):
         check(f"{_t[:24]!r}… で階層が揃う",
               bot._ios_files_path(_t).endswith(_want), True)
-    _srcI = open(bot.__file__, encoding="utf-8").read()
+    _srcI = bot_src()
     check("探索はSpotlightを先に使う", "_spotlight_find" in _srcI, True)
     check("全走査の待ち時間を伸ばした", "timeout=240" in _srcI, True)
 
@@ -1447,11 +1465,11 @@ def run():
     check("名前だけなら名前を渡す",
           bot._clip_source(_M2(), "武士道.mp4を切り抜いて")[1], "武士道.mp4")
     check("動画の指定が無ければ空", bot._clip_source(_M2(), "切り抜いて")[0], "")
-    _srcH = open(bot.__file__, encoding="utf-8").read()
+    _srcH = bot_src()
     check("探している間も黙らない", "をMacの中から探しています" in _srcH, True)
 
     print("■ ボットが黙り込まない土台")
-    _srcG = open(bot.__file__, encoding="utf-8").read()
+    _srcG = bot_src()
     # iCloud配下の探索は巨大になり得る。そのまま回すとループが止まる。
     check("ファイル探索は別スレッドへ逃がす",
           "asyncio.to_thread(_find_video_sync" in _srcG, True)
@@ -1498,7 +1516,7 @@ def run():
     finally:
         bot._busy_tasks, bot._load_motion_job = _keep_bt, _keep_mj
         bot._pending_approvals.clear(); bot._pending_approvals.update(_keep_pa)
-    _srcF = open(bot.__file__, encoding="utf-8").read()
+    _srcF = bot_src()
     check("ログの1行目で新旧が分かる", "_freshness_note" in _srcF, True)
     check("古ければ警告する", "件古い" in _srcF, True)
 
@@ -1506,7 +1524,7 @@ def run():
     # 事故：「🎧 音声を取り出しています…」から一切先へ進まなくなった。2回とも同じ場所。
     # バックグラウンドのボットの子プロセスが端末から読もうとすると
     # SIGTTIN で【止まる】（死なないので、待っても終わらない）。
-    _srcE = open(bot.__file__, encoding="utf-8").read()
+    _srcE = bot_src()
     check("子プロセスの標準入力を切る",
           _srcE.count("stdin=asyncio.subprocess.DEVNULL") >= 4, True)
     check("ffmpegにも明示する", '"-nostdin"' in _srcE, True)
@@ -1541,7 +1559,7 @@ def run():
         check("何も無ければ0", bot.stop_heavy_procs(), 0)
     finally:
         bot._heavy_procs.clear(); bot._heavy_procs.update(_keep_hp)
-    _srcD = open(bot.__file__, encoding="utf-8").read()
+    _srcD = bot_src()
     check("「やめて」で重い処理も止める",
           "killed = stop_heavy_procs()" in _srcD, True)
     check("再起動の前にも片付ける",
@@ -1553,7 +1571,7 @@ def run():
     check("CPUを1本は空けておく",
           bot._work_threads() <= max(1, (os.cpu_count() or 4) - 1), True)
     check("1本以上は使う", bot._work_threads() >= 1, True)
-    _srcC = open(bot.__file__, encoding="utf-8").read()
+    _srcC = bot_src()
     check("重い処理は優先度を下げて動かす", '"nice", "-n"' in _srcC, True)
     for _piece in ('"-t", str(_work_threads())',           # 文字起こし
                    '"-threads", str(_work_threads())'):    # ffmpeg
@@ -1587,7 +1605,7 @@ def run():
               "https://www.icloud.com/iclouddrive/06eXfAEzbeDWkouOAU5OK9V0Q")), True)
     check("普通のリンクは巻き込まない",
           bool(bot._ICLOUD_LINK_RE.search("https://example.com/a.mp4")), False)
-    _srcB = open(bot.__file__, encoding="utf-8").read()
+    _srcB = bot_src()
     check("取りに行けないと正しく案内する",
           "ブラウザで開くページ" in _srcB, True)
     check("できない案内文を残さない",
@@ -1620,7 +1638,7 @@ def run():
         check("本当に動いている時はそのまま", bot._drop_false_progress(_t2, 1), _t2)
     finally:
         bot._busy_tasks, bot._load_motion_job = _keep_busy, _keep_job
-    _srcA = open(bot.__file__, encoding="utf-8").read()
+    _srcA = bot_src()
     check("会話の返事に必ず通す",
           _srcA.count("_drop_false_progress(") >= 3, True)
 
@@ -1645,14 +1663,14 @@ def run():
           bot.classify_route("武士道.mp4をショートにして"), "clip")
     check("ファイルの話でも質問なら会話",
           bot.classify_route("この動画.mp4って何分？"), None)
-    _src9 = open(bot.__file__, encoding="utf-8").read()
+    _src9 = bot_src()
     check("見つからない時は探しに行く", "_find_video_by_name" in _src9, True)
 
     print("■ 1GBまでの動画を素材にできる")
     check("素材の上限は1GB以上", bot.MAX_VIDEO_SIZE >= 1024 * 1024 * 1024, True)
     check("AIに読ませる分の上限とは別",
           bot.MAX_VIDEO_SIZE > bot.MAX_ATTACHMENT_SIZE, True)
-    _src8 = open(bot.__file__, encoding="utf-8").read()
+    _src8 = bot_src()
     check("メモリに丸ごと載せずに書き出す", "iter_chunked" in _src8, True)
     check("上限を超えたら途中で止める", "超えたので中断しました" in _src8, True)
     check("YouTube取得にも上限を渡す", "--max-filesize" in _src8, True)
@@ -1699,7 +1717,7 @@ def run():
     check("モデルは1回だけ取得して使い回す",
           str(bot._whisper_model_path()).endswith(f"ggml-{bot.WHISPER_MODEL}.bin"), True)
     # 文字起こしも生成モデルを使わない（クレジットを消費しない）
-    _src7 = open(bot.__file__, encoding="utf-8").read()
+    _src7 = bot_src()
     _tr_fn = _src7[_src7.index("async def _transcribe_local"):
                    _src7.index("CLIP_PICK_PROMPT")]
     for _ng in ("_mcp_", "hf_wrapper", "gemini", "Gemini"):
@@ -1729,7 +1747,7 @@ def run():
         bot.histories.pop(9001, None)
         bot.histories.pop(9002, None)
     # 完了確認は投入時刻より新しいものだけを見る
-    _src5 = open(bot.__file__, encoding="utf-8").read()
+    _src5 = bot_src()
     check("完了確認に投入時刻を渡す", "since=job.get(\"submitted_at\")" in _src5, True)
     check("古い生成を対象にしないと明示",
           "それより前に作られた生成は今回のものではない" in _src5, True)
@@ -1801,7 +1819,7 @@ def run():
             check("記録が無ければそう言う", bot._sent_recent(99), "（記録なし）")
         finally:
             bot.TRACE_FILE = _keep_tr
-    _src3 = open(bot.__file__, encoding="utf-8").read()
+    _src3 = bot_src()
     check("デバッグログに送信内容を載せる",
           "ボットが実際に送った内容" in _src3, True)
 
@@ -1839,7 +1857,7 @@ def run():
     finally:
         bot.gen_settings.update(_keep_t)
     check("100本を取りに行く（1回50件なので2ページ）",
-          "maxResults" in open(bot.__file__, encoding="utf-8").read(), True)
+          "maxResults" in bot_src(), True)
 
     print("■ 安易にヒッグスフィールドを使わない")
     # 本人の希望：「クロードだけでやってほしいことはクロードでって言うから、
@@ -1862,7 +1880,7 @@ def run():
         check("設定が効く", bot._hf_explicit_only(), False)
     finally:
         bot.gen_settings["hf_mode"] = _keep_hf
-    _src0 = open(bot.__file__, encoding="utf-8").read()
+    _src0 = bot_src()
     check("Gemini失敗で黙って切り替えない",
           "勝手にHiggsfieldへ" in _src0, True)
     check("代わりの手段を案内する", "クロードで作って" in _src0, True)
@@ -1874,7 +1892,7 @@ def run():
     print("■ デザインの続きを画像生成に投げない／黙って生成を始めない")
     # 事故：相関図に「追加して出して」と頼んだら、動画/画像の作り直しとして
     # 解釈され、Higgsfieldの画像生成が確認なしで走り出した。
-    _src = open(bot.__file__, encoding="utf-8").read()
+    _src = bot_src()
     check("デザインの続きは動画用の解釈にかけない",
           'if str(lg.get("label", "")).startswith("デザイン"):' in _src, True)
     check("作り直しの入口でもデザインを受け止める",
@@ -2005,7 +2023,7 @@ def run():
         # 題材だけは推測せず、その場で聞いてから始める。
         ("題材が分からないまま始めない",
          lambda: "何を作るかが分かりませんでした"
-         in open(bot.__file__, encoding="utf-8").read()),
+         in bot_src()),
     ]
     for _name, _fn in _rules:
         try:
@@ -2094,7 +2112,7 @@ def run():
     check("1発言の文字数を広げた", bot.LOG_MSG_CHARS >= 1500, True)
     check("他チャンネルも出す", bot.LOG_OTHER_CHANNELS >= 1, True)
     check("際限なく太らせない", 0 < bot.LOG_MAX_BYTES <= 2_000_000, True)
-    _srcL = open(bot.__file__, encoding="utf-8").read()
+    _srcL = bot_src()
     check("会話の切り出しに設定を使う", "text[:LOG_MSG_CHARS]" in _srcL, True)
     check("発言の流れを増やした", "_fired_recent(cid, 40)" in _srcL, True)
     check("送信内容も増やした", "_sent_recent(cid, 40)" in _srcL, True)
@@ -2692,7 +2710,7 @@ def run():
     # ボットからは取得できない（SDKにもRESTにも残高の口が無いことを実測で確認）。
     # 以前は毎回30秒かけて失敗し、しかも『/mcpで認証してください』という
     # 誤った案内を出していた（認証済みで、認証しても直らない）。
-    _srcC = open(bot.__file__, encoding="utf-8").read()
+    _srcC = bot_src()
     _cred_fn = _srcC[_srcC.index("async def _run_credits"):
                      _srcC.index("# Discordの発言で使えるモデル名")]
     # 説明（docstring）には理由としてツール名が出てよい。実際に呼んでいないかを見る
