@@ -75,6 +75,14 @@ _stub("aiohttp", ClientSession=object, ClientTimeout=lambda **k: None)
 
 import ai_group_chat as bot  # noqa: E402
 
+# テストが本物の記録（errors.log / trace.jsonl / last_gen.json / 設定）を
+# 汚さないよう、読み込み直後に書き込み先を一時ディレクトリへ移す。
+# 事故（2026-08-21）：再起動のたびに走る自己テストが本物のエラーログへ
+# 偽のエラーを注入し、デバッグログを見た開発側が存在しない不具合を追いかけた。
+import _testenv  # noqa: E402
+_TMP_STATE, _REAL_STATE = _testenv.isolate(bot)
+_REAL_BEFORE = _testenv.snapshot(_REAL_STATE)
+
 
 def bot_src():
     """ボットの実装ソースを1つの文字列にして返す。
@@ -3119,6 +3127,16 @@ def run():
     check("要約にエラー型", "ValueError" in summary, True)
     check("ログに記録された", tmp.exists() and "テスト例外です" in tmp.read_text(), True)
     check("直近エラー取得", "test-context" in bot._recent_errors(), True)
+
+    print("■ テストが本物の記録を汚していないこと")
+    # 事故（2026-08-21）：テストを流すたびに本物の history/errors.log へ
+    # 偽のエラーが書かれ、ボットは再起動のたびに自己テストを流すので、
+    # デバッグログの「直近のエラー」が偽物で埋まっていた（累積262件）。
+    # それを見た開発側が、存在しない不具合を何日も追いかけた。
+    # 書き込み先を増やしたときに隔離し忘れても、ここで気づけるようにする。
+    _dirty = _testenv.assert_clean(_REAL_STATE, _REAL_BEFORE)
+    check(f"本物の history/ を書き換えていない（{len(_dirty)}件）",
+          _dirty, [])
 
     print(f"\n結果: ✅ {ok} 件成功 / ❌ {fail} 件失敗")
     return fail == 0
