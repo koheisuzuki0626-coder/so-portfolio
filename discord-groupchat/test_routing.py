@@ -2633,6 +2633,25 @@ def run():
     check("名指しが無ければ従来どおり生成へ",
           bot.classify_route("動画作って"), "hf_auto")
 
+    print("■ ファイル冒頭の目次が、実物の節と一致していること")
+    # 11,000行超の1ファイルなので、冒頭の目次だけが頼りになる。
+    # 節を足したのに目次を直し忘れると、目次は「あると嘘をつく案内」になって
+    # かえって有害なので、ここで実物と突き合わせて古くなるのを防ぐ。
+    import pathlib as _plX
+    import re as _reX
+    _agc = (_plX.Path(bot.__file__)).read_text(encoding="utf-8")
+    _real = [_m.group(1).strip()
+             for _m in _reX.finditer(r"^# -{10} (.+?) -{4,}\s*$", _agc, _reX.M)]
+    _doc = bot.__doc__ or ""
+    _mark = "このファイルの歩き方"
+    check("目次の見出しがある", _mark in _doc, True)
+    _listed = [_ln.strip()[1:].strip()
+               for _ln in _doc.split(_mark)[-1].splitlines()
+               if _ln.strip().startswith("・")]
+    check("目次がある", len(_listed) > 0, True)
+    check(f"目次と実物の節が一致（実物{len(_real)}／目次{len(_listed)}）",
+          _listed, _real)
+
     print("■ 制作を頼む普通の言い方が、会話に落ちないこと")
     # 事故（2026-08-21）：構成案を決めたあとの「一枚目やろっか」「制作開始」
     # 「クロードで作ろう」がどの規則にも当たらず会話に落ち、ボットは
