@@ -2660,6 +2660,41 @@ def run():
     check(f"目次と実物の節が一致（実物{len(_real)}／目次{len(_listed)}）",
           _listed, _real)
 
+    print("■ 提案に「ok」と答えたら、合意した作業が始まること")
+    # 事故（2026-08-21）：構成案に合意したあと「ok」を3回送っても何も始まらず、
+    # ボットは「1枚目制作開始します」と言い続けるだけだった。
+    # 「ok」は依頼の【形】ではないので門で落ちていた。直前の提案への返事
+    # としては「やって」と同じ意味なので通す。
+    import time as _tmP
+    _CIDP = 778899
+    _keep_say = dict(bot._last_bot_say)
+    try:
+        bot._last_bot_say[_CIDP] = (
+            "6秒構成案。カット1…これで6秒、情報が詰まった構成になります。OK？",
+            _tmP.time())
+        for _t in ("ok", "OK", "おけ", "了解", "うん", "はい", "そうしよう",
+                   "やって", "お願い"):
+            check(f"提案への肯定で始まる: {_t!r}",
+                  bot.classify_route(_t, cid=_CIDP, design_ctx=True), "design")
+        # 誤爆よけ：雑談への相槌では始めない
+        bot._last_bot_say[_CIDP] = ("今日はよく寝られた？", _tmP.time())
+        for _t in ("ok", "うん", "はい", "了解"):
+            check(f"雑談の相槌では始めない: {_t!r}",
+                  bot.classify_route(_t, cid=_CIDP, design_ctx=True), None)
+        # デザインの話をしていなければ始めない
+        bot._last_bot_say[_CIDP] = ("6秒構成案。これでOK？", _tmP.time())
+        for _t in ("ok", "うん"):
+            check(f"デザインの話でなければ始めない: {_t!r}",
+                  bot.classify_route(_t, cid=_CIDP), None)
+        # 直前に提案が無ければ始めない
+        bot._last_bot_say.pop(_CIDP, None)
+        for _t in ("ok", "うん", "やって"):
+            check(f"提案が無ければ始めない: {_t!r}",
+                  bot.classify_route(_t, cid=_CIDP, design_ctx=True), None)
+    finally:
+        bot._last_bot_say.clear()
+        bot._last_bot_say.update(_keep_say)
+
     print("■ 頼んでいないのにコードを書き換えないこと _is_selffix_order")
     # 事故（2026-08-21）：「クロードだけで動画制作したい」＝【やり方の希望】を
     # 自己改修と判定してコードを書き換え、テストを壊して自動で巻き戻った。

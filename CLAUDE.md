@@ -190,6 +190,7 @@ Mac で動いているボットは読まない。「ここで決めたのに Dis
 | 頼まれていないのにコードを書き換えない | `_is_selffix_order`（希望は通さない） |
 | テストが本物の記録を汚さない | `_testenv.isolate` / `assert_clean` |
 | 連投に1通ずつ返事をしない | `_wait_for_burst`（最後の1通だけ答える） |
+| 提案に「ok」で合意した作業が始まる | `_BARE_GO_RE` / `_r_do_proposal` |
 | 収益の相談を料金照会にしない | `_INCOME_Q_RE` |
 | 時間切れを「却下」と言わない | `_stopped_note` / `_recent_expired` |
 | 宙に浮いた承認をあとから拾う | `_try_approve_expired` |

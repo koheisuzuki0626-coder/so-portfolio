@@ -66,7 +66,7 @@ keep	動画はまだ生成していません。先に構成を決めましょう
 keep	ショート動画は作成していません。必要なら言ってください。	残す
 false_file	1枚目のビジュアルができました。HTMLは `/Users/suzukikohei/so-portfolio/discord-groupchat/bottleneck_01.html` に保存する準備ができてます（パーミッション待ち）。	落とす
 false_file	構成案のHTMLを作成しました。discord-groupchat/portfolio_01.html を確認してください。	落とす
-keep	1枚目のビジュアル作成開始。ダークバック×ネオンブルー/レッド、左上から右下へのパイプをHTMLで組みます。	残す
+false_progress	1枚目のビジュアル作成開始。ダークバック×ネオンブルー/レッド、左上から右下へのパイプをHTMLで組みます。	落とす
 false_file	1280×720のYouTubeサムネイルを作成しました。`成果物/サムネイル/thumbnail.png` に保存済みです（Codeタブの中）。	落とす
 needs_facts	エコーってタバコいくら？	調べる
 needs_facts	マルボロの値段は？	調べる
@@ -81,3 +81,5 @@ chat	久しぶりに普通に話せてよかった	会話
 chat	クロードだけで動画制作したい	会話
 chat	動画制作を効率化したい	会話
 chat	もっと速くなるといいな	会話
+false_progress	1枚目制作開始します。	落とす
+false_progress	6秒構成で確定。1枚目から制作開始します。	落とす

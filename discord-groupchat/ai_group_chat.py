@@ -4287,7 +4287,18 @@ _pending_do = {}
 PENDING_DO_SEC = 3600
 _BARE_GO_RE = re.compile(
     r"^(やって|やろう|お願い(します)?|おねがい|進めて|すすめて|"
-    r"始めて|はじめて|go|ゴー|実行|やっちゃって|よろしく)[。、!！\s]*$", re.I)
+    r"始めて|はじめて|go|ゴー|実行|やっちゃって|よろしく|"
+    # 提案への肯定。事故（2026-08-21）：構成案に合意したあと「ok」を
+    # 3回送っても何も始まらなかった。「ok」は依頼の形ではないが、
+    # 直前の提案への返事としては「やって」と同じ意味。
+    r"ok|okay|オッケー|おっけー|おけ|了解|りょ|うん|はい|"
+    r"それで|それでいい|そうして|そうしよう)[。、!！\s]*$", re.I)
+# ボットが「これで進めていい？」と尋ねている形。提案への「ok」を
+# 実行の合図として受け取ってよいかの判断に使う。
+_PROPOSAL_ASK_RE = re.compile(
+    r"OK[？?]|どう[？?]|どうする|いい[？?]|でいい[？?]|進める[？?]|"
+    r"作る[？?]|始める[？?]|作り直す[？?]|これで|でどう|"
+    r"制作開始|作成開始|作ります|制作します|作成します", re.I)
 # iCloudの「共有リンク」はブラウザで開くページなので、そのままでは取得できない。
 # ここを「リンクなら取りに行ける」と案内してしまい、貼っても何も起きなかった。
 _ICLOUD_LINK_RE = re.compile(r"https?://(?:www\.)?icloud\.com/iclouddrive/\S+", re.I)
@@ -5564,8 +5575,13 @@ def classify_route(content, **kw):
     ただしファイルを添付している時は、それ自体が『これで何かして』という
     意思表示なので、言い方が短くても通す（「この動きで」＋動画 など）。"""
     route = _classify_route_raw(content, **kw)
+    # 「ok」「了解」は依頼の【形】ではないが、直前の提案への返事としては
+    # 「やって」と同じ意味。ここで落とすと、合意したのに何も始まらない
+    # （事故 2026-08-21：「ok」を3回送っても制作が始まらなかった）。
+    # これを拾う規則（_r_do_proposal）は直前にボットの提案があることを
+    # 条件にしているので、雑談の相槌では発動しない。
     if (route in ACT_ROUTES and not kw.get("has_attachments")
-            and not _wants_action(content)):
+            and not _wants_action(content) and not _BARE_GO_RE.search(content)):
         _route_hit["name"] = (_route_hit.get("name") or "") + "→依頼の形でないので会話"
         return None          # 頼まれていない＝会話として扱う
     return route
@@ -6069,12 +6085,19 @@ def _r_do_proposal(c):
     「それクロードでやってくれる？やり方わからん」と言われても、
     どの機能にも流れず会話で終わっていた。
     “それ”が何を指すかは、こちらが覚えている【直前の自分の発言】で分かる。"""
-    if not _wants_action(c.text) or c.has_attachments:
+    if c.has_attachments:
         return None
-    if len(_strip_media_context(c.text)) > 60:
-        return None                        # 長い＝新しい依頼。提案の実行ではない
     said = c.text
-    if not (_BARE_GO_RE.search(said) or _REFERS_TO_PROPOSAL_RE.search(said)):
+    bare = bool(_BARE_GO_RE.search(said))
+    # 「ok」「了解」は依頼の【形】ではないが、提案への返事としては
+    # 「やって」と同じ意味。事故（2026-08-21）：構成案に合意したあと
+    # 「ok」を3回送っても何も始まらず、ボットは「制作開始します」と
+    # 言い続けるだけだった（どれも会話に落ちていた）。
+    if not (bare or _wants_action(said)):
+        return None
+    if len(_strip_media_context(said)) > 60:
+        return None                        # 長い＝新しい依頼。提案の実行ではない
+    if not (bare or _REFERS_TO_PROPOSAL_RE.search(said)):
         return None
     prev = _recent_bot_say(c.cid)
     if not prev:
@@ -6082,6 +6105,10 @@ def _r_do_proposal(c):
     # 直前の提案がコード・仕組みの話だった時だけ。雑談の「それやって」は通さない
     if _CODE_WORK_RE.search(prev) or _CODE_WORK_RE.search(said):
         return "selffix"
+    # ビジュアル制作の相談中に提案へ「ok」と答えたら、その提案を実行する。
+    # 確認画面は _gate が出すので、取り違えても1往復で済む。
+    if c.design_ctx and _PROPOSAL_ASK_RE.search(prev):
+        return "design"
     return None
 
 
@@ -8899,6 +8926,9 @@ _PROGRESS_START_RE = re.compile(
     "取りかかる|取り掛かる|始めるね|始めるよ|やっておく|やっとく|進めておく|"
     "処理が終わ|作業中|実行中|走らせて|動かして(る|いる)|生成して(る|いる)|"
     "切り出して(る|いる)|作って(る|いる)|"
+    # 事故（2026-08-21）：「1枚目制作開始します」と2回言って何も動かず、
+    # ユーザーは「ok」を送り続けていた。体言止めの開始宣言が漏れていた。
+    "制作開始|作成開始|生成開始|着手し|制作を開始|作成を開始|"
     # 事故：何も動いていないのに「作り直すね。投げるから、ちょっと待ってて」
     "投げる|投入する|流しておく|"
     # 丁寧形が漏れていた。実例：「作り直しますね。少々お待ちください」と言って
