@@ -7845,7 +7845,11 @@ async def _run_design(message, request):
 SLIDESHOW_SEC = float(os.getenv("SLIDESHOW_SEC", "2.0"))    # 1枚あたりの表示秒
 SLIDESHOW_FADE = float(os.getenv("SLIDESHOW_FADE", "0.5"))  # 重なり（秒）
 SLIDESHOW_MAX = 8                                           # つなぐ上限
-_DESIGN_MADE_RE = re.compile(r"（デザインを制作: .*? / (https?://\S+?)）")
+# 依頼文には改行が入る（「…欲しい\n【指定】9:16」）。`.` は既定で改行に
+# 当たらないので、ここを `.` で書くと改行を含む記録を【全部取りこぼす】。
+# 事故（2026-08-22）：履歴に5枚あったのに1枚しか拾えず、「3枚の画像で
+# 動画化して」と頼まれたのに1枚だけの動画を作った。
+_DESIGN_MADE_RE = re.compile(r"（デザインを制作:[\s\S]*? / (https?://\S+?)）")
 
 
 def _recent_design_urls(cid, n=SLIDESHOW_MAX):
@@ -7857,7 +7861,23 @@ def _recent_design_urls(cid, n=SLIDESHOW_MAX):
             u = m.group(1)
             if u not in urls:
                 urls.append(u)
-    return urls[-n:]
+    return urls[-n:] if n else urls
+
+
+_HOWMANY_RE = re.compile(r"([0-9０-９]+)\s*枚")
+
+
+def _wanted_count(text):
+    """「3枚の画像で」のように枚数を指定されていれば、その数。無ければ None。"""
+    m = _HOWMANY_RE.search(text or "")
+    if not m:
+        return None
+    try:
+        n = int(m.group(1).translate(str.maketrans("０１２３４５６７８９",
+                                                   "0123456789")))
+    except ValueError:
+        return None
+    return n if 1 <= n <= SLIDESHOW_MAX else None
 
 
 def _kenburns_cmd(paths, out, w, h, sec, fade):
@@ -7898,9 +7918,20 @@ def _kenburns_cmd(paths, out, w, h, sec, fade):
 async def _run_slideshow(message, request):
     """作ったデザイン画像を、Macのffmpegでつないで動画にする（クレジット不要）。"""
     cid = message.channel.id
+    want_n = _wanted_count(request)
     urls = [a.url for a in (getattr(message, "attachments", None) or [])
             if Path(getattr(a, "filename", "")).suffix.lower()
             in SUPPORTED_IMAGE_TYPES] or _recent_design_urls(cid)
+    # 「3枚の画像で」と枚数を言われたら、新しいほうから その枚数だけ使う
+    if want_n and len(urls) > want_n:
+        urls = urls[-want_n:]
+    if want_n and len(urls) < want_n:
+        await send_as(
+            orch, cid,
+            f"🎞 {want_n}枚と言われましたが、手元には{len(urls)}枚しかありません。"
+            f"この{len(urls)}枚でつなぎます（足りない分は、画像を添付するか"
+            "先に作ってください）。"
+        )
     if len(urls) < 1:
         await send_as(
             orch, cid,

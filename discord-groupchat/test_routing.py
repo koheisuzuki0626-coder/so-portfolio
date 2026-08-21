@@ -2689,6 +2689,24 @@ def run():
     check("クロスフェードでつなぐ", "xfade" in _fc, True)
     check("ゆっくり寄る動きを付ける", "zoompan" in _fc, True)
     check("出力の縦横を指定する", "s=1080x1920" in _fc, True)
+    # 事故（2026-08-22）：依頼文に改行が入る記録（「…欲しい\n【指定】9:16」）を
+    # `.` で書いた正規表現が取りこぼし、履歴に5枚あったのに1枚しか拾えず、
+    # 「3枚の画像で動画化して」に対し1枚だけの動画を作った。
+    _CIDV = 3355
+    bot.histories[_CIDV] = [
+        ("Orchestrator", "（デザインを制作: 1枚目\n【指定】9:16 / https://e/a.png）"),
+        ("Orchestrator", "（デザインを制作: 2枚目\n【今回の修正指示】x / https://e/b.png）"),
+        ("Orchestrator", "（デザインを制作: 3枚目 / https://e/c.png）"),
+    ]
+    try:
+        check("改行を含む記録も拾う（1枚しか拾えなかった事故）",
+              bot._recent_design_urls(_CIDV),
+              ["https://e/a.png", "https://e/b.png", "https://e/c.png"])
+    finally:
+        bot.histories.pop(_CIDV, None)
+    for _t, _want in (("3枚の画像でクロードで動画化して", 3), ("２枚で動画化", 2),
+                      ("動画化して", None), ("10枚で動画化", None)):
+        check(f"枚数を読む: {_t!r}", bot._wanted_count(_t), _want)
     check("1枚でも組める", "null[out]" in
           bot._kenburns_cmd([_plS.Path("a.png")], _plS.Path("o.mp4"),
                             1080, 1920, 2.0, 0.5)[
