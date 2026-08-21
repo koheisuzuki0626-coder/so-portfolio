@@ -8574,6 +8574,34 @@ async def _start_agent(message, cid, content):
     _spawn(_run_agent_task(cid, content, message.author.id), cid, "エージェント実行")
 
 
+# 連投をまとめる待ち時間。人が続けて打つ間隔より少し長く取る。
+BURST_WAIT_SEC = float(os.getenv("BURST_WAIT_SEC", "3.5"))
+_burst_last = {}          # cid -> 最後に届いた発言のID
+
+
+async def _wait_for_burst(cid, message):
+    """連投の途中なら False（この発言は答えない）、最後の1通なら True。
+
+    人は考えながら何通かに分けて送る。1通ずつ答えると、ボットが2回3回と
+    続けて発言して会話が噛み合わなくなる（実際に起きた）。
+    少し待って、その間に新しい発言が来たら【後から来たほうに任せて退く】。
+    発言はどれも履歴に入っているので、最後の1通が全部を踏まえて答えられる。
+
+    !コマンド・承認の返事はここに来る前に処理済みなので、影響しない。"""
+    mid = getattr(message, "id", None)
+    if mid is None or BURST_WAIT_SEC <= 0:
+        return True
+    _burst_last[cid] = mid
+    try:
+        await asyncio.sleep(BURST_WAIT_SEC)
+    except asyncio.CancelledError:
+        raise
+    if _burst_last.get(cid) != mid:
+        print(f"[burst] 連投の途中なので退く: channel={cid}")
+        return False
+    return True
+
+
 async def _handle_orchestrator(message, cid):
     """オーケストレーター宛て。実際にコード/ファイルを触る指示のときだけ承認ダイアログ。
     それ以外（質問・相談・雑談）は普通に会話する。"""
@@ -11563,6 +11591,14 @@ async def _dispatch_message(message):
     content = await _apply_media_url_context(message, content, cid)
 
     add_history(cid, message.author.display_name, content)
+
+    # 連投は【最後の1通だけ】が答える。
+    # 事故（2026-08-21）：「動くわけじゃないから6秒にしないときつくない？」
+    # 「静止画3枚でしょ？」と続けて送ったら、1通ずつ返事をして2回続けて
+    # 発言した。スマホで思いつくまま送ると必ずこうなる。
+    # 発言はどれも履歴に入っているので、最後の1通が全部を踏まえて答えれば足りる。
+    if not await _wait_for_burst(cid, message):
+        return
 
     # パーソナライズ：発言が一定数たまるごとに人物プロファイルを自動更新。
     # プロファイルがまだ無い人は初回発言時にも作成を試みる（バックグラウンド）。

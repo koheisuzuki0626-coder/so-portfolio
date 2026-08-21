@@ -2714,6 +2714,41 @@ async def run():
           bot.ERROR_LOG.exists() and "わざと壊す" in bot.ERROR_LOG.read_text())
     check("on_message自体は例外を外に出さない", r["err"] is None, f"例外={r['err']}")
 
+    print("■ 連投は最後の1通だけが答える（2回続けて発言しない）")
+    # 事故（2026-08-21）：「6秒にしないときつくない？」「静止画3枚でしょ？」と
+    # 続けて送ったら、1通ずつ返事をしてボットが2回続けて発言した。
+    # スマホで思いつくまま送ると必ずこうなる。
+    _keepB = bot.BURST_WAIT_SEC
+    try:
+        bot.BURST_WAIT_SEC = 0.15
+        bot._burst_last.clear()
+        _m1 = _FakeMessage("6秒にしないときつくない？"); _m1.id = 1001
+        _m2 = _FakeMessage("静止画3枚でしょ？"); _m2.id = 1002
+        _cidB = _m1.channel.id
+        _t1 = asyncio.create_task(bot._wait_for_burst(_cidB, _m1))
+        await asyncio.sleep(0.05)                 # 連投（待ち時間の途中で2通目）
+        _t2 = asyncio.create_task(bot._wait_for_burst(_cidB, _m2))
+        _r1, _r2 = await _t1, await _t2
+        check("1通目は答えずに退く", _r1 is False, _r1)
+        check("最後の1通が答える", _r2 is True, _r2)
+        # 単発なら普通に答える（待たせるだけで黙らない）
+        bot._burst_last.clear()
+        _m3 = _FakeMessage("これどう思う？"); _m3.id = 1003
+        check("単発は答える",
+              await bot._wait_for_burst(_m3.channel.id, _m3) is True, "単発が落ちた")
+        # 別チャンネルの発言に巻き込まれない
+        bot._burst_last.clear()
+        _m4 = _FakeMessage("こっちの話"); _m4.id = 1004
+        _m5 = _FakeMessage("別の部屋"); _m5.id = 1005
+        _t4 = asyncio.create_task(bot._wait_for_burst(4001, _m4))
+        await asyncio.sleep(0.05)
+        _t5 = asyncio.create_task(bot._wait_for_burst(4002, _m5))
+        check("別チャンネルは互いに退かせない",
+              (await _t4, await _t5) == (True, True), "巻き込まれた")
+    finally:
+        bot.BURST_WAIT_SEC = _keepB
+        bot._burst_last.clear()
+
     # 事故（2026-08-21）：テストが本物の history/ へ書き込み、デバッグログの
     # 「直近のエラー」が偽物で埋まっていた。書き込み先を増やしたときに
     # 隔離し忘れても、ここで気づけるようにする。
