@@ -14,6 +14,8 @@ Discordで実害が出た言い方を、原文のまま溜めておく。
   revise         … 直しの指示（作り直しへ流すべき）
   chat           … 作業にしてはいけない発言
   false_file     … 存在しないファイルを『できました』と報告した返事（落とすべき）
+  needs_facts    … いまの実際の値の照会（調べてから答えるべき）
+  no_facts       … 実データの照会に見えて違う発言（調べに行ってはいけない）
 
 ---
 false_progress	作り直すね。投げるから、ちょっと待ってて	落とす
@@ -66,3 +68,9 @@ false_file	1枚目のビジュアルができました。HTMLは `/Users/suzukik
 false_file	構成案のHTMLを作成しました。discord-groupchat/portfolio_01.html を確認してください。	落とす
 keep	1枚目のビジュアル作成開始。ダークバック×ネオンブルー/レッド、左上から右下へのパイプをHTMLで組みます。	残す
 false_file	1280×720のYouTubeサムネイルを作成しました。`成果物/サムネイル/thumbnail.png` に保存済みです（Codeタブの中）。	落とす
+needs_facts	エコーってタバコいくら？	調べる
+needs_facts	マルボロの値段は？	調べる
+needs_facts	エビオス錠っていくら？	調べる
+no_facts	aiでの動画生成で稼ぐとして、いくら稼げるかな？	調べない
+no_facts	クレジットいくら残ってる？	調べない
+no_facts	今日つかれた	調べない

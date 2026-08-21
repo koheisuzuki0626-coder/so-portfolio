@@ -181,6 +181,7 @@ Mac で動いているボットは読まない。「ここで決めたのに Dis
 | できない・分からないで終わらせない | `BOT_CAPABILITIES` ＋ 実データの経路 |
 | 作り手の名指しを最優先する | `_route_by_maker` |
 | 使えないと分かっている手を勧めない | `_gemini_image_usable` |
+| 値段は記憶で答えず必ず調べる | `_needs_facts`（`_plan` で search を強制） |
 | 頼まれなくてもログを共有する | `_autolog_loop` |
 | 不明点は始める前に聞き返す | `CLARIFY_SLOTS` / `_missing_slots` |
 | 題材が分からないまま始めない | `_gate` の `_has_subject` チェック |

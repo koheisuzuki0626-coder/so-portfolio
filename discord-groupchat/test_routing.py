@@ -2215,6 +2215,10 @@ def run():
                 _out = bot._drop_false_file_claim(_text, 4242)
                 check(f"存在しないファイルの完了報告を落とす: {_text[:16]}…／{_out[:30]}",
                       _out != _text and "権限がありません" in _out, True)
+            elif _kind == "needs_facts":
+                check(f"調べてから答える: {_text[:20]}…", bot._needs_facts(_text), True)
+            elif _kind == "no_facts":
+                check(f"調べに行かない: {_text[:20]}…", bot._needs_facts(_text), False)
             elif _kind == "limit_err":
                 check(f"上限として扱う: {_text[:20]}…／{bot._gen_fail_note(_text)[:30]}",
                       "上限" in bot._gen_fail_note(_text), True)
@@ -2411,6 +2415,16 @@ def run():
     for _t in ("今日つかれた", "夏のレシピ教えて", "動画作って", "おはよう",
                "元カノと散歩してる", "フォーのレシピ教えて"):
         check(f"{_t!r} には渡さない", bot.fact_guide(_t), "")
+    # 事故（2026-08-21）：「エコーってタバコいくら？」に、調べずに記憶で
+    # 「500円。2024年8月に紙巻きたばことして復活して…」と作り話をした。
+    # ただの「◯◯っていくら？」も、いまの実際の値を聞かれている。
+    for _t in ("エコーってタバコいくら？", "マルボロの値段は？",
+               "iPhone15の価格教えて", "エビオス錠っていくら？"):
+        check(f"{_t!r} は調べてから答える", bot._needs_facts(_t), True)
+    # 収益の相談・内部の枠の話を、商品の価格照会にしない
+    for _t in ("aiでの動画生成で稼ぐとして、いくら稼げるかな？", "動画制作で儲かるのかな",
+               "クレジットいくら残ってる？", "ヒッグスフィールドの上限いつ戻る？"):
+        check(f"{_t!r} は価格照会にしない", bot._needs_facts(_t), False)
 
     print("■ ボット運用ルールを渡す話題の判定（無関係な物の話に混ぜない）")
     # 事故：「アップルウォッチ」の『アップ』を拾って運用ルールを混ぜていた

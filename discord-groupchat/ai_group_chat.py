@@ -1831,8 +1831,15 @@ def ops_guide(context_text=""):
 _FACT_TOPIC_RE = re.compile(
     "相場|買取|下取り|出品|売りたい|売れる|売値|いくらで売|"
     "メルカリ|ラクマ|ヤフオク|フリマ|中古|定価|実売|時価|"
-    "今の(値段|価格|相場)|現在の(値段|価格)|在庫|発売日|最新(価格|情報|版)"
+    "今の(値段|価格|相場)|現在の(値段|価格)|在庫|発売日|最新(価格|情報|版)|"
+    # ただの「◯◯っていくら？」も、いまの実際の値を聞かれている。
+    # 事故（2026-08-21）：「エコーってタバコいくら？」に、調べずに記憶で
+    # 「500円。2024年8月に紙巻きたばことして復活して…」と作り話をした。
+    "いくら|値段|価格|何円|料金"
 )
+# ただし「いくら稼げる？」は収益の相談であって商品の価格照会ではない。
+# 「クレジットいくら？」等の内部の枠の話も別（credits ルートが実データで答える）。
+_FACT_NOT_RE = re.compile("クレジット|残高|枠|上限|課金|サブスク")
 _SELL_TOPIC_RE = re.compile("出品|売りたい|売る|売却|手放|買取|下取り|フリマ")
 FACT_RULES = (
     "【この話題で必ず守ること】いまの実際の値を聞かれている。"
@@ -1855,14 +1862,24 @@ SELL_RULES = (
 )
 
 
+def _needs_facts(text):
+    """いまの実際の値（相場・価格）を聞かれているか。
+    収益の相談（いくら稼げる）と、内部の枠の話（クレジット残高）は除く。"""
+    t = text or ""
+    if not _FACT_TOPIC_RE.search(t):
+        return False
+    if _INCOME_Q_RE.search(t) or _FACT_NOT_RE.search(t):
+        return False
+    return True
+
+
 def fact_guide(context_text=""):
     """相場・最新の実データを聞かれている時だけ、調べさせるルールを渡す。
     それ以外の話題には渡さない（無関係な会話に指示文が漏れるのを防ぐ）。"""
     text = context_text if isinstance(context_text, str) else _recent_text(context_text)
-    text = text or ""
-    if not _FACT_TOPIC_RE.search(text):
+    if not _needs_facts(text):
         return ""
-    return FACT_RULES + (SELL_RULES if _SELL_TOPIC_RE.search(text) else "")
+    return FACT_RULES + (SELL_RULES if _SELL_TOPIC_RE.search(text or "") else "")
 
 
 def topic_guide(context_text=""):
@@ -6268,6 +6285,10 @@ async def _plan(history):
     トリガー語を含まない短い発言は、そもそもAIを呼ばず即・雑談扱い（枠の節約）。"""
     latest = _latest_user_msg(history)
     if len(latest) <= 60 and not _PLAN_TRIGGER_RE.search(latest):
+        # 短くても、実際の値を聞かれているなら調べてから答える
+        # （「エコーっていくら？」は12字。記憶で答えると作り話になる）
+        if _needs_facts(latest):
+            return "chat", "single", _casual_lead(), True, False, ""
         return "chat", "single", _casual_lead(), False, False, ""
     prompt = (
         "あなたはDiscordボット（オーケストレーター）のルーター。"
@@ -6364,6 +6385,16 @@ async def _plan(history):
             reply = tail.strip()
     except Exception as e:  # noqa: BLE001
         print(f"[plan] 判定失敗（既定値で続行）: {str(e)[:150]}")
+    # 実際の値（価格・相場）を聞かれている時は、AIの判断に関わらず必ず調べる。
+    # 事故（2026-08-21）：「エコーってタバコいくら？」でAIが search=false と
+    # 判断し、調べずに記憶で「500円。2024年8月に紙巻きたばことして復活して…」と
+    # 作り話をした。調べるかどうかをAIに委ねると、知っているつもりの時ほど
+    # 調べずに答える。ここはコード側で決める。
+    if _needs_facts(latest):
+        if not search:
+            print(f"[plan] 実データが要る質問なので検索する: {latest[:40]}")
+        search = True
+        reply = ""            # 調べる前に書かれた返事は捨てる（記憶で答えている）
     return kind, mode, lead, search, recall, reply
 
 
