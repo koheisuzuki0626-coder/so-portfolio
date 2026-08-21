@@ -187,6 +187,8 @@ Mac で動いているボットは読まない。「ここで決めたのに Dis
 | 題材が分からないまま始めない | `_gate` の `_has_subject` チェック |
 | 題材を過去の記録から当て推量しない | `_stack_revise` は `_looks_revise` の時だけ |
 | 無い機能を「ある」ことにしない | `_SLASH_CMD_RE` / `_no_slash_note` |
+| 頼まれていないのにコードを書き換えない | `_is_selffix_order`（希望は通さない） |
+| テストが本物の記録を汚さない | `_testenv.isolate` / `assert_clean` |
 | 収益の相談を料金照会にしない | `_INCOME_Q_RE` |
 | 時間切れを「却下」と言わない | `_stopped_note` / `_recent_expired` |
 | 宙に浮いた承認をあとから拾う | `_try_approve_expired` |
