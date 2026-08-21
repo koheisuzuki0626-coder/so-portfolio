@@ -3445,6 +3445,67 @@ async def _save_to_github(paths, note):
             "スマホでそのまま見られます。")
 
 
+MEDIA_PROJECT_DEFAULT = "ビジュアル制作"
+
+
+async def _save_media_artifact(cid, data, filename, title, project=""):
+    """作った画像・動画を 成果物/ に置き、GitHub（作業ブランチ＋main）へ載せる。
+
+    本人の希望（2026-08-22）：「動画化したやつはdiscordで見れるようにして、
+    保存もしておいて、静止画3枚も」。Discordの添付はスクロールで流れて
+    しまうので、あとから見返せる置き場が要る。
+    戻り値: (保存先の相対パス, GitHubのURL, 保存の結果メッセージ)。
+    失敗しても生成そのものは無駄にしないよう、例外は投げない。"""
+    try:
+        folder = ARTIFACT_DIR / _sheet_slug(project or MEDIA_PROJECT_DEFAULT,
+                                            "misc")
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / filename
+        await asyncio.to_thread(path.write_bytes, data)
+        readme = await asyncio.to_thread(
+            _refresh_media_readme, folder, project or MEDIA_PROJECT_DEFAULT)
+        saved = await _save_to_github([p for p in (path, readme) if p],
+                                      f"{title}を保存（Discordから）")
+        rel = os.path.relpath(path, os.path.dirname(ARTIFACT_DIR))
+        _remember_artifact(cid, "media", title, path)
+        return rel, _github_url(folder), saved
+    except Exception as e:  # noqa: BLE001
+        _log_error("成果物の保存", e)
+        return "", "", f"\n※保存に失敗しました: {str(e)[:80]}"
+
+
+def _refresh_media_readme(folder, project):
+    """フォルダのREADMEを作り直す。GitHubで開いた瞬間に中身が見えるように、
+    画像は貼り、動画はリンクにする（GitHubは動画をREADMEで再生できない）。"""
+    from urllib.parse import quote
+    try:
+        files = sorted(p for p in folder.iterdir()
+                       if p.is_file() and p.name.lower() != "readme.md")
+        lines = [f"# {project}", "",
+                 "Discordのボットが作った画像・動画の置き場。", ""]
+        imgs = [p for p in files if p.suffix.lower() in (".png", ".jpg", ".jpeg",
+                                                         ".webp")]
+        vids = [p for p in files if p.suffix.lower() in (".mp4", ".mov", ".webm")]
+        if vids:
+            lines += ["## 動画", ""]
+            lines += [f"- [{p.name}](./{quote(p.name)})"
+                      f"（GitHubでは開くとダウンロードになります）" for p in vids]
+            lines.append("")
+        if imgs:
+            lines += ["## 画像", ""]
+            for p in imgs:
+                lines.append(f"### {p.name}")
+                lines.append("")
+                lines.append(f"![{p.name}](./{quote(p.name)})")
+                lines.append("")
+        readme = folder / "README.md"
+        readme.write_text("\n".join(lines), encoding="utf-8")
+        return readme
+    except Exception as e:  # noqa: BLE001
+        print(f"[artifact] READMEを作れませんでした: {str(e)[:120]}")
+        return None
+
+
 async def _run_sheet(cid, request, history):
     """依頼を表にして .xlsx で保存し、Discordに添付して返す。"""
     try:
@@ -7753,12 +7814,17 @@ async def _run_design(message, request):
                 "デザインの書き出し", (out or "")[-300:]))
             return
         data = png_path.read_bytes()
+        # 成果物として残す（Discordの添付はスクロールで流れてしまうため）
+        _name = f"design_{datetime.now(JST).strftime('%m%d_%H%M%S')}.png"
+        rel, view, saved = await _save_media_artifact(
+            cid, data, _name, f"デザイン（{label}）")
         caption = (
             f"✅ デザインができました！（{label} {w}×{h}）\n"
-            "直したいときは「文字をもっと大きく」「背景を暗くして」のように"
+            + (f"保存先: `{rel}`{saved}\nGitHubで見る: {view}\n" if rel else "")
+            + "直したいときは「文字をもっと大きく」「背景を暗くして」のように"
             "続けて言ってください。"
         )
-        url = await send_image_bytes(cid, caption, data, f"design_{int(time.time())}.png")
+        url = await send_image_bytes(cid, caption, data, _name)
         if not url:
             await send_as(orch, cid, "⚠️ 画像はできましたが、Discordへの送信に失敗しました。")
             return
@@ -7876,12 +7942,35 @@ async def _run_slideshow(message, request):
         if not ok or not out.exists():
             await send_as(orch, cid, f"⚠️ 動画にできませんでした: {log[-300:]}")
             return
+        # Discordの上限を超えると添付できず【その場で見られない】ので縮める
+        if out.stat().st_size > CLIP_MAX_MB * 1024 * 1024:
+            small = workdir / "slideshow_s.mp4"
+            ok2, log2 = await _sh([
+                "ffmpeg", "-nostdin", "-y", "-threads", str(_work_threads()),
+                "-i", str(out), "-vf", f"scale={w // 2 // 2 * 2}:-2",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                str(small)], heavy=True)
+            if ok2 and small.exists():
+                out = small
+            else:
+                print(f"[slideshow] 縮小に失敗: {log2[-160:]}")
+        data = out.read_bytes()
+        # 静止画も動画も 成果物/ に残す（Discordの添付は流れてしまうため）
+        _stamp = datetime.now(JST).strftime("%m%d_%H%M%S")
+        for i, p in enumerate(paths, 1):
+            await _save_media_artifact(
+                cid, p.read_bytes(), f"{_stamp}_cut{i}.png", f"素材{i}枚目")
+        rel, view, saved = await _save_media_artifact(
+            cid, data, f"slideshow_{_stamp}.mp4", "つないだ動画")
         url = await send_image_bytes(
             cid,
             f"✅ {len(paths)}枚を動画にしました（{w}×{h}・"
-            f"約{round(sec * len(paths) + SLIDESHOW_FADE, 1)}秒）\n"
-            "「もっとゆっくり」「1枚3秒で」のように言えば作り直せます。",
-            out.read_bytes(), f"slideshow_{int(time.time())}.mp4",
+            f"約{round(sec * len(paths) + SLIDESHOW_FADE, 1)}秒／"
+            f"{out.stat().st_size / 1048576:.1f}MB）\n"
+            + (f"保存先: `{rel}`{saved}\n"
+               f"GitHubで見る（動画と素材3枚）: {view}\n" if rel else "")
+            + "「もっとゆっくり」「1枚3秒で」のように言えば作り直せます。",
+            data, f"slideshow_{_stamp}.mp4",
         )
         if url:
             _update_last_gen_url(cid, url)
