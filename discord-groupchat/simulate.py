@@ -1746,11 +1746,16 @@ async def run():
         bot._gemini_generate_image_sync = _gen_ok
         await _REAL_IMAGE_REQ(1234, "背景を室内にして")
         check("英訳できなかったことを知らせる",
-              any("英語プロンプトに直せませんでした" in t for t in _ch20.sent),
+              any("英語プロンプトに直せなかった" in t for t in _ch20.sent),
               _ch20.sent[:2])
         check("なぜ直せなかったかを添える",
               any("理由" in t for t in _ch20.sent
-                  if "英語プロンプトに直せませんでした" in t), _ch20.sent[:2])
+                  if "英語プロンプトに直せなかった" in t), _ch20.sent[:2])
+        # 2026-08-21 変更：以前は警告を出しつつ【日本語のまま投入】していた。
+        # 依頼とずれると分かっていながらクレジットを使うので、止めるようにした。
+        check("日本語のまま生成に投入しない（クレジットを無駄にしない）",
+              not any("生成中" in t or "生成します" in t for t in _ch20.sent),
+              _ch20.sent[:3])
     finally:
         (bot._refine_prompt, bot._gemini_generate_image_sync) = _keep20
 
@@ -1822,7 +1827,7 @@ async def run():
         bot._gemini_generate_image_sync = _gen_ok2
         await _REAL_IMAGE_REQ(1234, "geminiで背景を室内に変えて")
         check("語を落としただけを英訳成功と誤認しない",
-              any("英語プロンプトに直せませんでした" in t for t in _ch21.sent),
+              any("英語プロンプトに直せなかった" in t for t in _ch21.sent),
               _ch21.sent[:3])
     finally:
         (bot._refine_prompt, bot._gemini_generate_image_sync) = _keep21b

@@ -6554,7 +6554,10 @@ async def _handle_image_request(cid, request, refine=True, refs=None):
         # 「変わったか」で見ると、作り手の指定を落としただけでも変わって見えるので、
         # 「英語になったか」で判断する。
         if not _looks_english_prompt(request):
+            # 日本語のまま投入せず、ここで止める（無駄なクレジットを使わない）
             await send_as(orch, cid, _refine_fail_note())
+            _set_pending_do(cid, "英訳のやり直し", original)
+            return
     _save_last_gen(cid, request, "image", None, "画像")
     await send_as(
         orch, cid,
@@ -7059,12 +7062,20 @@ def _clean_tool_words(prompt, request):
 
 
 def _refine_fail_note():
-    """英訳できなかったことの知らせ。理由が分かっていれば必ず添える。"""
+    """英訳できなかったことの知らせ。理由が分かっていれば必ず添える。
+
+    以前はここで警告を出しつつ【日本語のまま生成に投入】していた。
+    生成モデルは日本語の会話文を渡すと別物を作るので、依頼とずれると
+    分かっていながらクレジットを使っていた（無料枠では致命的）。
+    投入せずに止めて、やり直せるようにする（本人の希望：
+    「わからなかったらその時点で聞くようにしてください」）。"""
     why = _refine_fail.get("why") or ""
     return (
-        "⚠️ 英語プロンプトに直せませんでした。日本語のまま渡すので、"
-        "出来上がりが依頼とずれることがあります。\n"
-        + (f"（理由: {why[:200]}）" if why else "（理由は取れませんでした）")
+        "⚠️ **英語プロンプトに直せなかったので、生成を止めました。**\n"
+        "日本語のまま渡すと別物が出来るうえ、クレジットを無駄に使うためです。\n"
+        + (f"（理由: {why[:200]}）\n" if why else "（理由は取れませんでした）\n")
+        + "もう一度同じ言い方で頼めば、englishへの変換からやり直します"
+        "（枠切れが理由なら、少し待つと戻ります）。"
     )
 
 
@@ -7288,7 +7299,10 @@ async def _run_hf_generate(message, request, model, media_type, label,
             await send_as(orch, cid, f"🖋 プロンプト: {refined[:300]}")
             request = refined
         if not _looks_english_prompt(request):
+            # 日本語のまま投入せず、ここで止める（無駄なクレジットを使わない）
             await send_as(orch, cid, _refine_fail_note())
+            _set_pending_do(cid, "英訳のやり直し", request)
+            return
     await send_as(
         orch, cid,
         f"🎬 {label}で{kind}を生成します…" if model
