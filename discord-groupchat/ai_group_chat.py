@@ -5696,14 +5696,15 @@ class RouteCtx:
 
     __slots__ = ("text", "cid", "has_attachments", "has_video_att",
                  "has_image_att", "has_job", "has_last_gen", "after_credits",
-                 "has_running", "last_was_design", "design_ctx", "is_question",
+                 "has_running", "last_was_design", "last_was_slideshow",
+                 "design_ctx", "is_question",
                  "status_kw", "short_ask", "status_ctx", "fix_now",
                  "learn_strict", "learn_loose")
 
     def __init__(self, content, *, has_attachments=False, has_video_att=False,
                  has_image_att=False, has_job=False, has_last_gen=False,
                  after_credits=False, has_running=False, last_was_design=False,
-                 design_ctx=False, cid=None):
+                 last_was_slideshow=False, design_ctx=False, cid=None):
         self.text = content or ""
         self.cid = cid
         # 直近の会話がビジュアル制作の相談か（構成案・カット割り・図解など）。
@@ -5719,6 +5720,9 @@ class RouteCtx:
         self.after_credits = after_credits
         self.has_running = has_running
         self.last_was_design = last_was_design
+        # 直前に作ったのが「つないだ動画」か。尺・動き・順番の手直しを
+        # 完パケ編集ではなく動画化のやり直しへ回すために見る。
+        self.last_was_slideshow = last_was_slideshow
         self.is_question = bool(_looks_like_question(self.text))
         self.status_kw = _STATUS_KW_RE.search(self.text)
         # 「まだ」「できた」だけを頼りにすると身の上話まで進捗確認になる。
@@ -6148,11 +6152,29 @@ _SLIDESHOW_RE = re.compile(
     "スライドショー|繋げて|つなげて|繋いで|つないで|連結")
 
 
+# つないだ動画への手直し。直前が動画化の時だけ、これを動画化のやり直しに回す。
+# 本人の希望（2026-08-22）：「とにかくdiscordだけで動画編集したい」。
+# 尺・動き・順番の調整までDiscordの一言で回せないと「編集」にならない。
+_SLIDE_TWEAK_RE = re.compile(
+    r"[0-9０-９一二三四五六七八九十]\s*枚目|カット\s*[0-9０-９]|"
+    "ゆっくり|はやく|速く|早く|長く|短く|伸ばして|縮めて|"
+    "止めて|止めた|動かさない|寄って|引いて|ズーム|"
+    "順番|並び|入れ替え|先頭|最後に|逆に|"
+    r"[0-9０-９]+\s*秒")
+
+
 def _r_slideshow(c):
     """作った静止画をつないで動画にする。
     「作り直し」より先に見る（先に見ないと、同じ絵を作り直して終わる）。"""
     if c.is_question:
         return None
+    # 直前が「つないだ動画」なら、尺・動き・順番の手直しも動画化に戻す。
+    # これが無いと「1枚目を長くして」が完パケ編集へ流れ、素材の無い所で失敗する。
+    # 「もっとゆっくり話して」は話し方の注文で、動画の手直しではない
+    if (c.last_was_slideshow and _SLIDE_TWEAK_RE.search(c.text)
+            and _wants_action(c.text)
+            and not re.search("話し|喋|しゃべ|返事|口調|説明", c.text)):
+        return "slideshow"
     if not _SLIDESHOW_RE.search(c.text):
         return None
     # 新しく絵を作れという依頼ではないこと（「動画作って」は生成へ）
@@ -7883,6 +7905,66 @@ def _wanted_count(text):
 
 
 SLIDESHOW_ZOOM = 1.09        # 寄り切った時の倍率
+SLIDESHOW_SEC_MIN = 1.5      # 1カットの下限（これより短いと読めない）
+SLIDESHOW_SEC_MAX = 6.0      # 1カットの上限（これより長いと間延びする）
+
+EDIT_PLAN_PROMPT = (
+    "あなたは縦型ショート動画の編集者。渡された静止画は、この順に並べて"
+    "1本の動画にするカットです。各カットを【何秒見せるか】と"
+    "【カメラの動き】を決めてください。\n"
+    "判断の基準:\n"
+    "・文字が多い／小さい／読ませたいコピーがある → 長めに\n"
+    "・絵だけ、または一目で伝わる → 短めに\n"
+    "・motion は in（寄る）/ out（引く）/ hold（動かさない）。\n"
+    "  緊張・問題提起は寄る、解放・結論は引く、情報量が多い図は hold が合う。\n"
+    "  隣り合うカットで同じ動きが続かないようにする（単調になるため）\n"
+    f"・秒数は {SLIDESHOW_SEC_MIN}〜{SLIDESHOW_SEC_MAX} の範囲。全体は10秒前後が目安\n"
+    "JSONだけを出力する。説明や前置きは書かない。\n"
+    '形式: {"cuts":[{"sec":3.0,"motion":"in","why":"理由(20字以内)"}]}\n'
+    "cuts の数は、渡した画像の枚数とちょうど同じにすること。"
+)
+
+
+async def _plan_slideshow_cuts(paths, request=""):
+    """各カットを何秒・どの動きで見せるかを、絵を見て【クロードが】決める。
+
+    本人の希望（2026-08-22）：「とにかくクロードだけで動画編集できるように
+    したい」。Geminiの視覚に投げる手もあるが、無料枠が切れていることが多く、
+    枠切れのたびに編集の質が落ちるのは避けたい。クロードはファイルを読めるので、
+    画像のパスを渡して直接見てもらう。
+
+    決まらなければ None を返し、呼び出し側は既定値（全カット同じ秒数・
+    1枚おきに寄る/引く）で作る。ここで止めない：編集の判断が付かないことは、
+    動画を作れない理由にはならない。"""
+    try:
+        listing = "\n".join(f"  カット{i}: {p}" for i, p in enumerate(paths, 1))
+        task = (
+            "次の画像を Read ツールで【全部】実際に見てから答えて。\n"
+            f"{listing}\n\n" + EDIT_PLAN_PROMPT
+            + (f"\n依頼の言葉: {request[:120]}" if request else "")
+        )
+        raw = await _run_claude_exec(task, timeout=300,
+                                     model=DESIGN_MODEL or None, neutral=True)
+        m = re.search(r"\{[\s\S]*\}", raw or "")
+        if not m:
+            return None
+        cuts = json.loads(m.group(0)).get("cuts") or []
+        if len(cuts) != len(paths):
+            print(f"[slideshow] カット数が合わない（{len(cuts)}≠{len(paths)}）")
+            return None
+        out = []
+        for i, c in enumerate(cuts):
+            sec = float(c.get("sec") or SLIDESHOW_SEC)
+            sec = min(max(sec, SLIDESHOW_SEC_MIN), SLIDESHOW_SEC_MAX)
+            mo = str(c.get("motion") or "").lower()
+            if mo not in ("in", "out", "hold"):
+                mo = "in" if i % 2 == 0 else "out"
+            out.append({"sec": round(sec, 2), "motion": mo,
+                        "why": str(c.get("why") or "")[:30]})
+        return out
+    except Exception as e:  # noqa: BLE001
+        print(f"[slideshow] 編集プランを作れず既定で進む: {str(e)[:150]}")
+        return None
 
 
 def _kenburns_cmd(paths, out, w, h, sec, fade):
@@ -7893,31 +7975,40 @@ def _kenburns_cmd(paths, out, w, h, sec, fade):
     ・寄る／引くを1枚おきに入れ替える。全部同じ向きだと単調で、
       場面の切り替わりが伝わらない（6秒版を見て分かった。2026-08-22）"""
     fps = 30
-    clip = sec + fade
-    frames = max(2, int(round(clip * fps)))
+    # cuts が渡されていれば、そのカットごとの秒数・動きを使う（クロードの編集判断）。
+    # 無ければ全カット同じ秒数・1枚おきに寄る/引く（従来どおり）。
+    cuts = sec if isinstance(sec, list) else [
+        {"sec": sec, "motion": "in" if i % 2 == 0 else "out"}
+        for i in range(len(paths))
+    ]
     big_w, big_h = int(w * 1.1) // 2 * 2, int(h * 1.1) // 2 * 2
-    step = round((SLIDESHOW_ZOOM - 1.0) / max(1, frames - 1), 6)
     args = ["ffmpeg", "-nostdin", "-y", "-threads", str(_work_threads())]
     for p in paths:
         args += ["-i", str(p)]
     parts = []
     for i in range(len(paths)):
-        if i % 2 == 0:                       # 寄る
-            z = f"min(zoom+{step},{SLIDESHOW_ZOOM})"
-        else:                                # 引く（1枚目の位置から戻す）
+        c_sec = float(cuts[i].get("sec") or SLIDESHOW_SEC)
+        frames = max(2, int(round((c_sec + fade) * fps)))
+        step = round((SLIDESHOW_ZOOM - 1.0) / max(1, frames - 1), 6)
+        mo = cuts[i].get("motion", "in")
+        if mo == "out":                      # 引く（寄った位置から戻す）
             z = f"if(eq(on,1),{SLIDESHOW_ZOOM},max(zoom-{step},1.0))"
+        elif mo == "hold":                   # 動かさない（情報量の多い図向き）
+            z = "1.0"
+        else:                                # 寄る
+            z = f"min(zoom+{step},{SLIDESHOW_ZOOM})"
         parts.append(
             f"[{i}:v]scale={big_w}:{big_h}:force_original_aspect_ratio=increase,"
             f"crop={big_w}:{big_h},"
             f"zoompan=z='{z}':d={frames}:s={w}x{h}:fps={fps},"
             f"setsar=1[v{i}]"
         )
-    last = "v0"
+    last, elapsed = "v0", 0.0
     for i in range(1, len(paths)):
-        offset = round(sec * i, 3)
+        elapsed += float(cuts[i - 1].get("sec") or SLIDESHOW_SEC)
         tag = f"x{i}" if i < len(paths) - 1 else "out"
         parts.append(f"[{last}][v{i}]xfade=transition=fade:"
-                     f"duration={fade}:offset={offset}[{tag}]")
+                     f"duration={fade}:offset={round(elapsed, 3)}[{tag}]")
         last = tag
     if len(paths) == 1:
         parts.append("[v0]null[out]")
@@ -7980,9 +8071,25 @@ async def _run_slideshow(message, request):
             await send_as(orch, cid, "⚠️ 画像を取得できませんでした。")
             return
         w, h = await asyncio.to_thread(_image_size, paths[0])
+        # クロードが絵を見て、カットごとの尺と動きを決める（編集の判断）。
+        # 尺を明示された時（「6秒の動画にして」）は本人の指定を優先する。
+        cuts = None
+        if not total:
+            await send_as(orch, cid,
+                          f"🎬 {CLAUDE2_NAME}が{len(paths)}枚を見て、"
+                          "カットごとの尺と動きを決めます…")
+            cuts = await _plan_slideshow_cuts(paths, request)
+        if cuts:
+            plan = "\n".join(
+                f"　カット{i}: {c['sec']}秒・"
+                f"{ {'in': '寄る', 'out': '引く', 'hold': '止め'}[c['motion']] }"
+                + (f"（{c['why']}）" if c.get("why") else "")
+                for i, c in enumerate(cuts, 1))
+            await send_as(orch, cid, "✂️ 編集プラン:\n" + plan)
         out = workdir / "slideshow.mp4"
-        ok, log = await _sh(_kenburns_cmd(paths, out, w, h, sec, SLIDESHOW_FADE),
-                            timeout=900, heavy=True)
+        ok, log = await _sh(
+            _kenburns_cmd(paths, out, w, h, cuts or sec, SLIDESHOW_FADE),
+            timeout=900, heavy=True)
         if not ok or not out.exists():
             await send_as(orch, cid, f"⚠️ 動画にできませんでした: {log[-300:]}")
             return
@@ -8017,6 +8124,9 @@ async def _run_slideshow(message, request):
             data, f"slideshow_{_stamp}.mp4",
         )
         if url:
+            # 直後の「1枚目を長くして」等を、完パケ編集ではなく
+            # 動画化のやり直しへ回せるように、何を作ったかを残す
+            _save_last_gen(cid, request, "video", f"{w}:{h}", "つないだ動画")
             _update_last_gen_url(cid, url)
             add_history(cid, "Orchestrator",
                         f"（静止画{len(paths)}枚を動画にした / {url}）")
@@ -10240,25 +10350,29 @@ def _claude_fail_note(what, err):
     return f"⚠️ {what}に失敗しました: {err[:300]}"
 
 
-async def _run_claude_exec(task, timeout=600, model=None):
+async def _run_claude_exec(task, timeout=600, model=None, neutral=False):
     """承認済みタスクをフル権限で実行し、標準出力を返す。
     重い処理なので同時に1本まで。以前は無制限に起動できたため、
     調査・自己改修・生成の投入が重なるとMacのCPUを奪い合い、
     会話の返事まで遅くなっていた。
     model を指定すると、会話用とは別のモデルで実行できる
-    （手順が決まっている作業は速いモデルの方が体感が良い）。"""
+    （手順が決まっている作業は速いモデルの方が体感が良い）。
+
+    neutral=True は運用マニュアル（CLAUDE.md）を読ませたくない機械的な作業用。
+    読ませると「このタスクは内部からの依頼なので…」とだけ返して仕事をしない
+    ことがある（英訳で17回起きた）。"""
     async with _sem("exec", EXEC_CONCURRENCY):
-        return await _claude_exec_run(task, timeout, model)
+        return await _claude_exec_run(task, timeout, model, neutral)
 
 
-async def _claude_exec_run(task, timeout, model=None):
+async def _claude_exec_run(task, timeout, model=None, neutral=False):
     args = ["--model", model] if model else _model_args()
     proc = await asyncio.create_subprocess_exec(
         CLAUDE_BIN, "-p", "--dangerously-skip-permissions", *args, task,
         stdin=asyncio.subprocess.DEVNULL,   # 端末から読ませない（固まるため）
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd=BASE_DIR,
+        cwd=_neutral_cwd() if neutral else BASE_DIR,
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -11537,6 +11651,12 @@ async def _dispatch_message(message):
             and time.time() - (_lg_rec or {}).get("t", 0) < 1800
         ),
         design_ctx=_in_design_talk(cid),
+        # 直前に作ったのが「つないだ動画」か（30分以内）。
+        # 尺・動き・順番の手直しを動画化のやり直しへ回すために見る。
+        last_was_slideshow=(
+            str((_lg_rec or {}).get("label", "")) == "つないだ動画"
+            and time.time() - (_lg_rec or {}).get("t", 0) < 1800
+        ),
     )
     # 依頼待ち中に動画が添付された（キーワード無し）ケースもモーション実行に接続
     pm = _pending_motion.get(cid)

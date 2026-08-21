@@ -2714,6 +2714,40 @@ def run():
                                 1080, 1920, 2.0, 0.5).index(
                   "-filter_complex") + 1], True)
 
+    print("■ 動画の手直しもDiscordの一言で回せること")
+    # 本人の希望（2026-08-22）：「とにかくdiscordだけで動画編集したい」。
+    # 尺・動き・順番の調整まで一言で回せないと「編集」にならない。
+    # 直前が「つないだ動画」の時だけ、手直しを動画化のやり直しへ回す。
+    _SS = {"has_last_gen": True, "last_was_slideshow": True, "design_ctx": True}
+    for _t in ("1枚目を長くして", "2枚目は止めて", "もっとゆっくりにして",
+               "1枚3秒でやり直して", "順番を入れ替えて", "3枚目を先頭にして",
+               "2枚目を引くにして"):
+        check(f"手直しを動画化へ戻す: {_t!r}",
+              bot.classify_route(_t, **_SS), "slideshow")
+    for _t in ("ありがとう", "いい感じ", "おはよう", "1枚目どうだった？",
+               "返事をゆっくりにして"):
+        check(f"手直しにしない: {_t!r}", bot.classify_route(_t, **_SS), None)
+    # 動画化の直後でなければ従来どおり（デザインの手直しを奪わない）
+    check("デザインの手直しは奪わない",
+          bot.classify_route("文字を大きくして",
+                             has_last_gen=True, last_was_design=True), "design")
+    # カットごとの指定が ffmpeg にそのまま効くこと
+    import pathlib as _plK
+    _cuts = [{"sec": 2.0, "motion": "in"}, {"sec": 5.0, "motion": "out"},
+             {"sec": 3.0, "motion": "hold"}]
+    _c = bot._kenburns_cmd([_plK.Path(f"{i}.png") for i in range(3)],
+                           _plK.Path("o.mp4"), 1080, 1920, _cuts, 0.5)
+    _f = _c[_c.index("-filter_complex") + 1]
+    check("カットごとの尺が効く",
+          [int(_m) / 30 - 0.5 for _m in _reX.findall(r"d=(\d+)", _f)],
+          [2.0, 5.0, 3.0])
+    check("つなぎ位置が尺に追従する",
+          _reX.findall(r"offset=([\d.]+)", _f), ["2.0", "7.0"])
+    check("止め（hold）が使える", "z='1.0'" in _f, True)
+    check("編集の判断はクロードが行う",
+          "_run_claude_exec" in bot_src().split(
+              "async def _plan_slideshow_cuts")[1][:1200], True)
+
     print("■ 提案に「ok」と答えたら、合意した作業が始まること")
     # 事故（2026-08-21）：構成案に合意したあと「ok」を3回送っても何も始まらず、
     # ボットは「1枚目制作開始します」と言い続けるだけだった。
