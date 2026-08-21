@@ -5789,6 +5789,12 @@ def _r_edit(c):
     """完パケ編集（既にある動画への後工程。新規生成とは別物）。
     作り直しより先に判定する。「もっと短くして」は作り直しではなく尺の編集だが、
     作り直しの語（もっと等）にも当たるため順序が効く。"""
+    # 画像を添付している＝その画像が素材。動画への後工程ではない。
+    # 事故（2026-08-22）：静止画3枚を添付して「この3枚をつかって9:16で
+    # 動画編集して」と頼まれたのに、添付を無視して【前に作った動画】を
+    # 加工していた。素材を指しているのに、別のものを触っていた。
+    if c.has_image_att and not c.has_video_att:
+        return None
     if (c.has_video_att or c.has_last_gen) and re.search(
         "字幕|テロップ|サブタイトル|編集して|加工して|つなげ|繋げ|結合|くっつけ|"
         "尺を|秒に(して|縮め)|短くして|長くして|カットして|トリム|切り抜いて|"
@@ -6174,6 +6180,14 @@ def _r_slideshow(c):
     if (c.last_was_slideshow and _SLIDE_TWEAK_RE.search(c.text)
             and _wants_action(c.text)
             and not re.search("話し|喋|しゃべ|返事|口調|説明", c.text)):
+        return "slideshow"
+    # 静止画を添付して「動画にして／動画編集して」＝この画像を素材に1本作る。
+    # 事故（2026-08-22）：3枚添付して「動画編集して」が既存動画の編集へ流れ、
+    # 添付を無視して前の動画を加工していた。「編集」の語だけを見ると、
+    # 素材を指しているのか完成品を指しているのか区別できない。
+    # 添付が【画像】なら、それが素材だと分かる（状態で判定する）。
+    if (c.has_image_att and not c.has_video_att and _wants_action(c.text)
+            and re.search("動画|ムービー|映像|クリップ", c.text)):
         return "slideshow"
     if not _SLIDESHOW_RE.search(c.text):
         return None
@@ -8071,6 +8085,13 @@ async def _run_slideshow(message, request):
             await send_as(orch, cid, "⚠️ 画像を取得できませんでした。")
             return
         w, h = await asyncio.to_thread(_image_size, paths[0])
+        # 「9:16で」のように比率を言われたら、そちらに合わせる。
+        # 事故（2026-08-22）：9:16と指定されたのに素材の縦横をそのまま使い、
+        # 指定が黙って無視されていた。
+        want_wh = _wanted_aspect(request)
+        if want_wh and want_wh != (w, h):
+            w, h = want_wh
+            await send_as(orch, cid, f"📐 指定どおり {w}×{h} で書き出します。")
         # クロードが絵を見て、カットごとの尺と動きを決める（編集の判断）。
         # 尺を明示された時（「6秒の動画にして」）は本人の指定を優先する。
         cuts = None
@@ -8132,6 +8153,23 @@ async def _run_slideshow(message, request):
                         f"（静止画{len(paths)}枚を動画にした / {url}）")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+_ASPECT_SIZES = (
+    ("9:16|縦型|縦長|ショート|ストーリー|リール|tiktok|tiktok", (1080, 1920)),
+    ("16:9|横型|横長|youtube用|ワイド", (1920, 1080)),
+    ("1:1|正方形|スクエア|インスタ|instagram", (1080, 1080)),
+    ("4:5|ポートレート", (1080, 1350)),
+)
+
+
+def _wanted_aspect(text):
+    """「9:16で」のような比率の指定を (幅, 高さ) にする。無ければ None。"""
+    t = text or ""
+    for pat, wh in _ASPECT_SIZES:
+        if re.search(pat, t, re.I):
+            return wh
+    return None
 
 
 def _image_size(path):
