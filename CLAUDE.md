@@ -195,6 +195,7 @@ Mac で動いているボットは読まない。「ここで決めたのに Dis
 | 聞かれた媒体と違うものを出さない | `_report_gen_status` の `_said_media` 照合 |
 | 動画の編集もDiscordの一言で回せる | `_r_slideshow`（`_SLIDE_TWEAK_RE`）/ `_plan_slideshow_cuts` |
 | 添付した素材を無視して別のものを触らない | `_r_edit` の `has_image_att` 除外 |
+| 既に指定の比率なら加工しない（拡大の防止） | `_probe_size` ＋ `_wanted_aspect` 照合 |
 | 収益の相談を料金照会にしない | `_INCOME_Q_RE` |
 | 時間切れを「却下」と言わない | `_stopped_note` / `_recent_expired` |
 | 宙に浮いた承認をあとから拾う | `_try_approve_expired` |

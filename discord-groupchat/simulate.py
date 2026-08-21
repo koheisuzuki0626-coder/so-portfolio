@@ -2714,6 +2714,22 @@ async def run():
           bot.ERROR_LOG.exists() and "わざと壊す" in bot.ERROR_LOG.read_text())
     check("on_message自体は例外を外に出さない", r["err"] is None, f"例外={r['err']}")
 
+    print("■ 既に9:16の動画を、さらにクロップして拡大しないこと")
+    # 事故（2026-08-22）：1080x1920 の動画に「9:16で」を繰り返した結果、
+    # 毎回クロップが重なり、文字が「our」「IING」と切れるまで拡大された。
+    # 元の実寸を測らずにAIへ丸投げしていたのが原因。
+    _srcE = bot_src()
+    _edit_fn = _srcE[_srcE.index("async def _run_video_edit"):
+                     _srcE.index("# ---------- デザイン制作（")]
+    check("元動画の実寸を測ってから編集する", "_probe_size" in _edit_fn,
+          "実寸を測っていない")
+    check("比率が既に同じなら加工しない",
+          "すでに" in _edit_fn and "そのままにします" in _edit_fn,
+          "同じ比率でも加工してしまう")
+    check("AIに実寸を伝える", "元動画の実寸" in _edit_fn, "実寸を渡していない")
+    check("むやみにcropさせない指示がある",
+          "拡大の禁止" in _edit_fn and "pad" in _edit_fn, "cropの制限が無い")
+
     print("■ 「動画を見せて」に静止画を出さない（聞かれた媒体を見る）")
     # 事故（2026-08-22）：動画は中止されて存在しないのに、「動画を見せて」に
     # 対して直近の【静止画】を「もう完成しています」と3回続けて出した。

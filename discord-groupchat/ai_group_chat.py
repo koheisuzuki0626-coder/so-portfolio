@@ -7531,6 +7531,18 @@ async def _report_result(cid, request, url, media_type, headline):
 _SUBTITLE_ASK_RE = re.compile("字幕|テロップ|文字起こし|caption|subtitle", re.I)
 
 
+async def _probe_size(path):
+    """動画の実寸 (幅, 高さ)。測れなければ (0, 0)。
+    これを測らずにAIへ「9:16にして」と丸投げすると、既に9:16のものを
+    さらにクロップして拡大する（実際に起きた）。"""
+    ok, out = await _sh([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x",
+        str(path)], timeout=60)
+    m = re.search(r"(\d+)x(\d+)", out or "") if ok else None
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
 async def _run_video_edit(message, instruction):
     """完成済みの動画を、指示どおりMacローカルで編集して返す（Higgsfield不要）。"""
     cid = message.channel.id
@@ -7551,6 +7563,20 @@ async def _run_video_edit(message, instruction):
     src = workdir / "in.mp4"
     try:
         if not await _download_video(cid, src_url, src, kind="url"):
+            return
+        # 元動画の実寸を測る。これを渡さないと、AIは「9:16にして」と言われた
+        # だけで【既に9:16のものをさらにクロップ】して拡大する。
+        # 事故（2026-08-22）：1080x1920 の動画に「9:16で」を4回繰り返した結果、
+        # 毎回クロップが重なって文字が「our」「IING」と切れるまで拡大された。
+        sw, sh = await _probe_size(src)
+        want = _wanted_aspect(instruction)
+        if want and sw and (sw, sh) == want:
+            await send_as(
+                orch, cid,
+                f"📐 この動画はすでに {sw}×{sh}（ご指定の比率）です。"
+                "作り直すと画質が落ちるだけなので、そのままにします。\n"
+                "別の直し（字幕・尺・音）があれば言ってください。"
+            )
             return
         srt_hint = ""
         if _SUBTITLE_ASK_RE.search(instruction or ""):
@@ -7573,11 +7599,19 @@ async def _run_video_edit(message, instruction):
         task = (
             "Macローカルの ffmpeg で動画を編集して（ffmpegはPATHに入っている）。\n"
             f"元動画: {src}\n"
-            f"編集の指示（日本語）: {instruction}\n"
+            + (f"元動画の実寸: {sw}x{sh}\n" if sw else "")
+            + f"編集の指示（日本語）: {instruction}\n"
             + srt_hint
             + "手順:\n"
             f"1) ffmpeg で指示どおりに編集し {out} を作る（1回のBash呼び出しでよい）\n"
-            "   ・縦型/ショート指定があれば 1080x1920 に crop+scale する\n"
+            "   【最重要・拡大の禁止】比率の指定（9:16など）が、元動画の実寸と"
+            "すでに同じなら、crop も scale もしてはいけない。実際に、既に"
+            "1080x1920 の動画へ「9:16にして」を繰り返した結果、毎回クロップが"
+            "重なって文字が切れるまで拡大された事故が起きている。\n"
+            "   ・比率を【変える】必要がある時も、まず pad（余白を足す）で合わせる。"
+            "crop は端が切れて文字が読めなくなるので、本人が「切ってでも埋めて」と"
+            "言った時だけ使う\n"
+            "   ・元の解像度より大きくしない（拡大は画質を落とすだけ）\n"
             "   ・音楽やBGMの指示があっても、権利のある音源が無い場合は音量調整までに留める\n"
             "   ・映像の内容そのものを作り変えることはしない（編集のみ）\n"
             f"   ・-threads {_work_threads()} を指定する\n"
