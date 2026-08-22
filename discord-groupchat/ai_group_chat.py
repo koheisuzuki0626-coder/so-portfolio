@@ -3633,14 +3633,19 @@ async def _fetch_trending(limit=100):
 
 
 TREND_SEARCH_DAYS = int(os.getenv("TREND_SEARCH_DAYS", "90"))  # 検索対象は直近N日
+# 毎日の自動リサーチだけは短い窓で見る。90日＋再生数順だと上位が何ヶ月も
+# 入れ替わらず、分析済みを飛ばしても同じ固定ランキングを下へ辿るだけになる
+# （本人の指摘：「毎日のリサーチがいつも同じ動画」。2026-08-22）。
+TREND_DAILY_DAYS = int(os.getenv("TREND_DAILY_DAYS", "14"))
 
 
-async def _search_videos(query, limit=50):
-    """YouTube Data API でキーワード検索し、直近N日の人気動画を再生数順に取得。"""
+async def _search_videos(query, limit=50, days=None):
+    """YouTube Data API でキーワード検索し、直近N日の人気動画を再生数順に取得。
+    days を渡すと窓を狭められる（毎日のリサーチが同じ顔ぶれになるのを防ぐ）。"""
     if not YOUTUBE_API_KEY:
         raise RuntimeError("YOUTUBE_API_KEY が .env に設定されていません")
     published_after = (
-        datetime.now(timezone.utc) - timedelta(days=TREND_SEARCH_DAYS)
+        datetime.now(timezone.utc) - timedelta(days=days or TREND_SEARCH_DAYS)
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
     async with aiohttp.ClientSession() as session:
         params = {
@@ -4808,7 +4813,9 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
     label = f"「{query}」" if query else "急上昇"
 
     if query:
-        videos = await _search_videos(query)
+        # 毎日の自動リサーチ（skip_analyzed=True）だけ窓を狭める
+        videos = await _search_videos(
+            query, days=TREND_DAILY_DAYS if skip_analyzed else None)
         if not videos:
             await channel.send(f"🔎 {label}に合う動画が見つかりませんでした。")
             return
@@ -4826,6 +4833,14 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
         v for v in videos
         if v["id"] not in analyzed and 0 < v["duration"] <= TREND_MAX_MINUTES * 60
     ]
+    # 上位から順に取ると、ランキングが動かない限り毎日ほぼ同じ顔ぶれになる。
+    # 候補を日替わりの並びにしてから選ぶ（同じ日は何度回しても同じ結果）。
+    # 事故（2026-08-22）：本人から「いつも同じ動画」と指摘された。
+    if skip_analyzed and len(candidates) > TREND_DEEP_COUNT:
+        import random as _rnd
+        _pool = candidates[:max(TREND_DEEP_COUNT * 4, 20)]
+        _rnd.Random(datetime.now(JST).strftime("%Y%m%d")).shuffle(_pool)
+        candidates = _pool
     targets = candidates[:TREND_DEEP_COUNT]
     await channel.send(
         f"🎬 {label}の動画{len(videos)}本を取得しました。"
