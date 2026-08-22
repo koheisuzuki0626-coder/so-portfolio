@@ -5308,7 +5308,17 @@ _STATUS_KW_RE = re.compile(
     "(送っ|見せ|出し|貼っ|上げ)て(ください|下さい)|"
     "あとどれ|どれくらい|どのくらい|どれぐらい|どのぐらい|何分|確認して", re.I
 )
+# 制作の話だと分かる語が無くても、これ単体なら進捗を尋ねていると分かる言い方。
+# 「まだ？」「できた？」のように、それ以外の中身を持たない一言だけ。
+# 「今日お酒我慢できてる」のように主題が別にある文は、ここに当たらない。
+_BARE_STATUS_RE = re.compile(
+    r"^(まだ|もうできた|できた|終わった|完成した|どう|進捗|状況|確認して|"
+    r"いつ(できる|終わる|仕上がる|完成)|あとどれくらい|あとどのくらい|"
+    r"何分|どんな感じ|見せて|送って|出して|貼って)"
+    r"(の|か|かな|ですか|ください|下さい|よ|ね)*[?？!！。、\s]*$")
 _STATUS_CTX_RE = re.compile(
+    # URL・リンクも制作物を指す語（「URL見せてください」は進捗確認）
+    "URL|url|ＵＲＬ|リンク|"
     "動画|画像|モーション|生成|デザイン|サムネ|バナー|相関図|関係図|家系図|"
     "系図|組織図|構成図|年表|チャート|フローチャート|図解|チラシ|ポスター|スライド")
 # 生成物の「中身」についての質問（＝進捗確認ではない）。
@@ -5728,9 +5738,16 @@ class RouteCtx:
         # 「まだ」「できた」だけを頼りにすると身の上話まで進捗確認になる。
         # 生成の話だと分かる語があるか、進捗を聞く短い一言の時だけにする。
         self.short_ask = len(_strip_media_context(self.text).strip()) <= 20
+        # 制作の話だと分かる語（動画・画像・デザイン等）が無いときは、
+        # 【尋ねている形】の時だけ状態確認にする。
+        # 事故（2026-08-22）：「今日お酒我慢できてる」という身の上話が、
+        # 「できてる」の一語と短さだけで進捗確認と判定され、
+        # 動画のURLを貼って返した。短い＝進捗を聞いている、ではない。
+        _asking = bool(_looks_like_question(self.text)) or bool(
+            _BARE_STATUS_RE.match(_strip_media_context(self.text).strip()))
         self.status_ctx = _STATUS_CTX_RE.search(self.text) or (
             (has_job or has_last_gen or has_running) and self.status_kw
-            and (self.short_ask or _STATUS_CTX_RE.search(self.text))
+            and self.short_ask and _asking
         )
         # 出来上がりへの不満＋直しの指示は、丁寧形でも疑問形でも作り直し。
         self.fix_now = bool(_RESULT_COMPLAINT_RE.search(self.text)
