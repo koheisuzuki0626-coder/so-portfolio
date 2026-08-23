@@ -3637,6 +3637,9 @@ TREND_SEARCH_DAYS = int(os.getenv("TREND_SEARCH_DAYS", "90"))  # 検索対象は
 # 入れ替わらず、分析済みを飛ばしても同じ固定ランキングを下へ辿るだけになる
 # （本人の指摘：「毎日のリサーチがいつも同じ動画」。2026-08-22）。
 TREND_DAILY_DAYS = int(os.getenv("TREND_DAILY_DAYS", "14"))
+# 毎日のリサーチで、その中から選ぶ母数（TOP何本まで見るか）。
+# 検索APIは1回50件なので、既定は50（増やすとページを繰る）。
+TREND_POOL = int(os.getenv("TREND_POOL", "50"))
 
 
 async def _search_videos(query, limit=50, days=None):
@@ -3661,37 +3664,54 @@ async def _search_videos(query, limit=50, days=None):
         }
         # まず直近N日で検索し、ヒットしなければ全期間で再検索
         # （Fatboy Slim のMVのような昔の名作が期間フィルタで消えるのを防ぐ）
+        # 検索APIは1回50件までなので、limit に届くまでページを繰る
+        # （本人の希望：「毎日ミュージックビデオのtop100からピックアップ」）。
         ids = []
         for attempt in range(2):
             if attempt == 1:
                 params.pop("publishedAfter", None)
-            async with session.get(
-                "https://www.googleapis.com/youtube/v3/search", params=params
-            ) as resp:
-                data = await resp.json()
-                if resp.status != 200:
-                    raise RuntimeError(f"YouTube検索エラー: {str(data)[:300]}")
-            ids = [
-                it["id"]["videoId"]
-                for it in data.get("items", [])
-                if it.get("id", {}).get("videoId")
-            ]
+            ids, token = [], None
+            while len(ids) < limit:
+                page = dict(params)
+                page["maxResults"] = str(min(limit - len(ids), 50))
+                if token:
+                    page["pageToken"] = token
+                async with session.get(
+                    "https://www.googleapis.com/youtube/v3/search", params=page
+                ) as resp:
+                    data = await resp.json()
+                    if resp.status != 200:
+                        raise RuntimeError(f"YouTube検索エラー: {str(data)[:300]}")
+                got = [
+                    it["id"]["videoId"]
+                    for it in data.get("items", [])
+                    if it.get("id", {}).get("videoId")
+                ]
+                ids.extend(x for x in got if x not in ids)
+                token = data.get("nextPageToken")
+                if not token or not got:
+                    break
             if ids:
                 break
         if not ids:
             return []
-        params2 = {
-            "part": "snippet,statistics,contentDetails",
-            "id": ",".join(ids),
-            "key": YOUTUBE_API_KEY,
-        }
-        async with session.get(
-            "https://www.googleapis.com/youtube/v3/videos", params=params2
-        ) as resp:
-            data2 = await resp.json()
-            if resp.status != 200:
-                raise RuntimeError(f"YouTube API エラー: {str(data2)[:300]}")
-    videos = [_video_dict(item) for item in data2.get("items", [])]
+        ids = ids[:limit]
+        # videos エンドポイントも1回50件までなので、50件ずつに分けて引く
+        items = []
+        for i in range(0, len(ids), 50):
+            params2 = {
+                "part": "snippet,statistics,contentDetails",
+                "id": ",".join(ids[i:i + 50]),
+                "key": YOUTUBE_API_KEY,
+            }
+            async with session.get(
+                "https://www.googleapis.com/youtube/v3/videos", params=params2
+            ) as resp:
+                data2 = await resp.json()
+                if resp.status != 200:
+                    raise RuntimeError(f"YouTube API エラー: {str(data2)[:300]}")
+            items.extend(data2.get("items", []))
+    videos = [_video_dict(item) for item in items]
     videos.sort(key=lambda v: v["views"], reverse=True)
     return videos
 
@@ -4844,9 +4864,12 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
     label = f"「{query}」" if query else "急上昇"
 
     if query:
-        # 毎日の自動リサーチ（skip_analyzed=True）だけ窓を狭める
+        # 毎日の自動リサーチ（skip_analyzed=True）は、窓を狭めたうえで
+        # その母数（既定50本）の中から選ぶ。母数が広いほど顔ぶれが偏らない。
         videos = await _search_videos(
-            query, days=TREND_DAILY_DAYS if skip_analyzed else None)
+            query,
+            limit=TREND_POOL if skip_analyzed else 50,
+            days=TREND_DAILY_DAYS if skip_analyzed else None)
         if not videos:
             await channel.send(f"🔎 {label}に合う動画が見つかりませんでした。")
             return
@@ -4868,8 +4891,10 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
     # 候補を日替わりの並びにしてから選ぶ（同じ日は何度回しても同じ結果）。
     # 事故（2026-08-22）：本人から「いつも同じ動画」と指摘された。
     if skip_analyzed and len(candidates) > TREND_DEEP_COUNT:
+        # 上位20本だけを混ぜていたので、結局いつも同じ顔ぶれから選んでいた。
+        # 取得した全部（既定50本）を母数にする（2026-08-23）。
         import random as _rnd
-        _pool = candidates[:max(TREND_DEEP_COUNT * 4, 20)]
+        _pool = list(candidates)
         _rnd.Random(datetime.now(JST).strftime("%Y%m%d")).shuffle(_pool)
         candidates = _pool
     targets = candidates[:TREND_DEEP_COUNT]
