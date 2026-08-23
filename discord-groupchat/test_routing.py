@@ -2641,6 +2641,24 @@ def run():
     check("名指しが無ければ従来どおり生成へ",
           bot.classify_route("動画作って"), "hf_auto")
 
+    print("■ 自動更新が無期限に止まらないこと")
+    # 事故（2026-08-23）：確認待ちが1つ残っていたため _safe_to_restart が
+    # False を返し続け、ボットが23時間前のコードで動き続けた。その間に直した
+    # 4件が一切反映されず、本人が「まだ直ってない」と繰り返す羽目になった。
+    # 見送りに時間の上限が無いのが原因。
+    check("見送りの上限がある", bot.AUTO_UPDATE_MAX_WAIT > 0, True)
+    check("上限は現実的な長さ（1分〜2時間）",
+          60 <= bot.AUTO_UPDATE_MAX_WAIT <= 7200, True)
+    _upd = bot_src()
+    _upd = _upd[_upd.index("async def _auto_update_loop"):]
+    _upd = _upd[:_upd.index("def _last_active_cid")]
+    check("見送り始めた時刻を覚える", "_update_waiting_since" in _upd, True)
+    check("上限を過ぎたら待たずに取り込む", "待たずに取り込む" in _upd, True)
+    check("宙に浮いた確認待ちを捨てる",
+          "_pending_approvals.clear()" in _upd, True)
+    check("取り込めたら見送りの記録を戻す",
+          '_update_waiting_since["t"] = 0.0' in _upd, True)
+
     print("■ ファイル冒頭の目次が、実物の節と一致していること")
     # 11,000行超の1ファイルなので、冒頭の目次だけが頼りになる。
     # 節を足したのに目次を直し忘れると、目次は「あると嘘をつく案内」になって

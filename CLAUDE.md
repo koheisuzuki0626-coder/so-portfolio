@@ -210,6 +210,7 @@ Mac で動いているボットは読まない。「ここで決めたのに Dis
 | 機械的な作業に運用マニュアルを読ませない | `run_claude_cli(neutral=True)` |
 | 戻らないジョブを待たせ続けない | `_job_is_lost` |
 | 自分のログ push で再起動しない | `CODE_PATHS`（`_remote_has_new_code`） |
+| 自動更新が無期限に止まらない | `AUTO_UPDATE_MAX_WAIT`（見送りの上限） |
 
 ## ボットへの指示（プロンプト）を足すときの鉄則
 

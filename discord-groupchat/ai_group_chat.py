@@ -10765,6 +10765,13 @@ async def _sync_to_origin():
 # 実際に何度も、最新の修正が入る前の版を試して「まだ直ってない」となった。
 # 手で「再起動して」と言わせない。新しいコードが出たら自分で取り込む。
 AUTO_UPDATE_SEC = int(os.getenv("AUTO_UPDATE_SEC", "180"))
+# 見送り続けてよい上限。確認待ちや作業中が1つでも残っていると
+# _safe_to_restart が False を返し続け、【無期限に】更新が止まる。
+# 事故（2026-08-23）：ボットが23時間前のコードで動き続け、その間に直した
+# 4件が一切反映されず、本人が「まだ直ってない」と4回報告する羽目になった。
+# 一定時間を過ぎたら、待つのをやめて取り込む。
+AUTO_UPDATE_MAX_WAIT = int(os.getenv("AUTO_UPDATE_MAX_WAIT", "1800"))  # 既定30分
+_update_waiting_since = {"t": 0.0}
 
 # 再起動する価値があるのは【実行されるコード】が変わった時だけ。
 # ログ(debug/)・知見(insights/)・成果物・履歴はボット自身が書いて push
@@ -10866,8 +10873,20 @@ async def _auto_update_loop():
             if not has_new:
                 continue
             if not _safe_to_restart(cid):
-                print("[auto_update] 作業中なので次の機会に回す")
-                continue
+                # 見送りが続きすぎたら、待つのをやめる。待ち続けると
+                # 直した内容が何時間も届かない（実際に23時間止まった）。
+                waited = _update_waiting_since["t"]
+                if not waited:
+                    _update_waiting_since["t"] = time.time()
+                    print("[auto_update] 作業中なので次の機会に回す")
+                    continue
+                if time.time() - waited < AUTO_UPDATE_MAX_WAIT:
+                    print("[auto_update] 作業中なので次の機会に回す"
+                          f"（{int(time.time() - waited)}秒 見送り中）")
+                    continue
+                print("[auto_update] 見送りが長引いたので、待たずに取り込む")
+                _pending_approvals.clear()      # 宙に浮いた確認待ちを捨てる
+            _update_waiting_since["t"] = 0.0
             await send_as(
                 orch, cid,
                 f"🆕 新しい修正が{n}件届いていたので取り込みます"
