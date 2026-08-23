@@ -4931,7 +4931,11 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
             continue
         if analysis:
             reports.append((v, analysis))
-            if not query:
+            # 飛ばす側（skip_analyzed）と揃える。ここを `not query` にしていた
+            # ため、ジャンル指定（「ミュージックビデオ」）の毎日のリサーチでは
+            # 【一度も記録されず】、読む側が飛ばそうにも中身が空だった。
+            # 記録は 2026-08-09 で止まっていた（本人の指摘で判明）。
+            if skip_analyzed:
                 _mark_analyzed(v["id"])
 
     # ランキング全体の傾向分析（Gemini枠切れ時はClaudeに自動切替）

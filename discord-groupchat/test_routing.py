@@ -2641,6 +2641,36 @@ def run():
     check("名指しが無ければ従来どおり生成へ",
           bot.classify_route("動画作って"), "hf_auto")
 
+    print("■ 分析済みの動画を、次回は飛ばすこと")
+    # 事故（2026-08-23）：飛ばす側は skip_analyzed で判断していたのに、
+    # 記録する側だけ `not query` になっていた。ジャンル指定（「ミュージック
+    # ビデオ」）の毎日のリサーチでは一度も記録されず、記録は 2026-08-09 で
+    # 止まっていた。読む側と書く側の条件がズレると、飛ばそうにも中身が空。
+    import tempfile as _tfA
+    import pathlib as _plA
+    _keep_ids = bot._ANALYZED_IDS_FILE
+    try:
+        bot._ANALYZED_IDS_FILE = _plA.Path(_tfA.mkdtemp()) / "ids.txt"
+        check("最初は空", bot._load_analyzed_ids(), set())
+        for _v in ("aaa", "bbb", "ccc"):
+            bot._mark_analyzed(_v)
+        check("記録される", bot._load_analyzed_ids(), {"aaa", "bbb", "ccc"})
+        _seen = bot._load_analyzed_ids()
+        _vids = [{"id": x} for x in ("aaa", "bbb", "ddd", "eee")]
+        check("済みを除外できる",
+              [v["id"] for v in _vids if v["id"] not in _seen], ["ddd", "eee"])
+    finally:
+        bot._ANALYZED_IDS_FILE = _keep_ids
+    _tr = bot_src()
+    _tr = _tr[_tr.index("async def _run_trend_study"):]
+    _tr = _tr[:_tr.index("# ランキング全体の傾向分析")]
+    check("読む側は skip_analyzed で判断",
+          "analyzed = _load_analyzed_ids() if skip_analyzed else set()" in _tr, True)
+    check("書く側も skip_analyzed で判断（条件を揃える）",
+          "if skip_analyzed:\n                _mark_analyzed" in _tr, True)
+    check("ジャンル指定だと記録しない古い条件が残っていない",
+          "if not query:\n                _mark_analyzed" in _tr, False)
+
     print("■ リサーチの依頼から、検索する語だけを取り出せること")
     # 事故（2026-08-23）：「ミュージックビデオでYouTubeリサーチして」が
     # 『ミュージックビデオでYouTube』という語で検索されていた。末尾の依頼表現
