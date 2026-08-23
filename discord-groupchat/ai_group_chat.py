@@ -4806,6 +4806,37 @@ async def _apply_youtube_context(message, content):
     return content, bare_link
 
 
+# 「〜でYouTubeリサーチして」から【検索する語】だけを取り出す。
+# 事故（2026-08-23）：「ミュージックビデオでYouTubeリサーチして」が
+# 『ミュージックビデオでYouTube』という語で検索されていた。末尾の依頼表現しか
+# 落としていなかったため、道具の名前（YouTube）と助詞が題材に混ざっていた。
+_TREND_STRIP_TAIL_RE = re.compile(
+    r"(の)?(トレンド|急上昇|リサーチ|調査|分析|研究|調べて|調べ|見てきて|"
+    r"して|してみて|しといて|ちょうだい|ください|下さい|お願い(します)?|"
+    r"欲しい|ほしい|たい|よ|ね|な)+$")
+# 道具・場所の名前。題材ではないので落とす（「〜でYouTubeを」の『で』ごと）
+_TREND_STRIP_TOOL_RE = re.compile(
+    r"(で|の|を|から|について)?\s*(youtube|ユーチューブ|you\s*tube|"
+    r"ショート|shorts)?\s*(で|の|を|から|について)?\s*$", re.I)
+_TREND_TOOL_ONLY_RE = re.compile(r"^(youtube|ユーチューブ|you\s*tube)$", re.I)
+
+
+def _trend_topic(text):
+    """リサーチの依頼文から、実際に検索する語だけを取り出す。
+    取り出せなければ空（＝急上昇TOP100を見る）。"""
+    t = _strip_media_context(text or "").strip()
+    prev = None
+    while prev != t:                       # 末尾の依頼表現を繰り返し落とす
+        prev = t
+        t = _TREND_STRIP_TAIL_RE.sub("", t).strip("　 。、!！?？")
+    # 「〜でYouTube」「〜のYouTube」の道具名と、末尾に残った助詞を落とす
+    t = _TREND_STRIP_TOOL_RE.sub("", t).strip("　 。、")
+    t = re.sub(r"[はがをでにのとやも]+$", "", t).strip("　 。、")
+    if _TREND_TOOL_ONLY_RE.match(t):       # 「YouTube」だけ＝題材ではない
+        return ""
+    return t
+
+
 async def _run_trend_study(cid, query=None, skip_analyzed=None):
     """YouTube動画のリサーチ。query なし＝急上昇TOP100 / query あり＝そのお題で
     検索した人気動画。上位数本を視聴・分析 → レポート保存＆ダイジェスト投稿。"""
@@ -9295,10 +9326,7 @@ async def _handle_orchestrator(message, cid):
                 "YOUTUBE_API_KEY が未設定のためリサーチできません（README参照）。"
             )
             return
-        topic = re.sub(
-            r"(の)?(トレンド|急上昇|リサーチ|調査|分析|調べて|して|ちょうだい|ください|お願い(します)?|よ|ね)+$",
-            "", _latest_user_msg(history).strip(),
-        ).strip("　 。、")
+        topic = _trend_topic(_latest_user_msg(history))
         _gate(message, cid, f"YouTubeのリサーチ（{topic or '急上昇'}）",
               "人気動画を検索して内容を視聴・分析し、レポートにまとめます",
               lambda: _run_trend_study(cid, topic or None), "YouTubeリサーチ",
