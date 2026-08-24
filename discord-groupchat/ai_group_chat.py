@@ -10832,13 +10832,28 @@ async def _sync_to_origin():
     rc, behind = await _git_self(["rev-list", "--count", f"HEAD..origin/{branch}"])
     if rc != 0:
         return "状態確認失敗のためスキップ"
-    n = int(behind.strip() or "0")
-    if n == 0 and not extra and not stashed:
-        return "既に最新"
-    rc, out = await _git_self(["reset", "--hard", f"origin/{branch}"])
-    if rc != 0:
-        return "reset失敗のためスキップ"
-    return ((f"最新コードを取得（{n}コミット）" if n else "既に最新") + extra + stashed)
+    n_tree = int(behind.strip() or "0")
+    # 【重要】「最新か」は作業ツリーのHEADで測ってはいけない。
+    # 開発側がこのチャットで git pull すると、ツリーだけ先に最新になり、
+    # プロセスは古いコードのままなのに「既に最新」と嘘をつく。
+    # 事故（2026-08-25）：本人から「再起動しても毎回『最新』と出るけど、
+    # 修正入れてるから最新じゃないよね？」と指摘されて判明。実際、
+    # ボットは23時間前のコードで動きながら「既に最新」と言い続けていた。
+    # 測る基準は【プロセスが起動時に読み込んだコミット】。
+    n_proc = n_tree
+    base = LOADED_COMMIT
+    if base:
+        rc_p, out_p = await _git_self(
+            ["rev-list", "--count", f"{base}..origin/{branch}", "--"] + CODE_PATHS)
+        if rc_p == 0:
+            n_proc = int((out_p or "0").strip() or "0")
+    if n_tree:
+        rc, out = await _git_self(["reset", "--hard", f"origin/{branch}"])
+        if rc != 0:
+            return "reset失敗のためスキップ"
+    if n_proc:
+        return f"実行中のコードを{n_proc}件更新" + extra + stashed
+    return ("既に最新（実行中のコードも同じ）" + extra + stashed)
 
 
 # ---------- 直した内容を自動で取り込む ----------
@@ -10858,11 +10873,21 @@ _update_waiting_since = {"t": 0.0}
 # 再起動する価値があるのは【実行されるコード】が変わった時だけ。
 # ログ(debug/)・知見(insights/)・成果物・履歴はボット自身が書いて push
 # するので、ここに入れてはいけない（自分の書き込みで再起動が無限に続く）。
+# 【重要】ここのパスは _git_self の実行場所（BASE_DIR＝discord-groupchat/）
+# からの相対で書くこと。gitのパス指定は実行場所からの相対なので、
+# リポジトリ直下からの "discord-groupchat/*.py" と書くと【何にも当たらず
+# 常に0件】になる。
+# 事故（2026-08-25）：これが原因で _remote_has_new_code が常に
+# 「新しいコードは無い」と答え、自動更新が【一度も動いていなかった】。
+# ボットは23時間以上前のコードで走り続け、直した内容が届かなかった。
+# 本人の「再起動しても毎回『最新』と出るけど最新じゃないよね？」で発覚。
+# ※ボットが自分で書き込むもの（debug/ ・ fixtures/ ・ history/ ・ 成果物/）は
+#   ここに入れないこと。入れると自分のpushで無限に再起動する。
 CODE_PATHS = [
-    "discord-groupchat/*.py",
-    "discord-groupchat/requirements.txt",
-    "discord-groupchat/.claude/*",
-    "discord-groupchat/*.sh",
+    "*.py",
+    "requirements.txt",
+    ".claude/*",
+    "*.sh",
 ]
 
 

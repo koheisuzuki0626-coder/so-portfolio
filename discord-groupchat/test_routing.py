@@ -2711,6 +2711,30 @@ def run():
     ):
         check(f"検索語を取り出す: {_t[:22]!r}", bot._trend_topic(_t), _want)
 
+    print("■ 自動更新のパス指定が、実行場所と噛み合っていること")
+    # 事故（2026-08-25）：CODE_PATHS をリポジトリ直下からの
+    # "discord-groupchat/*.py" で書いていたが、git は BASE_DIR の中で
+    # 実行される。gitのパス指定は実行場所からの相対なので【何にも当たらず
+    # 常に0件】になり、_remote_has_new_code が常に「新しいコードは無い」と
+    # 答えて、自動更新が一度も動いていなかった。
+    for _p in bot.CODE_PATHS:
+        check(f"実行場所からの相対で書く: {_p!r}",
+              _p.startswith("discord-groupchat/"), False)
+    check("Pythonのコードを見ている",
+          any(_p.endswith("*.py") for _p in bot.CODE_PATHS), True)
+    # ボットが自分で書き込むものを入れると、自分のpushで無限に再起動する
+    _selfwrite = ("debug", "fixtures", "history", "insights", "成果物")
+    for _p in bot.CODE_PATHS:
+        check(f"自分で書き込む場所を含めない: {_p!r}",
+              any(_w in _p for _w in _selfwrite), False)
+    # 判定の基準は【プロセスが読み込んだコミット】であること（ツリーではない）
+    _sy = bot_src()
+    _sy = _sy[_sy.index("async def _sync_to_origin"):]
+    _sy = _sy[:_sy.index("# ---------- 直した内容を自動で取り込む")]
+    check("同期の判定にLOADED_COMMITを使う", "LOADED_COMMIT" in _sy, True)
+    check("『既に最新』は実行中のコードについて言う",
+          "実行中のコードも同じ" in _sy, True)
+
     print("■ 自動更新が無期限に止まらないこと")
     # 事故（2026-08-23）：確認待ちが1つ残っていたため _safe_to_restart が
     # False を返し続け、ボットが23時間前のコードで動き続けた。その間に直した

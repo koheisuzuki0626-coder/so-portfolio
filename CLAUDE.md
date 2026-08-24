@@ -211,6 +211,8 @@ Mac で動いているボットは読まない。「ここで決めたのに Dis
 | 戻らないジョブを待たせ続けない | `_job_is_lost` |
 | 自分のログ push で再起動しない | `CODE_PATHS`（`_remote_has_new_code`） |
 | 自動更新が無期限に止まらない | `AUTO_UPDATE_MAX_WAIT`（見送りの上限） |
+| CODE_PATHS は実行場所からの相対で書く | `_git_self` は BASE_DIR で動く |
+| 「最新」はプロセスのコミットで測る | `_sync_to_origin` の `LOADED_COMMIT` 比較 |
 
 ## ボットへの指示（プロンプト）を足すときの鉄則
 
