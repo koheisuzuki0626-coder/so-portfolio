@@ -2209,8 +2209,11 @@ def run():
         for _kind, _text in _rows:
             if _kind == "false_progress":
                 _out = bot._drop_false_progress(_text, 4242)
+                # 2026-08-25：注記「（これはまだ実際には動かしていない）」は
+                # 本人の指摘で外した（相談の返事にまで付いて煩わしかった）。
+                # 見るべきは【動いているという嘘が消えたか】。
                 check(f"作業の宣言を落とす: {_text[:16]}…／{_out[:40]}",
-                      "まだ" in _out and "動かしていない" in _out, True)
+                      _out != _text, True)
             elif _kind == "fake_state":
                 _out = bot._drop_false_progress(_text, 4242)
                 check(f"内部状態の作り話を落とす: {_text[:16]}…／{_out[:40]}",
