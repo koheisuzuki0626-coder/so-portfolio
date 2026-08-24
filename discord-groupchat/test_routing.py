@@ -1411,8 +1411,10 @@ def run():
                "卵スープのレシピ教えて", "ジャンルの話をしてた"):
         check(f"{_t!r} はジャンル設定にしない", bot._match_trend_genre(_t), None)
     _srcK = bot_src()
+    # 2026-08-25：ジャンルを日替わりで回せるようにしたので、
+    # 生の設定ではなく「今日のジャンル」を渡す形に変わった
     check("毎日の実行にジャンルを渡す",
-          'gen_settings.get("trend_query") or None' in _srcK, True)
+          '_todays_genre(gen_settings.get("trend_query"))' in _srcK, True)
     check("毎日の実行では分析済みを飛ばす",
           "skip_analyzed=True" in _srcK, True)
     check("お題指定でも飛ばすかを選べる",
@@ -2640,6 +2642,25 @@ def run():
           bool(bot._VISUAL_NOUN_RE.search("静止画")), True)
     check("名指しが無ければ従来どおり生成へ",
           bot.classify_route("動画作って"), "hf_auto")
+
+    print("■ 毎日のリサーチのジャンルを、日替わりで回せること")
+    # 本人の希望（2026-08-25）：「aiで動画生成してる映像を定期的に分析したい」。
+    # 1つに固定すると学べる幅がその題材に閉じるので、区切って書けば回る。
+    import datetime as _dtG
+    _q = "ミュージックビデオとAI動画生成"
+    check("区切って分解できる", bot._genres_of(_q),
+          ["ミュージックビデオ", "AI動画生成"])
+    check("読点でも区切れる", bot._genres_of("MV、AI動画、広告"),
+          ["MV", "AI動画", "広告"])
+    _d0 = _dtG.datetime(2026, 8, 25, tzinfo=bot.JST)
+    _seq = [bot._todays_genre(_q, _d0 + _dtG.timedelta(days=i)) for i in range(4)]
+    check("日ごとに入れ替わる", _seq,
+          ["AI動画生成", "ミュージックビデオ", "AI動画生成", "ミュージックビデオ"])
+    check("同じ日なら同じ（結果を再現できる）",
+          bot._todays_genre(_q, _d0), bot._todays_genre(_q, _d0))
+    check("1つだけなら固定のまま",
+          bot._todays_genre("ミュージックビデオ"), "ミュージックビデオ")
+    check("未設定なら空（急上昇TOP100を見る）", bot._todays_genre(""), "")
 
     print("■ 分析済みの動画を、次回は飛ばすこと")
     # 事故（2026-08-23）：飛ばす側は skip_analyzed で判断していたのに、

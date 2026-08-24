@@ -5146,6 +5146,28 @@ _TREND_GENRE_SET_RE = re.compile(
 )
 
 
+# 毎日のリサーチのジャンルは、区切って書けば日替わりで回る。
+# 例：「リサーチのジャンルをミュージックビデオとAI動画生成にして」
+# 本人の希望（2026-08-25）：「aiで動画生成してる映像を定期的に分析したい」。
+# 1つに固定すると、学べる幅がその題材に閉じてしまう。
+_GENRE_SPLIT_RE = re.compile(r"\s*(?:、|,|/|・|と|および|&)\s*")
+
+
+def _genres_of(query):
+    """設定されたジャンル文字列を、個々のジャンルの一覧にする。"""
+    return [g for g in _GENRE_SPLIT_RE.split((query or "").strip()) if g]
+
+
+def _todays_genre(query, day=None):
+    """今日そのジャンルの中から、どれを見るか。日ごとに順に回す。
+    同じ日は何度回しても同じ（結果を再現できないと調査ができない）。"""
+    gs = _genres_of(query)
+    if len(gs) <= 1:
+        return gs[0] if gs else ""
+    d = day or datetime.now(JST)
+    return gs[d.toordinal() % len(gs)]
+
+
 def _match_trend_genre(text):
     """毎日のリサーチのジャンル指定を読む。
     ("set", お題) / ("reset", "") / None を返す。"""
@@ -5217,11 +5239,14 @@ async def _daily_trend_loop():
                 orch, cid,
                 f"📊 毎日の自動リサーチ（{now.strftime('%m/%d %H:%M')}）"
                 f"：{_wname}が"
-                + (f"「{gen_settings['trend_query']}」で伸びている動画"
+                + (f"「{_todays_genre(gen_settings['trend_query'])}」で"
+                   "伸びている動画"
                    if gen_settings.get("trend_query") else "YouTube急上昇TOP100")
                 + "を見てきます…"
             )
-            _spawn(_run_trend_study(cid, gen_settings.get("trend_query") or None,
+            _spawn(_run_trend_study(cid,
+                                    _todays_genre(gen_settings.get("trend_query"))
+                                    or None,
                                     skip_analyzed=True),
                    cid, "YouTubeリサーチ")
         except Exception as e:  # noqa: BLE001
