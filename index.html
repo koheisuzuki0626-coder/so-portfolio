@@ -142,38 +142,28 @@
         /* 黒いセクションに重なったときはヘッダーを反転させる */
         #nav.on-dark { background: rgba(0, 0, 0, 0.6); border-bottom-color: rgba(255,255,255,0.12); }
         #nav.on-dark .logo { color: #f5f5f7; }
-        #nav.on-dark ul a { color: rgba(245,245,247,0.66); }
-        #nav.on-dark ul a:hover, #nav.on-dark ul a.active { color: #fff; }
+        #nav.on-dark .nav-item { color: rgba(245,245,247,0.66); }
+        #nav.on-dark .nav-item:hover, #nav.on-dark .nav-item.active,
+        #nav.on-dark .nav-trigger[aria-expanded="true"] { color: #fff; }
         #nav.on-dark .nav-cta { background: #fff; color: #000; }
         #nav.on-dark .nav-cta:hover { background: var(--accent); color: #fff; }
+        #nav.on-dark .burger span { background: #f5f5f7; }
         #nav .logo { flex: none; font-size: 1.24rem; font-weight: 700; letter-spacing: -0.01em; }
         #nav .logo span { color: var(--accent); }
-        .nav-scroll {
-            flex: 1 1 auto;
-            min-width: 0;
-            overflow-x: auto;
-            scrollbar-width: none;
-            -webkit-mask-image: linear-gradient(90deg, transparent, #000 18px, #000 calc(100% - 18px), transparent);
-            mask-image: linear-gradient(90deg, transparent, #000 18px, #000 calc(100% - 18px), transparent);
-        }
-        .nav-scroll::-webkit-scrollbar { display: none; }
-        #nav ul {
-            display: flex;
-            gap: 26px;
-            list-style: none;
-            margin: 0; padding: 0 18px;
-            justify-content: center;
-            white-space: nowrap;
-            width: max-content;
-            min-width: 100%;
-            font-size: 0.8rem;
-        }
-        #nav ul a {
+        .nav-main { display: flex; align-items: center; gap: 30px; }
+        .nav-item {
             position: relative;
+            font: inherit;
+            font-size: 0.83rem;
             color: var(--ink-dim);
+            background: none;
+            border: 0;
+            padding: 0;
+            cursor: pointer;
+            white-space: nowrap;
             transition: color 0.25s ease;
         }
-        #nav ul a::after {
+        .nav-item::after {
             content: "";
             position: absolute;
             left: 0; bottom: -6px;
@@ -184,8 +174,24 @@
             transform-origin: left;
             transition: transform 0.35s var(--ease);
         }
-        #nav ul a:hover, #nav ul a.active { color: var(--ink); }
-        #nav ul a.active::after { transform: scaleX(1); }
+        .nav-item:hover, .nav-item.active { color: var(--ink); }
+        .nav-item.active::after { transform: scaleX(1); }
+        .nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 3px; }
+        /* ドロップダウンを持つ項目には小さな三角を添える */
+        .nav-trigger { display: inline-flex; align-items: center; gap: 5px; }
+        .nav-trigger::before {
+            content: "";
+            order: 2;
+            width: 0; height: 0;
+            border-left: 3.5px solid transparent;
+            border-right: 3.5px solid transparent;
+            border-top: 4px solid currentColor;
+            transition: transform 0.3s var(--ease);
+        }
+        .nav-trigger[aria-expanded="true"]::before { transform: rotate(180deg); }
+        .nav-trigger[aria-expanded="true"] { color: var(--ink); }
+
+        .nav-end { display: flex; align-items: center; gap: 12px; }
         .nav-cta {
             flex: none;
             font-size: 0.8rem;
@@ -194,9 +200,97 @@
             padding: 7px 16px;
             background: var(--ink);
             color: #fff;
+            white-space: nowrap;
             transition: background 0.28s ease;
         }
         .nav-cta:hover { background: var(--accent); }
+
+        /* 狭い画面用のハンバーガー */
+        .burger {
+            display: none;
+            width: 34px; height: 34px;
+            border: 0; padding: 0;
+            background: none;
+            cursor: pointer;
+            position: relative;
+        }
+        .burger span {
+            position: absolute;
+            left: 8px; right: 8px;
+            height: 1.5px;
+            background: var(--ink);
+            border-radius: 2px;
+            transition: transform 0.35s var(--ease), opacity 0.25s ease;
+        }
+        .burger span:nth-child(1) { top: 13px; }
+        .burger span:nth-child(2) { top: 20px; }
+        .burger[aria-expanded="true"] span:nth-child(1) { transform: translateY(3.5px) rotate(45deg); }
+        .burger[aria-expanded="true"] span:nth-child(2) { transform: translateY(-3.5px) rotate(-45deg); }
+        .burger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+
+        /* ---------- ドロップダウン ---------- */
+        .menu-scrim {
+            position: fixed;
+            inset: 0;
+            z-index: 130;
+            background: rgba(0,0,0,0.28);
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+        }
+        .menu-scrim.open { opacity: 1; visibility: visible; }
+        .menu {
+            position: fixed;
+            top: var(--nav-h); left: 0; right: 0;
+            z-index: 140;
+            background: rgba(255,255,255,0.97);
+            backdrop-filter: saturate(180%) blur(20px);
+            -webkit-backdrop-filter: saturate(180%) blur(20px);
+            border-bottom: 1px solid var(--line);
+            max-height: calc(100svh - var(--nav-h));
+            overflow-y: auto;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-10px);
+            transition: opacity 0.3s var(--ease), transform 0.3s var(--ease), visibility 0.3s;
+        }
+        .menu.open { opacity: 1; visibility: visible; transform: none; }
+        .menu-inner {
+            max-width: var(--max);
+            margin: 0 auto;
+            padding: 38px 28px 44px;
+            display: grid;
+            grid-template-columns: 1fr 220px;
+            gap: 48px;
+        }
+        .menu-head {
+            margin: 0 0 18px;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            color: var(--ink-dim);
+        }
+        .menu-genres {
+            list-style: none;
+            margin: 0; padding: 0;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 6px 24px;
+        }
+        .menu-genres a {
+            display: block;
+            padding: 11px 12px;
+            border-radius: 10px;
+            transition: background 0.22s ease;
+        }
+        .menu-genres a:hover { background: var(--bg-alt); }
+        .menu-genres strong { display: block; font-size: 1.02rem; font-weight: 600; letter-spacing: -0.01em; }
+        .menu-genres small { display: block; margin-top: 3px; font-size: 0.8rem; color: var(--ink-dim); line-height: 1.5; }
+        .menu-all { margin-top: 20px; margin-left: 12px; }
+        .menu-links { list-style: none; margin: 0; padding: 0; }
+        .menu-links li { margin-bottom: 12px; }
+        .menu-links a { font-size: 0.95rem; color: var(--ink-dim); transition: color 0.22s ease; }
+        .menu-links a:hover { color: var(--accent); }
 
         /* ---------- Hero ---------- */
         .hero {
@@ -732,11 +826,14 @@
             .stage-track { height: 190vh; }
         }
         @media (max-width: 860px) {
-            #nav { flex-wrap: wrap; row-gap: 8px; padding: 10px 14px 8px; }
-            #nav .logo { order: 1; font-size: 1.1rem; }
-            .nav-cta { order: 2; }
-            .nav-scroll { order: 3; flex: 1 0 100%; }
-            #nav ul { gap: 18px; padding: 0 4px; justify-content: flex-start; font-size: 0.78rem; }
+            #nav { padding: 10px 16px; }
+            #nav .logo { font-size: 1.12rem; }
+            /* 狭い画面ではメニューをハンバーガーにまとめる */
+            .nav-main { display: none; }
+            .burger { display: block; }
+            .menu { top: var(--nav-h); height: calc(100svh - var(--nav-h)); max-height: none; }
+            .menu-inner { grid-template-columns: 1fr; gap: 34px; padding: 28px 22px 60px; }
+            .menu-genres { grid-template-columns: 1fr; }
             .genre-grid { grid-template-columns: 1fr; }
             .footer-inner { grid-template-columns: 1fr; gap: 36px; padding: 52px 22px 38px; }
             .f-note { max-width: none; }
@@ -761,20 +858,47 @@
 
     <nav id="nav">
         <a href="#top" class="logo">so<span>.</span></a>
-        <!-- 制作できる動画のジャンル。入りきらない幅では横スクロールする -->
-        <div class="nav-scroll">
-            <ul>
-                <li><a href="#genre-company">会社紹介</a></li>
-                <li><a href="#genre-service">サービス紹介</a></li>
-                <li><a href="#genre-recruit">採用</a></li>
-                <li><a href="#genre-ad">広告・CM</a></li>
-                <li><a href="#genre-sns">SNSショート</a></li>
-                <li><a href="#genre-event">展示会・イベント</a></li>
-                <li><a href="#genre-internal">社内向け</a></li>
-            </ul>
+
+        <!-- 主要導線は4つに絞り、ジャンルはドロップダウンに格納する -->
+        <div class="nav-main">
+            <button type="button" class="nav-item nav-trigger" id="menu-trigger"
+                    aria-expanded="false" aria-controls="menu" data-for="#genres">
+                つくれる動画
+            </button>
+            <a class="nav-item" href="#why">撮影しない理由</a>
+            <a class="nav-item" href="#process">制作の流れ</a>
+            <a class="nav-item" href="#works">実績</a>
         </div>
-        <a href="#contact" class="nav-cta">相談する</a>
+
+        <div class="nav-end">
+            <a href="#contact" class="nav-cta">相談する</a>
+            <button type="button" class="burger" id="burger" aria-expanded="false" aria-controls="menu" aria-label="メニューを開く">
+                <span></span><span></span>
+            </button>
+        </div>
     </nav>
+
+    <div class="menu-scrim" id="menu-scrim"></div>
+    <div class="menu" id="menu" role="dialog" aria-modal="false" aria-label="メニュー">
+        <div class="menu-inner">
+            <div class="menu-col menu-col-genres">
+                <p class="menu-head">つくれる動画</p>
+                <!-- Genres セクションのカードから自動生成する -->
+                <ul class="menu-genres" id="menu-genres"></ul>
+                <a class="clink menu-all" href="#genres">ジャンル一覧を見る</a>
+            </div>
+            <div class="menu-col menu-col-links">
+                <p class="menu-head">サイト内</p>
+                <ul class="menu-links">
+                    <li><a href="#service">事業内容</a></li>
+                    <li><a href="#why">撮影しない理由</a></li>
+                    <li><a href="#process">制作の流れ</a></li>
+                    <li><a href="#works">制作実績</a></li>
+                    <li><a href="#contact">お問い合わせ</a></li>
+                </ul>
+            </div>
+        </div>
+    </div>
 
     <header class="hero" id="top">
         <div class="hero-mosaic" id="hero-mosaic" aria-hidden="true"></div>
@@ -1158,27 +1282,75 @@
             });
         });
 
-        /* ヘッダーのジャンルは1セクション内に並ぶので、画面中央にいちばん近いカードを選ぶ */
-        const navLinks = [...document.querySelectorAll('#nav ul a')];
-        const navTargets = navLinks
-            .map((a) => ({ link: a, el: document.getElementById(a.getAttribute('href').slice(1)) }))
-            .filter((t) => t.el);
-        const genresSection = document.getElementById('genres');
+        /* ---------- ヘッダーのメニュー ---------- */
+        const menu = document.getElementById('menu');
+        const scrim = document.getElementById('menu-scrim');
+        const trigger = document.getElementById('menu-trigger');
+        const burger = document.getElementById('burger');
+        const menuButtons = [trigger, burger].filter(Boolean);
+
+        function setMenu(open) {
+            menu.classList.toggle('open', open);
+            scrim.classList.toggle('open', open);
+            menuButtons.forEach((b) => b.setAttribute('aria-expanded', String(open)));
+            burger?.setAttribute('aria-label', open ? 'メニューを閉じる' : 'メニューを開く');
+            // 狭い画面では全画面シートになるので背面をスクロールさせない
+            document.body.style.overflow = open && window.matchMedia('(max-width: 860px)').matches ? 'hidden' : '';
+        }
+        const isMenuOpen = () => menu.classList.contains('open');
+
+        menuButtons.forEach((b) => b.addEventListener('click', () => setMenu(!isMenuOpen())));
+        scrim.addEventListener('click', () => setMenu(false));
+        // メニュー内のリンクを踏んだら閉じる
+        menu.addEventListener('click', (e) => { if (e.target.closest('a')) setMenu(false); });
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape' || !isMenuOpen()) return;
+            setMenu(false);
+            trigger?.focus();
+        });
+        // ヘッダーの外をクリックしたら閉じる
+        document.addEventListener('click', (e) => {
+            if (!isMenuOpen()) return;
+            if (e.target.closest('#menu') || e.target.closest('#nav')) return;
+            setMenu(false);
+        });
+
+        /* メニューのジャンル一覧は Genres セクションのカードから組み立てる */
+        const menuGenres = document.getElementById('menu-genres');
+        if (menuGenres) {
+            const items = [...document.querySelectorAll('.genre')].map((card) => {
+                const li = document.createElement('li');
+                const a = document.createElement('a');
+                a.href = `#${card.id}`;
+                const strong = document.createElement('strong');
+                strong.textContent = card.querySelector('h3')?.textContent ?? '';
+                const small = document.createElement('small');
+                const desc = card.querySelector('p')?.textContent?.trim() ?? '';
+                small.textContent = desc.length > 42 ? desc.slice(0, 42) + '…' : desc;
+                a.append(strong, small);
+                li.append(a);
+                return li;
+            });
+            menuGenres.replaceChildren(...items);
+        }
+
+        /* 現在地のセクションに対応するヘッダー項目を光らせる */
+        const navItems = [...document.querySelectorAll('#nav .nav-item')];
+        const navTargets = navItems
+            .map((el) => {
+                const href = el.dataset.for || el.getAttribute('href') || '';
+                return { el, section: href.startsWith('#') ? document.querySelector(href) : null };
+            })
+            .filter((t) => t.section);
 
         function syncNav() {
-            const clear = () => navLinks.forEach((a) => a.classList.remove('active'));
-            if (!genresSection) return clear();
-            const box = genresSection.getBoundingClientRect();
-            if (box.bottom < 0 || box.top > window.innerHeight) return clear();
-
-            const center = window.innerHeight / 2;
-            let best = null;
+            const line = (nav.getBoundingClientRect().bottom || 0) + 40;
+            let current = null;
             for (const t of navTargets) {
-                const r = t.el.getBoundingClientRect();
-                const d = Math.abs(r.top + r.height / 2 - center);
-                if (!best || d < best.d) best = { d, link: t.link };
+                const r = t.section.getBoundingClientRect();
+                if (r.top <= line && r.bottom > line) current = t.el;
             }
-            navLinks.forEach((a) => a.classList.toggle('active', a === best?.link));
+            navItems.forEach((el) => el.classList.toggle('active', el === current));
         }
         syncNav();
         window.addEventListener('scroll', syncNav, { passive: true });
