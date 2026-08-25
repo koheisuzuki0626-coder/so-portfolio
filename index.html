@@ -8,6 +8,10 @@
     <meta property="og:title" content="so. — AI動画制作">
     <meta property="og:description" content="撮影しない、映像制作。出演者の手配も撮影日の調整も不要です。">
     <meta property="og:type" content="website">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@200;300;400;500&family=Zen+Kaku+Gothic+New:wght@300;400;500&display=swap">
     <style>
         :root {
             --bg: #ffffff;
@@ -20,6 +24,9 @@
             --max: 1120px;
             --ease: cubic-bezier(0.28, 0.11, 0.32, 1);
             --nav-h: 52px;
+            /* 欧文は Inter、和文は Zen Kaku Gothic New。どちらも細めのウェイトを使う */
+            --font-sans: "Inter", "Zen Kaku Gothic New", -apple-system, BlinkMacSystemFont,
+                         "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
         }
 
         * { box-sizing: border-box; }
@@ -27,54 +34,57 @@
         [hidden] { display: none !important; }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Hiragino Sans",
-                         "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", Meiryo, sans-serif;
+            font-family: var(--font-sans);
+            font-weight: 300;
             margin: 0;
             background: var(--bg);
             color: var(--ink);
-            line-height: 1.7;
+            line-height: 1.85;
+            letter-spacing: 0.015em;
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
             overflow-x: hidden;
         }
 
         a { color: inherit; text-decoration: none; }
+        strong, b { font-weight: 500; }
         .wrap { max-width: var(--max); margin: 0 auto; padding: 0 28px; }
         .wrap-wide { max-width: 1440px; margin: 0 auto; padding: 0 28px; }
 
         /* ---------- Typography (Apple 風の大きく詰まった見出し) ---------- */
         .eyebrow {
             font-size: 0.78rem;
-            font-weight: 700;
-            letter-spacing: 0.08em;
+            font-weight: 500;
+            letter-spacing: 0.14em;
             color: var(--accent);
             margin: 0 0 14px;
         }
         .display {
             font-size: clamp(2.4rem, 6.4vw, 5.4rem);
-            font-weight: 700;
-            letter-spacing: -0.028em;
-            line-height: 1.08;
+            font-weight: 300;
+            letter-spacing: -0.012em;
+            line-height: 1.24;
             margin: 0;
         }
         .headline {
             font-size: clamp(1.9rem, 4.6vw, 3.4rem);
-            font-weight: 700;
-            letter-spacing: -0.022em;
-            line-height: 1.16;
+            font-weight: 300;
+            letter-spacing: -0.008em;
+            line-height: 1.32;
             margin: 0 0 22px;
         }
         .subhead {
             font-size: clamp(1.05rem, 1.6vw, 1.32rem);
-            font-weight: 600;
-            letter-spacing: -0.01em;
-            line-height: 1.55;
+            font-weight: 400;
+            letter-spacing: 0.005em;
+            line-height: 1.75;
             color: var(--ink-dim);
             margin: 0;
         }
         .body-text {
             font-size: 1.02rem;
-            line-height: 1.78;
+            font-weight: 300;
+            line-height: 1.95;
             color: var(--ink-dim);
             margin: 0;
         }
@@ -88,7 +98,7 @@
             gap: 3px;
             color: var(--accent);
             font-size: 1rem;
-            font-weight: 500;
+            font-weight: 400;
             transition: opacity 0.25s ease;
         }
         .clink::after { content: "›"; font-size: 1.25em; line-height: 1; transform: translateY(-1px); }
@@ -102,7 +112,8 @@
             border-radius: 980px;
             padding: 13px 26px;
             font-size: 0.98rem;
-            font-weight: 500;
+            font-weight: 400;
+            letter-spacing: 0.04em;
             border: 1px solid transparent;
             transition: background 0.28s ease, color 0.28s ease, border-color 0.28s ease, transform 0.28s var(--ease);
         }
@@ -148,7 +159,7 @@
         #nav.on-dark .nav-cta { background: #fff; color: #000; }
         #nav.on-dark .nav-cta:hover { background: var(--accent); color: #fff; }
         #nav.on-dark .burger span { background: #f5f5f7; }
-        #nav .logo { flex: none; font-size: 1.24rem; font-weight: 700; letter-spacing: -0.01em; }
+        #nav .logo { flex: none; font-size: 1.24rem; font-weight: 500; letter-spacing: 0.01em; }
         #nav .logo span { color: var(--accent); }
         .nav-main { display: flex; align-items: center; gap: 30px; }
         .nav-item {
@@ -195,12 +206,13 @@
         .nav-cta {
             flex: none;
             font-size: 0.8rem;
-            font-weight: 500;
+            font-weight: 400;
             border-radius: 980px;
             padding: 7px 16px;
             background: var(--ink);
             color: #fff;
             white-space: nowrap;
+            letter-spacing: 0.04em;
             transition: background 0.28s ease;
         }
         .nav-cta:hover { background: var(--accent); }
@@ -266,8 +278,8 @@
         .menu-head {
             margin: 0 0 18px;
             font-size: 0.72rem;
-            font-weight: 700;
-            letter-spacing: 0.12em;
+            font-weight: 500;
+            letter-spacing: 0.16em;
             color: var(--ink-dim);
         }
         .menu-genres {
@@ -284,7 +296,7 @@
             transition: background 0.22s ease;
         }
         .menu-genres a:hover { background: var(--bg-alt); }
-        .menu-genres strong { display: block; font-size: 1.02rem; font-weight: 600; letter-spacing: -0.01em; }
+        .menu-genres strong { display: block; font-size: 1.02rem; font-weight: 400; letter-spacing: 0.01em; }
         .menu-genres small { display: block; margin-top: 3px; font-size: 0.8rem; color: var(--ink-dim); line-height: 1.5; }
         .menu-all { margin-top: 20px; margin-left: 12px; }
         .menu-links { list-style: none; margin: 0; padding: 0; }
@@ -347,8 +359,8 @@
         .hero-badge {
             display: inline-block;
             font-size: 0.76rem;
-            font-weight: 600;
-            letter-spacing: 0.06em;
+            font-weight: 400;
+            letter-spacing: 0.14em;
             color: var(--accent);
             border: 1px solid rgba(176,135,51,0.38);
             background: rgba(255,255,255,0.66);
@@ -375,7 +387,7 @@
             padding: 8px 17px;
             backdrop-filter: blur(6px);
         }
-        .hero-chips li::before { content: "✓"; color: var(--accent); font-weight: 700; margin-right: 7px; }
+        .hero-chips li::before { content: "✓"; color: var(--accent); font-weight: 500; margin-right: 7px; }
         .hero-actions { margin-top: 34px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
         .scroll-hint {
             position: absolute;
@@ -541,8 +553,8 @@
         .genre:hover { transform: translateY(-6px); box-shadow: 0 28px 56px -34px rgba(0,0,0,0.35); border-color: rgba(176,135,51,0.4); }
         .genre:hover::after { opacity: 1; }
         .genre:target { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
-        .genre-no { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.18em; color: var(--accent); }
-        .genre h3 { margin: 12px 0 10px; font-size: 1.3rem; font-weight: 700; letter-spacing: -0.01em; }
+        .genre-no { font-size: 0.72rem; font-weight: 500; letter-spacing: 0.2em; color: var(--accent); }
+        .genre h3 { margin: 12px 0 10px; font-size: 1.3rem; font-weight: 400; letter-spacing: 0.01em; }
         .genre p { margin: 0; font-size: 0.95rem; color: var(--ink-dim); }
 
         /* ---------- Comparison ---------- */
@@ -562,15 +574,15 @@
         }
         table.compare thead th {
             font-size: 0.78rem;
-            font-weight: 600;
-            letter-spacing: 0.06em;
+            font-weight: 500;
+            letter-spacing: 0.1em;
             color: var(--ink-dim);
             background: var(--bg-alt);
         }
         table.compare thead th:last-child { color: var(--accent); }
-        table.compare tbody th { width: 24%; font-weight: 600; }
+        table.compare tbody th { width: 24%; font-weight: 400; }
         table.compare td.old { color: var(--ink-dim); }
-        table.compare td.new { font-weight: 600; background: rgba(176,135,51,0.05); }
+        table.compare td.new { font-weight: 400; color: var(--ink); background: rgba(176,135,51,0.05); }
         table.compare tr:last-child th, table.compare tr:last-child td { border-bottom: 0; }
 
         /* ---------- Process ---------- */
@@ -599,12 +611,12 @@
             background: #fff;
             border: 1px solid var(--line);
             display: flex; align-items: center; justify-content: center;
-            font-size: 0.86rem; font-weight: 700;
+            font-size: 0.86rem; font-weight: 500;
             color: var(--accent);
             transition: transform 0.45s var(--ease), border-color 0.4s ease, box-shadow 0.4s ease;
         }
         .flow-step:hover .flow-dot { transform: scale(1.07); border-color: var(--accent); box-shadow: 0 0 0 6px var(--accent-soft); }
-        .flow-step h3 { margin: 14px 0 8px; font-size: 1.24rem; font-weight: 700; letter-spacing: -0.012em; }
+        .flow-step h3 { margin: 14px 0 8px; font-size: 1.24rem; font-weight: 400; letter-spacing: 0.01em; }
         .flow-step p { margin: 0; color: var(--ink-dim); font-size: 0.99rem; max-width: 640px; }
         .who {
             display: inline-block;
@@ -684,8 +696,8 @@
         .card-link { position: absolute; inset: 0; z-index: 4; }
         .card-link:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
         .card-body { padding: 20px 22px 24px; }
-        .card-body .meta { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.06em; color: var(--accent); }
-        .card-body h3 { margin: 9px 0 0; font-size: 1.1rem; font-weight: 600; letter-spacing: -0.01em; line-height: 1.5; }
+        .card-body .meta { font-size: 0.72rem; font-weight: 500; letter-spacing: 0.12em; color: var(--accent); }
+        .card-body h3 { margin: 9px 0 0; font-size: 1.1rem; font-weight: 400; letter-spacing: 0.01em; line-height: 1.6; }
         .card-body p {
             margin: 8px 0 0; color: var(--ink-dim); font-size: 0.92rem;
             display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
@@ -702,7 +714,7 @@
         .works-note { grid-column: 1/-1; padding: 44px 0; text-align: center; color: var(--ink-dim); }
         .works-actions { margin-top: 46px; display: flex; flex-direction: column; align-items: center; gap: 22px; }
         .more-btn {
-            font: inherit; font-size: 0.95rem; font-weight: 500;
+            font: inherit; font-size: 0.95rem; font-weight: 400; letter-spacing: 0.04em;
             border-radius: 980px; padding: 13px 34px;
             background: transparent; color: var(--ink);
             border: 1px solid rgba(0,0,0,0.2);
@@ -761,8 +773,8 @@
             display: inline-block;
             margin-top: 30px;
             font-size: clamp(1.15rem, 3.4vw, 2.1rem);
-            font-weight: 600;
-            letter-spacing: -0.02em;
+            font-weight: 300;
+            letter-spacing: 0.01em;
             color: #fff;
             border-bottom: 1px solid rgba(255,255,255,0.28);
             padding-bottom: 6px;
@@ -782,12 +794,12 @@
             grid-template-columns: 1.5fr 1fr 1fr 1.2fr;
             gap: 44px;
         }
-        .f-logo { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.01em; }
+        .f-logo { font-size: 1.4rem; font-weight: 500; letter-spacing: 0.01em; }
         .f-logo span { color: var(--accent); }
-        .f-tagline { margin: 12px 0 0; font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
+        .f-tagline { margin: 12px 0 0; font-size: 1rem; font-weight: 400; letter-spacing: 0.01em; }
         .f-note { margin: 10px 0 0; font-size: 0.85rem; color: var(--ink-dim); max-width: 300px; }
         .f-cta { margin-top: 22px; }
-        .f-head { margin: 0 0 15px; font-size: 0.74rem; font-weight: 700; letter-spacing: 0.12em; color: var(--accent); }
+        .f-head { margin: 0 0 15px; font-size: 0.74rem; font-weight: 500; letter-spacing: 0.16em; color: var(--accent); }
         .f-head-gap { margin-top: 28px; }
         .f-list { list-style: none; margin: 0; padding: 0; }
         .f-list li { margin-bottom: 10px; }
@@ -924,7 +936,7 @@
             <p class="eyebrow">Service</p>
             <h2 class="display">私たちの仕事は、<br>ヒアリングと、指示出し。</h2>
             <p class="body-text measure">つくりたい映像の目的、届けたい相手、使う場面、トーン。必要な要件をお客様から伺い、整理します。あとはその内容を AI への指示に落とし込むだけです。</p>
-            <p class="body-text measure">映像の生成も、カット・テロップ・音の編集も、AI が行います。私たちは出てきたものを見て、指示と映像を調整し、納得のいく状態まで詰めてから納品します。撮影という工程そのものが存在しないので、そこにかかっていた時間・人・お金がまるごと不要になります。</p>
+            <p class="body-text measure">映像の生成も、カット・テロップ・音の編集も、AI が行います。出てきたものはお客様と一緒に確認し、いただいたご意見をもとに指示と映像を調整して、納得のいく状態まで詰めてから納品します。撮影という工程そのものが存在しないので、そこにかかっていた時間・人・お金がまるごと不要になります。</p>
             <div class="clink-row">
                 <a class="clink" href="#genres">つくれる動画を見る</a>
                 <a class="clink" href="#process">制作の流れを見る</a>
@@ -1109,9 +1121,9 @@
                 <div class="flow-step">
                     <div class="flow-dot">04</div>
                     <div>
-                        <h3>調整</h3>
-                        <p>出てきた映像を確認し、指示を書き換えて生成し直したり、映像そのものに手を入れたりして精度を上げます。撮り直しは発生しません。</p>
-                        <span class="who">AI ／ so. が指示</span>
+                        <h3>編集チェック</h3>
+                        <p>出てきた映像を、お客様と一緒に確認します。気になった箇所はその場で伺い、指示を書き換えて生成し直したり、映像そのものに手を入れたりして仕上げていきます。撮り直しが発生しないので、納得いただけるまで何度でも調整できます。</p>
+                        <span class="who human">so. ／ お客様</span>
                     </div>
                 </div>
                 <div class="flow-step">
@@ -1123,7 +1135,7 @@
                     </div>
                 </div>
             </div>
-            <p class="flow-note reveal">お客様にご対応いただくのは <strong>01 のヒアリング</strong> と、途中の <strong>確認</strong> だけです。撮影の立ち会いも、出演も、現場対応もありません。</p>
+            <p class="flow-note reveal">お客様にご対応いただくのは <strong>01 のヒアリング</strong> と <strong>04 の編集チェック</strong> だけです。撮影の立ち会いも、出演も、現場対応もありません。</p>
         </div>
     </section>
 
