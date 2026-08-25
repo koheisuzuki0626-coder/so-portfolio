@@ -4,9 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>so. — AI動画制作 | 撮影なし・出演者なしで映像をつくる</title>
-    <meta name="description" content="so. は AI で動画を制作します。撮影日の調整も、社員の顔出しも不要。ヒアリングと AI への指示出しだけで、企画から編集までを完結させて納品します。">
+    <meta name="description" content="出演者の手配も、撮影日の調整も、現場への立ち会いも不要。お願いいただくのは最初のご相談と完成映像の確認だけ。AI で動画を制作する so. のサービスサイトです。">
     <meta property="og:title" content="so. — AI動画制作">
-    <meta property="og:description" content="撮影しない、映像制作。出演者の手配も撮影日の調整も不要です。">
+    <meta property="og:description" content="撮影しない、映像制作。社内調整も現場対応も不要で、修正しても撮り直しになりません。">
     <meta property="og:type" content="website">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -416,6 +416,38 @@
         }
         .statement .display { max-width: 940px; }
         .statement .body-text { margin-top: 32px; font-size: 1.1rem; }
+        /* お客様が受け取る価値を並べる */
+        .values {
+            list-style: none;
+            margin: 54px 0 0;
+            padding: 0;
+            display: grid;
+            /* 4項目なので2列固定。auto-fit だと3列になって空セルができる */
+            grid-template-columns: repeat(2, 1fr);
+            gap: 2px;
+            background: var(--line);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            overflow: hidden;
+        }
+        .values li { background: var(--bg-alt); padding: 30px 28px 32px; }
+        .values h3 {
+            position: relative;
+            margin: 0 0 10px;
+            padding-left: 24px;
+            font-size: 1.1rem;
+            font-weight: 400;
+            letter-spacing: 0.01em;
+        }
+        .values h3::before {
+            content: "";
+            position: absolute;
+            left: 0; top: 0.62em;
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            border: 1.5px solid var(--accent);
+        }
+        .values p { margin: 0; padding-left: 24px; font-size: 0.93rem; color: var(--ink-dim); }
 
         /* ---------- Pinned stages (Apple 風のスクロール連動) ---------- */
         .stage { position: relative; }
@@ -847,6 +879,7 @@
             .menu-inner { grid-template-columns: 1fr; gap: 34px; padding: 28px 22px 60px; }
             .menu-genres { grid-template-columns: 1fr; }
             .genre-grid { grid-template-columns: 1fr; }
+            .values { grid-template-columns: 1fr; }
             .footer-inner { grid-template-columns: 1fr; gap: 36px; padding: 52px 22px 38px; }
             .f-note { max-width: none; }
             .footer-bottom { justify-content: center; text-align: center; padding: 18px 22px; }
@@ -917,7 +950,7 @@
         <div class="hero-inner">
             <p class="hero-badge">AI Video Production</p>
             <h1 class="display">撮影しない、<br><em>映像制作</em>。</h1>
-            <p class="subhead hero-lead">カメラも、スタジオも、出演者も使いません。<br>必要なのは、つくりたい映像についてお話しいただく時間だけです。</p>
+            <p class="subhead hero-lead">出演者の手配も、撮影日の調整も、現場への立ち会いもありません。<br>ご用意いただくのは、つくりたい映像のイメージだけです。</p>
             <ul class="hero-chips">
                 <li>社員の顔出し不要</li>
                 <li>撮影日の調整不要</li>
@@ -934,9 +967,29 @@
     <section class="statement" id="service">
         <div class="wrap reveal">
             <p class="eyebrow">Service</p>
-            <h2 class="display">私たちの仕事は、<br>ヒアリングと、指示出し。</h2>
-            <p class="body-text measure">つくりたい映像の目的、届けたい相手、使う場面、トーン。必要な要件をお客様から伺い、整理します。あとはその内容を AI への指示に落とし込むだけです。</p>
-            <p class="body-text measure">映像の生成も、カット・テロップ・音の編集も、AI が行います。出てきたものはお客様と一緒に確認し、いただいたご意見をもとに指示と映像を調整して、納得のいく状態まで詰めてから納品します。撮影という工程そのものが存在しないので、そこにかかっていた時間・人・お金がまるごと不要になります。</p>
+            <h2 class="display">お願いしたあとは、<br>待っているだけ。</h2>
+            <p class="body-text measure">映像づくりで時間を取られるのは、多くの場合、撮影そのものではなくその周りの調整です。出演者を探し、関係者全員の予定を合わせ、場所と機材を押さえ、当日は現場に立ち会う。so. では、この一連がまるごと発生しません。</p>
+            <p class="body-text measure">お客様にお願いするのは、最初に「どんな映像をつくりたいか」をお話しいただくことと、出来上がった映像を一緒に確認していただくこと。この2つだけです。</p>
+
+            <ul class="values">
+                <li>
+                    <h3>社内調整がいらない</h3>
+                    <p>出演をお願いする相手を探したり、部署をまたいで予定を合わせたりする必要がありません。稟議も通しやすくなります。</p>
+                </li>
+                <li>
+                    <h3>現場に出なくていい</h3>
+                    <p>撮影の立ち会いも、ロケ地や機材の手配もありません。通常業務を止めずに、映像だけが仕上がっていきます。</p>
+                </li>
+                <li>
+                    <h3>遠慮なく直せる</h3>
+                    <p>修正しても再撮影にはならないので、「ここが気になる」を言い出しやすい。納得いくまで詰められます。</p>
+                </li>
+                <li>
+                    <h3>長く使える</h3>
+                    <p>出演者の退職や異動で映像が使えなくなることがありません。内容が変わったら、その箇所だけつくり直せます。</p>
+                </li>
+            </ul>
+
             <div class="clink-row">
                 <a class="clink" href="#genres">つくれる動画を見る</a>
                 <a class="clink" href="#process">制作の流れを見る</a>
@@ -1106,16 +1159,16 @@
                     <div class="flow-dot">02</div>
                     <div>
                         <h3>要件整理</h3>
-                        <p>伺った内容を、構成・尺・トーン・画づくりの方針として整理します。ここで完成イメージをすり合わせます。</p>
-                        <span class="who human">so.</span>
+                        <p>伺った内容を、構成・尺・トーン・画づくりの方針として整理してお出しします。完成イメージをここですり合わせます。</p>
+                        <span class="who">so. が整理</span>
                     </div>
                 </div>
                 <div class="flow-step">
                     <div class="flow-dot">03</div>
                     <div>
-                        <h3>AIへの指示出し・生成</h3>
-                        <p>整理した要件を AI への指示に変換し、映像を生成します。カットの構成やテロップ、音の編集まで AI の工程で完結します。</p>
-                        <span class="who">AI ／ so. が指示</span>
+                        <h3>制作</h3>
+                        <p>すり合わせた内容をもとに、AI で映像をつくります。カットの構成もテロップも音も、この工程で仕上がります。撮影がないので、この間お客様にご対応いただくことはありません。</p>
+                        <span class="who">お客様の作業なし</span>
                     </div>
                 </div>
                 <div class="flow-step">
