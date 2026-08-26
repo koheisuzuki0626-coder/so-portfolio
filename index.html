@@ -682,6 +682,121 @@
             font-size: 0.99rem;
         }
 
+        /* ---------- Plans ---------- */
+        .plans {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            align-items: start;
+        }
+        .plan {
+            position: relative;
+            padding: 40px 32px 38px;
+            border: 1px solid var(--line);
+            border-radius: 20px;
+            background: #fff;
+            transition: transform 0.5s var(--ease), box-shadow 0.5s ease;
+        }
+        .plan:hover { transform: translateY(-5px); box-shadow: 0 26px 54px -34px rgba(0,0,0,0.3); }
+        .plan-featured {
+            border-color: rgba(176,135,51,0.5);
+            box-shadow: 0 20px 50px -32px rgba(0,0,0,0.35);
+        }
+        .plan-badge {
+            position: absolute;
+            top: -13px; left: 50%;
+            transform: translateX(-50%);
+            margin: 0;
+            white-space: nowrap;
+            font-size: 0.72rem;
+            letter-spacing: 0.06em;
+            color: #fff;
+            background: var(--accent-ink);
+            border-radius: 980px;
+            padding: 5px 16px;
+        }
+        .plan-rank {
+            margin: 0;
+            font-size: 1.5rem;
+            font-weight: 300;
+            color: var(--accent-ink);
+            letter-spacing: 0.1em;
+        }
+        .plan-name {
+            margin: 4px 0 20px;
+            font-size: 0.78rem;
+            font-weight: 500;
+            letter-spacing: 0.18em;
+            color: var(--ink-dim);
+        }
+        .plan-price {
+            margin: 0 0 24px;
+            font-size: clamp(1.7rem, 3.2vw, 2.3rem);
+            font-weight: 300;
+            letter-spacing: -0.01em;
+            line-height: 1.2;
+        }
+        .plan-price span { font-size: 0.5em; margin-left: 2px; color: var(--ink-dim); }
+        .plan-spec {
+            list-style: none;
+            margin: 0 0 20px;
+            padding: 20px 0 0;
+            border-top: 1px solid var(--line);
+        }
+        .plan-spec li {
+            display: grid;
+            grid-template-columns: 5.5em 1fr;
+            gap: 4px 10px;
+            align-items: baseline;
+            margin-bottom: 12px;
+            font-size: 0.94rem;
+        }
+        .plan-spec > li > span { color: var(--ink-dim); font-size: 0.86rem; }
+        .plan-spec strong { font-weight: 400; }
+        .plan-spec em {
+            grid-column: 2;
+            font-style: normal;
+            font-size: 0.82rem;
+            color: var(--ink-dim);
+        }
+        .plan-for { margin: 0; font-size: 0.9rem; color: var(--ink-dim); }
+
+        .plan-common {
+            margin-top: 28px;
+            padding: 28px 32px 30px;
+            border-radius: 18px;
+            background: var(--bg-alt);
+            border: 1px solid var(--line);
+        }
+        .plan-common-head {
+            margin: 0 0 16px;
+            font-size: 0.74rem;
+            font-weight: 500;
+            letter-spacing: 0.16em;
+            color: var(--accent-ink);
+        }
+        .plan-common ul {
+            list-style: none;
+            margin: 0; padding: 0;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 10px 28px;
+        }
+        .plan-common li {
+            position: relative;
+            padding-left: 24px;
+            font-size: 0.94rem;
+            color: var(--ink-dim);
+        }
+        .plan-common li::before {
+            content: "";
+            position: absolute;
+            left: 2px; top: 0.62em;
+            width: 9px; height: 9px;
+            border-radius: 50%;
+            border: 1.5px solid var(--accent);
+        }
+
         /* ---------- Works ---------- */
         .grid {
             display: grid;
@@ -891,6 +1006,7 @@
             .menu-genres { grid-template-columns: 1fr; }
             .genre-grid { grid-template-columns: 1fr; }
             .values { grid-template-columns: 1fr; }
+            .plans { grid-template-columns: 1fr; gap: 26px; }
             .footer-inner { grid-template-columns: 1fr; gap: 36px; padding: 52px 22px 38px; }
             .f-note { max-width: none; }
             .footer-bottom { justify-content: center; text-align: center; padding: 18px 22px; }
@@ -924,6 +1040,7 @@
             <a class="nav-item" href="#why">撮影しない理由</a>
             <a class="nav-item" href="#process">制作の流れ</a>
             <a class="nav-item" href="#works">実績</a>
+            <a class="nav-item" href="#plans">料金</a>
         </div>
 
         <div class="nav-end">
@@ -950,6 +1067,7 @@
                     <li><a href="#why">撮影しない理由</a></li>
                     <li><a href="#process">制作の流れ</a></li>
                     <li><a href="#works">制作実績</a></li>
+                    <li><a href="#plans">料金プラン</a></li>
                     <li><a href="#contact">お問い合わせ</a></li>
                 </ul>
             </div>
@@ -1223,6 +1341,65 @@
         </div>
     </section>
 
+
+    <section class="section" id="plans">
+        <div class="wrap">
+            <div class="section-head reveal">
+                <p class="eyebrow">Plans</p>
+                <h2 class="headline">料金プラン。</h2>
+                <p class="body-text measure">映像の尺と納品本数でお選びいただけます。表示は税別の目安です。内容によって前後しますので、まずはご相談ください。</p>
+            </div>
+
+            <div class="plans reveal-stagger">
+                <article class="plan">
+                    <p class="plan-rank">梅</p>
+                    <h3 class="plan-name">Light</h3>
+                    <p class="plan-price">¥100,000<span>〜</span></p>
+                    <ul class="plan-spec">
+                        <li><span>尺</span><strong>〜30秒</strong></li>
+                        <li><span>納品本数</span><strong>1本</strong></li>
+                    </ul>
+                    <p class="plan-for">SNS投稿や、まず1本試してみたい場合に。</p>
+                </article>
+
+                <article class="plan plan-featured">
+                    <p class="plan-badge">いちばん選ばれています</p>
+                    <p class="plan-rank">竹</p>
+                    <h3 class="plan-name">Standard</h3>
+                    <p class="plan-price">¥250,000<span>〜</span></p>
+                    <ul class="plan-spec">
+                        <li><span>尺</span><strong>〜60秒</strong></li>
+                        <li><span>納品本数</span><strong>2本</strong><em>本編＋SNS用の縦型</em></li>
+                    </ul>
+                    <p class="plan-for">会社紹介やサービス紹介など、一通り伝えたい場合に。</p>
+                </article>
+
+                <article class="plan">
+                    <p class="plan-rank">松</p>
+                    <h3 class="plan-name">Premium</h3>
+                    <p class="plan-price">¥450,000<span>〜</span></p>
+                    <ul class="plan-spec">
+                        <li><span>尺</span><strong>〜90秒</strong></li>
+                        <li><span>納品本数</span><strong>3本</strong><em>本編＋縦型＋短縮版</em></li>
+                    </ul>
+                    <p class="plan-for">展示会・採用・広告など、複数の場面で使い回したい場合に。</p>
+                </article>
+            </div>
+
+            <div class="plan-common reveal">
+                <p class="plan-common-head">どのプランにも含まれます</p>
+                <ul>
+                    <li>ヒアリングと構成のご提案</li>
+                    <li>編集チェック（回数の上限なし）</li>
+                    <li>テロップ・BGM</li>
+                    <li>出演者の手配費・撮影費は一切かかりません</li>
+                </ul>
+            </div>
+
+            <p class="flow-note reveal">尺や本数がこの区分に当てはまらない場合も対応できます。「こういう映像を、この予算で」というかたちでご相談ください。</p>
+        </div>
+    </section>
+
     <section class="cta-band" id="contact">
         <div class="wrap reveal">
             <p class="eyebrow">Contact</p>
@@ -1261,6 +1438,7 @@
                     <li><a href="#why">Why AI — 撮影しない理由</a></li>
                     <li><a href="#process">Process — 制作の流れ</a></li>
                     <li><a href="#works">Works — 制作実績</a></li>
+                    <li><a href="#plans">Plans — 料金プラン</a></li>
                     <li><a href="#contact">Contact — お問い合わせ</a></li>
                 </ul>
             </nav>
