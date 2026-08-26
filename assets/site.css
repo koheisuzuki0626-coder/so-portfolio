@@ -609,6 +609,17 @@ h1, h2, h3, .display, .headline, .subhead { text-wrap: balance; }
 .page-head { padding: calc(var(--nav-h, 61px) + clamp(72px, 11vw, 132px)) 0 clamp(56px, 8vw, 92px); }
 .page-head .display { max-width: 940px; }
 
+/* 代表メッセージ */
+.msg { max-width: 720px; }
+.msg-body p { margin: 0 0 22px; font-size: 1.02rem; line-height: 1.95; }
+.msg-body p:last-child { margin-bottom: 0; }
+.msg-sign { margin: 36px 0 0; font-size: 0.9rem; color: var(--ink-dim); }
+.msg-sign::before {
+    content: "";
+    display: block; width: 34px; height: 1px;
+    background: var(--line); margin-bottom: 18px;
+}
+
 /* ---------- Genres (bento) ---------- */
 .genre-grid {
     display: grid;
