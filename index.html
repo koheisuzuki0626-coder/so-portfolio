@@ -745,6 +745,31 @@
         }
         .plan-price span { font-size: 0.5em; margin-left: 2px; color: var(--ink-dim); }
         .plan-price { white-space: nowrap; }
+        .plan-basis {
+            margin: -16px 0 24px;
+            font-size: 0.8rem;
+            color: var(--ink-dim);
+        }
+        .plan-example {
+            margin: 20px 0 0;
+            border-collapse: collapse;
+            font-size: 0.92rem;
+        }
+        .plan-example caption {
+            text-align: left;
+            padding-bottom: 8px;
+            font-size: 0.82rem;
+            color: var(--ink-dim);
+        }
+        .plan-example th {
+            font-weight: 400;
+            text-align: left;
+            padding: 7px 28px 7px 0;
+            color: var(--ink-dim);
+            white-space: nowrap;
+        }
+        .plan-example td { padding: 7px 0; white-space: nowrap; }
+
         .plan-spec {
             list-style: none;
             margin: 0 0 20px;
@@ -1350,7 +1375,7 @@
             <div class="section-head reveal">
                 <p class="eyebrow">Plans</p>
                 <h2 class="headline">料金プラン。</h2>
-                <p class="body-text measure">料金は<strong>合計の尺</strong>で決まります。上限の本数までなら、1本にまとめても用途別に分けても料金は変わりません。表示は税別の目安です。</p>
+                <p class="body-text measure">料金は<strong>合計の尺</strong>で決まります。分割して納品する場合は、本数のぶんだけ構成とチェックの回数が増えるため、2本目以降を加算します。表示は税別の目安です。</p>
             </div>
 
             <div class="plans reveal-stagger">
@@ -1358,6 +1383,7 @@
                     <p class="plan-rank">梅</p>
                     <h3 class="plan-name">Light</h3>
                     <p class="plan-price">¥100,000<span>〜</span></p>
+                    <p class="plan-basis">1本にまとめた場合</p>
                     <ul class="plan-spec">
                         <li><span>合計の尺</span><strong>〜30秒</strong></li>
                         <li><span>本数</span><strong>2本まで</strong></li>
@@ -1370,6 +1396,7 @@
                     <p class="plan-rank">竹</p>
                     <h3 class="plan-name">Standard</h3>
                     <p class="plan-price">¥250,000<span>〜</span></p>
+                    <p class="plan-basis">1本にまとめた場合</p>
                     <ul class="plan-spec">
                         <li><span>合計の尺</span><strong>〜90秒</strong></li>
                         <li><span>本数</span><strong>4本まで</strong></li>
@@ -1381,6 +1408,7 @@
                     <p class="plan-rank">松</p>
                     <h3 class="plan-name">Premium</h3>
                     <p class="plan-price">¥450,000<span>〜</span></p>
+                    <p class="plan-basis">1本にまとめた場合</p>
                     <ul class="plan-spec">
                         <li><span>合計の尺</span><strong>〜3分</strong></li>
                         <li><span>本数</span><strong>6本まで</strong></li>
@@ -1390,8 +1418,17 @@
             </div>
 
             <div class="plan-note reveal">
-                <p class="plan-note-head">本数で料金は変わりません</p>
-                <p>たとえば松プランなら、3分の映像を1本つくっても、45秒の映像を4本つくっても同じ料金です。上限の本数までであれば、用途ごとに分けたい・SNS用に短く切り出したいといったご要望に追加費用はかかりません。上限を超える場合はご相談ください。</p>
+                <p class="plan-note-head">2本以上に分ける場合</p>
+                <p>合計の尺が同じでも、本数が増えるほど構成を考える回数も、確認していただく回数も増えます。そのぶんとして <strong>2本目以降は1本につき ¥30,000</strong> を加算します。上限の本数を超える場合はご相談ください。</p>
+                <table class="plan-example">
+                    <caption>松プラン（合計3分）の場合</caption>
+                    <tbody>
+                        <tr><th scope="row">3分 × 1本</th><td>¥450,000</td></tr>
+                        <tr><th scope="row">90秒 × 2本</th><td>¥480,000</td></tr>
+                        <tr><th scope="row">45秒 × 4本</th><td>¥540,000</td></tr>
+                        <tr><th scope="row">30秒 × 6本</th><td>¥600,000</td></tr>
+                    </tbody>
+                </table>
             </div>
 
             <div class="plan-common reveal">
