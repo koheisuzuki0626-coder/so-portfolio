@@ -356,7 +356,11 @@
                         <div><dt id="calc-cnt-dt">本数 1本</dt><dd id="calc-cntfee">¥0</dd></div>
                     </dl>
                     <p class="calc-lead">納品目安 <strong id="calc-lead-v">約2週間</strong></p>
-                    <a href="#contact" class="pill pill-solid calc-cta">この内容で相談する</a>
+                    <div class="calc-actions">
+                        <a href="mailto:bonvoyage.ti@icloud.com" class="pill pill-solid calc-cta" id="calc-mail">この内容で相談する</a>
+                        <button type="button" class="calc-copy" id="calc-copy">内容をコピー</button>
+                    </div>
+                    <p class="calc-note" id="calc-copy-msg">メールソフトが開き、選んだ内容が本文に入ります。</p>
                 </div>
             </div>
 
@@ -677,6 +681,12 @@
             const cntHint = document.getElementById('calc-cnt-hint');
             let sec = 30;
             let count = 1;
+            let summary = '';
+
+            // 送信先はお問い合わせ欄のリンクを唯一の出どころにする(二重管理を避ける)
+            const mailLink = document.getElementById('calc-mail');
+            const mailAddr = (document.querySelector('.cta-mail')?.getAttribute('href') || '')
+                .replace(/^mailto:/, '') || mailLink.getAttribute('href').replace(/^mailto:/, '');
 
             // 実物のラジオボタンで組む。丸が見えることで「選ぶところ」だと分かる
             function makeOpt(text, box, group, value, onPick) {
@@ -739,7 +749,62 @@
                     : `本数 ${count}本（2本目以降 ${count - 1}本）`;
                 document.getElementById('calc-cntfee').textContent = yen(cntFee);
                 document.getElementById('calc-lead-v').textContent = leadTime(sec);
+
+                summary = [
+                    'so. の料金シミュレーターから送信しています。',
+                    '下記の内容でご相談させてください。',
+                    '',
+                    '■ 選んだ内容',
+                    `・合計の尺：${lenLabel}`,
+                    `・本数：${count}本`,
+                    `・概算金額：${yen(total)}（税別）`,
+                    `・納品目安：${leadTime(sec)}`,
+                    '',
+                    '■ 内訳',
+                    `・基本料金：${yen(PRICE.base)}`,
+                    `・尺 ${lenLabel} × ${yen(PRICE.perSec)}：${yen(lenFee)}`,
+                    `・本数 ${count}本：${yen(cntFee)}`,
+                    '',
+                    '■ ご記入ください',
+                    '・会社名 / お名前：',
+                    '・映像の用途：',
+                    '・ご希望の公開時期：',
+                    '・参考にしたい映像やURL：',
+                    '・そのほかご要望：',
+                ].join('\r\n');
+
+                const subject = `動画制作のご相談（${lenLabel} × ${count}本）`;
+                mailLink.href = `mailto:${mailAddr}`
+                    + `?subject=${encodeURIComponent(subject)}`
+                    + `&body=${encodeURIComponent(summary)}`;
             }
+
+            // メールソフトが開かない環境向けに、同じ本文をコピーできるようにする
+            const copyBtn = document.getElementById('calc-copy');
+            const copyMsg = document.getElementById('calc-copy-msg');
+            const defaultMsg = copyMsg.textContent;
+            let msgTimer;
+            copyBtn.addEventListener('click', async () => {
+                let ok = false;
+                try {
+                    await navigator.clipboard.writeText(summary);
+                    ok = true;
+                } catch {
+                    const ta = document.createElement('textarea');
+                    ta.value = summary;
+                    ta.setAttribute('readonly', '');
+                    ta.style.cssText = 'position:fixed;top:-9999px';
+                    document.body.append(ta);
+                    ta.select();
+                    try { ok = document.execCommand('copy'); } catch { ok = false; }
+                    ta.remove();
+                }
+                copyMsg.textContent = ok
+                    ? 'コピーしました。メールに貼り付けてお送りください。'
+                    : 'コピーできませんでした。お手数ですが手入力でお願いします。';
+                clearTimeout(msgTimer);
+                msgTimer = setTimeout(() => { copyMsg.textContent = defaultMsg; }, 4000);
+            });
 
             document.querySelectorAll('.calc-preset').forEach((b) => {
                 b.addEventListener('click', () => {

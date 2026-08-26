@@ -1010,7 +1010,21 @@ table.compare tr:last-child th, table.compare tr:last-child td { border-bottom: 
 .calc-break dd { margin: 0; font-size: 0.95rem; white-space: nowrap; }
 .calc-lead { margin: 20px 0 0; font-size: 0.94rem; color: var(--ink-dim); }
 .calc-lead strong { color: var(--ink); font-weight: 500; }
-.calc-cta { margin-top: auto; align-self: flex-start; margin-top: 26px; }
+.calc-actions { margin-top: auto; padding-top: 26px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
+.calc-cta { flex: none; }
+.calc-copy {
+    font: inherit;
+    font-size: 0.92rem;
+    background: none;
+    border: 0;
+    padding: 4px 2px;
+    color: var(--accent-ink);
+    border-bottom: 1px solid rgba(133,100,32,0.35);
+    cursor: pointer;
+}
+.calc-copy:hover { border-bottom-color: var(--accent-ink); }
+.calc-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.calc-note { margin: 12px 0 0; font-size: 0.86rem; color: var(--ink-dim); min-height: 2.6em; }
 
 .calc-why { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
 .calc-why li { font-size: 0.95rem; color: var(--ink-dim); }
