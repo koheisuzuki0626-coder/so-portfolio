@@ -586,6 +586,39 @@
         .section-alt { background: var(--bg-alt); }
         .section-head { margin-bottom: 56px; }
 
+        /* ---------- About ---------- */
+        .about-lead { max-width: 780px; }
+        .about-grid {
+            margin-top: clamp(48px, 6vw, 72px);
+            display: grid;
+            grid-template-columns: 1.1fr 1fr;
+            gap: clamp(36px, 5vw, 76px);
+            align-items: start;
+        }
+        .about-points { list-style: none; margin: 0; padding: 0; display: grid; gap: 30px; }
+        .about-points li { position: relative; padding-left: 28px; }
+        .about-points li::before {
+            content: "";
+            position: absolute; left: 0; top: 0.72em;
+            width: 14px; height: 1px; background: var(--accent);
+        }
+        .about-points h3 { font-size: 1.08rem; font-weight: 500; margin: 0 0 8px; letter-spacing: 0.01em; }
+        .about-points p { margin: 0; font-size: 0.95rem; color: var(--ink-dim); }
+
+        .about-facts-head {
+            font-size: 0.78rem; letter-spacing: 0.16em; text-transform: uppercase;
+            color: var(--accent-ink); margin: 0 0 18px;
+        }
+        .about-facts { margin: 0; border-top: 1px solid var(--line); }
+        .about-facts > div {
+            display: grid; grid-template-columns: 6.5em 1fr; gap: 18px;
+            padding: 15px 0; border-bottom: 1px solid var(--line);
+        }
+        .about-facts dt { font-size: 0.82rem; color: var(--ink-dim); }
+        .about-facts dd { margin: 0; font-size: 0.94rem; }
+        .about-facts a { color: var(--accent-ink); text-decoration: none; border-bottom: 1px solid rgba(133,100,32,0.35); }
+        .about-facts a:hover { border-bottom-color: var(--accent-ink); }
+
         /* ---------- Genres (bento) ---------- */
         .genre-grid {
             display: grid;
@@ -1056,6 +1089,7 @@
         @media (max-width: 1000px) {
             .genre-grid { grid-template-columns: repeat(2, 1fr); }
             .genre, .genre:nth-child(1), .genre:nth-child(2), .genre:nth-child(6), .genre:nth-child(7) { grid-column: span 1; }
+            .about-grid { grid-template-columns: 1fr; }
             .stage-grid { grid-template-columns: 1fr; gap: 34px; }
             .stack { display: none; }
             .stage-track { height: 190vh; }
@@ -1483,6 +1517,41 @@
         </div>
     </section>
 
+    <section class="section section-alt" id="about">
+        <div class="wrap reveal">
+            <p class="eyebrow">About</p>
+            <h2 class="display">つくりたい映像を、<br>いちばん短い道で。</h2>
+            <p class="lead-line about-lead">so. は、AI で映像をつくる制作会社です。撮影も、出演者も、スタジオも使いません。お客様のお話をうかがい、AI に組み立てさせ、一緒に確認しながら仕上げてお渡しします。</p>
+
+            <div class="about-grid">
+                <ul class="about-points">
+                    <li>
+                        <h3>撮影を前提にしない</h3>
+                        <p>出演者の手配も、撮影日の調整も、ロケハンもありません。ご相談から納品までが日単位で進みます。</p>
+                    </li>
+                    <li>
+                        <h3>固まっていなくても始められる</h3>
+                        <p>完成イメージを言葉で詰めきる必要はありません。実際の映像を見ながら3回まで調整できるので、見てから決められます。</p>
+                    </li>
+                    <li>
+                        <h3>毎日、自分たちで試している</h3>
+                        <p>自社の YouTube チャンネルで AI 映像をつくり続け、いま何が表現できて何ができないかを確かめています。ご提案はその実感にもとづいています。</p>
+                    </li>
+                </ul>
+
+                <div>
+                    <p class="about-facts-head">会社概要</p>
+                    <dl class="about-facts">
+                        <div><dt>屋号</dt><dd>so.</dd></div>
+                        <div><dt>事業内容</dt><dd>AI を用いた映像の企画・生成・編集・納品</dd></div>
+                        <div><dt>対応領域</dt><dd>商品紹介／サービス紹介／採用／会社案内／SNS 広告 ほか</dd></div>
+                        <div><dt>連絡先</dt><dd><a href="mailto:bonvoyage.ti@icloud.com">bonvoyage.ti@icloud.com</a></dd></div>
+                        <div><dt>制作事例</dt><dd><a href="https://www.youtube.com/@hzrinrng" target="_blank" rel="noopener">YouTube チャンネル ↗</a></dd></div>
+                    </dl>
+                </div>
+            </div>
+        </div>
+    </section>
 
     <section class="cta-band" id="contact">
         <div class="wrap reveal">
@@ -1523,6 +1592,7 @@
                     <li><a href="#process">Process — 制作の流れ</a></li>
                     <li><a href="#works">Works — 制作実績</a></li>
                     <li><a href="#plans">Plans — 料金プラン</a></li>
+                    <li><a href="#about">About — so. について</a></li>
                     <li><a href="#contact">Contact — お問い合わせ</a></li>
                 </ul>
             </nav>
