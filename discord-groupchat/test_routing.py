@@ -126,6 +126,10 @@ ROUTE_CASES = [
     ("この画像どこで撮ったの？", "plan", {"has_last_gen": True}),
     ("何が写ってるの？", "plan", {"has_last_gen": True}),
     ("動画どこ？", "status", {"has_job": True}),          # URLの催促は従来どおり
+    # 「意味ある？」「価値ある？」は助詞の「が」が話し言葉で落ちた疑問文で、
+    # 状態確認ではない（実際に完成済み動画のURLを返していた・08-26 16:09）
+    ("ai動画生成のYouTubeをリサーチしてなんか意味ある？", "plan", {"has_last_gen": True}),
+    ("この動画作る価値ある？", "plan", {"has_last_gen": True}),
     # 作り直し（明示マーカーがあれば記録の有無に関わらず発動＝Higgsfieldから復元）
     ("もう一回作り直して、顔をアップで", "revise", {"has_last_gen": True}),
     ("さっきの動画もう少し明るくして", "revise", {"has_last_gen": True}),
