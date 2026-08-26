@@ -325,76 +325,62 @@
             <div class="section-head reveal">
                 <p class="eyebrow">Plans</p>
                 <h2 class="headline">料金プラン。</h2>
-                <p class="body-text measure">料金は<strong>合計の尺</strong>で決まります。分割して納品する場合は、本数のぶんだけ構成とチェックの回数が増えるため、2本目以降を加算します。表示は税別の目安です。</p>
+                <p class="body-text measure">料金は <strong>基本料金 ＋ 合計の尺 ＋ 本数</strong> の3つだけで決まります。尺と本数を選ぶと、その場で金額が出ます。表示は税別です。</p>
             </div>
 
-            <div class="plans reveal-stagger">
-                <article class="plan">
-                    <p class="plan-rank">梅</p>
-                    <h3 class="plan-name">Light</h3>
-                    <p class="plan-price">¥180,000<span>〜</span></p>
-                    <p class="plan-basis">1本にまとめた場合</p>
-                    <ul class="plan-spec">
-                        <li><span>合計の尺</span><strong>〜30秒</strong></li>
-                        <li><span>本数</span><strong>2本まで</strong></li>
-                        <li><span>納品目安</span><strong>約2週間</strong></li>
-                    </ul>
-                    <p class="plan-for">SNS投稿や、まず1本試してみたい場合に。</p>
-                </article>
+            <div class="calc reveal">
+                <div class="calc-picks">
+                    <div class="calc-row">
+                        <p class="calc-label" id="calc-len-label">合計の尺</p>
+                        <div class="calc-opts" role="group" aria-labelledby="calc-len-label" id="calc-len"></div>
+                    </div>
+                    <div class="calc-row">
+                        <p class="calc-label" id="calc-cnt-label">本数</p>
+                        <div class="calc-opts" role="group" aria-labelledby="calc-cnt-label" id="calc-cnt"></div>
+                        <p class="calc-hint" id="calc-cnt-hint"></p>
+                    </div>
+                    <div class="calc-presets">
+                        <span class="calc-presets-head">よくある組み合わせ</span>
+                        <button type="button" class="calc-preset" data-len="30" data-cnt="1"><b>梅</b>30秒 × 1本</button>
+                        <button type="button" class="calc-preset" data-len="90" data-cnt="1"><b>竹</b>90秒 × 1本</button>
+                        <button type="button" class="calc-preset" data-len="180" data-cnt="1"><b>松</b>3分 × 1本</button>
+                    </div>
+                </div>
 
-                <article class="plan plan-featured">
-                    <p class="plan-badge">いちばん選ばれています</p>
-                    <p class="plan-rank">竹</p>
-                    <h3 class="plan-name">Standard</h3>
-                    <p class="plan-price">¥390,000<span>〜</span></p>
-                    <p class="plan-basis">1本にまとめた場合</p>
-                    <ul class="plan-spec">
-                        <li><span>合計の尺</span><strong>〜90秒</strong></li>
-                        <li><span>本数</span><strong>4本まで</strong></li>
-                        <li><span>納品目安</span><strong>約3週間</strong></li>
-                    </ul>
-                    <p class="plan-for">会社紹介やサービス紹介など、一通り伝えたい場合に。</p>
-                </article>
-
-                <article class="plan">
-                    <p class="plan-rank">松</p>
-                    <h3 class="plan-name">Premium</h3>
-                    <p class="plan-price">¥710,000<span>〜</span></p>
-                    <p class="plan-basis">1本にまとめた場合</p>
-                    <ul class="plan-spec">
-                        <li><span>合計の尺</span><strong>〜3分</strong></li>
-                        <li><span>本数</span><strong>6本まで</strong></li>
-                        <li><span>納品目安</span><strong>約4週間</strong></li>
-                    </ul>
-                    <p class="plan-for">展示会・採用・広告など、複数の場面で使い分けたい場合に。</p>
-                </article>
+                <div class="calc-out">
+                    <p class="calc-out-head">お見積り</p>
+                    <p class="calc-total"><span id="calc-total">¥180,000</span><small>税別</small></p>
+                    <dl class="calc-break">
+                        <div><dt>基本料金</dt><dd id="calc-base">¥75,000</dd></div>
+                        <div><dt id="calc-len-dt">尺 30秒 × ¥3,500</dt><dd id="calc-lenfee">¥105,000</dd></div>
+                        <div><dt id="calc-cnt-dt">本数 1本</dt><dd id="calc-cntfee">¥0</dd></div>
+                    </dl>
+                    <p class="calc-lead">納品目安 <strong id="calc-lead-v">約2週間</strong></p>
+                    <a href="#contact" class="pill pill-solid calc-cta">この内容で相談する</a>
+                </div>
             </div>
 
             <div class="plan-note reveal">
-                <p class="plan-note-head">2本以上に分ける場合</p>
-                <p>合計の尺が同じでも、本数が増えるほど構成を考える回数も、確認していただく回数も増えます。そのぶんとして <strong>2本目以降は1本につき ¥60,000</strong> を加算します。上限の本数を超える場合はご相談ください。</p>
-                <table class="plan-example">
-                    <caption>松プラン（合計3分）の場合</caption>
-                    <tbody>
-                        <tr><th scope="row">3分 × 1本</th><td>¥710,000</td></tr>
-                        <tr><th scope="row">90秒 × 2本</th><td>¥770,000</td></tr>
-                        <tr><th scope="row">45秒 × 4本</th><td>¥890,000</td></tr>
-                        <tr><th scope="row">30秒 × 6本</th><td>¥1,010,000</td></tr>
-                    </tbody>
-                </table>
+                <p class="plan-note-head">金額の内訳</p>
+                <ul class="calc-why">
+                    <li><b>基本料金 ¥75,000</b>ヒアリング・構成案づくり・進行管理。30秒でも3分でも同じだけかかる部分です。</li>
+                    <li><b>1秒あたり ¥3,500</b>映像の生成・選別・編集。ここだけが尺に比例します。</li>
+                    <li><b>2本目以降 1本につき ¥60,000</b>合計の尺が同じでも、本数が増えれば構成案もご確認も本数ぶん必要になります。</li>
+                </ul>
+                <p class="calc-formula" aria-label="料金の計算式">¥75,000 ＋ ¥3,500 × 合計秒数 ＋ ¥60,000 × (本数 − 1)</p>
             </div>
 
             <div class="plan-common reveal">
-                <p class="plan-common-head">どのプランにも含まれます</p>
+                <p class="plan-common-head">どの組み合わせにも含まれます</p>
                 <ul>
-                    <li>ヒアリングと構成のご提案</li>
+                    <li>ヒアリングと構成案のご提案</li>
                     <li>編集チェック（3回まで）</li>
                     <li>テロップ・BGM</li>
                     <li>出演者の手配費・撮影費は一切かかりません</li>
                 </ul>
             </div>
 
-            <p class="flow-note reveal">3分を超える場合も、合計の秒数でお見積りします。「こういう映像を、この予算で」というかたちでご相談ください。</p>
+            <p class="flow-note reveal">3分を超える場合や、本数の上限を超える場合も、同じ考え方でお見積りします。「こういう映像を、この予算で」というかたちでご相談ください。</p>
         </div>
     </section>
 
@@ -659,6 +645,99 @@
             const target = id && document.getElementById(id);
             if (target) settleRevealFor(target);
         }, true);
+
+        /* ---------- 料金シミュレーター ----------
+           料金 = 基本料金 + 秒単価×秒数 + 本数加算×(本数-1)
+           工数 = 4.8h      + 0.24h×秒数  + 4h×(本数-1)
+           3つの項がどれも時間単価 ¥14,600〜15,700 に収まるよう決めてあるので、
+           お客様がどの組み合わせを選んでも採算が崩れない。
+           数字を動かすときは e2e の「どの組み合わせでも時間単価が保たれる」を必ず通すこと。 */
+        const PRICE = { base: 75000, perSec: 3500, perExtra: 60000 };
+        const LENGTHS = [
+            { sec: 15,  label: '15秒' },
+            { sec: 30,  label: '30秒' },
+            { sec: 45,  label: '45秒' },
+            { sec: 60,  label: '60秒' },
+            { sec: 90,  label: '90秒' },
+            { sec: 120, label: '2分' },
+            { sec: 180, label: '3分' },
+        ];
+        // 1本あたりが短くなりすぎないよう、尺に応じて本数の上限を決める
+        const countCap = (sec) => (sec <= 30 ? 2 : sec <= 90 ? 4 : 6);
+        const leadTime = (sec) => (sec <= 30 ? '約2週間' : sec <= 90 ? '約3週間' : '約4週間');
+        const yen = (n) => `¥${n.toLocaleString('ja-JP')}`;
+
+        const calc = document.querySelector('.calc');
+        if (calc) {
+            const lenBox = document.getElementById('calc-len');
+            const cntBox = document.getElementById('calc-cnt');
+            const cntHint = document.getElementById('calc-cnt-hint');
+            let sec = 30;
+            let count = 1;
+
+            function makeBtn(text, box) {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'calc-opt';
+                b.textContent = text;
+                b.setAttribute('aria-pressed', 'false');
+                box.append(b);
+                return b;
+            }
+
+            LENGTHS.forEach(({ sec: s, label }) => {
+                const b = makeBtn(label, lenBox);
+                b.dataset.sec = String(s);
+                b.addEventListener('click', () => { sec = s; render(); });
+            });
+            for (let n = 1; n <= 6; n += 1) {
+                const b = makeBtn(`${n}本`, cntBox);
+                b.dataset.count = String(n);
+                b.addEventListener('click', () => { count = n; render(); });
+            }
+
+            function render() {
+                const cap = countCap(sec);
+                if (count > cap) count = cap;
+
+                lenBox.querySelectorAll('.calc-opt').forEach((b) => {
+                    b.setAttribute('aria-pressed', String(Number(b.dataset.sec) === sec));
+                });
+                cntBox.querySelectorAll('.calc-opt').forEach((b) => {
+                    const n = Number(b.dataset.count);
+                    b.disabled = n > cap;
+                    b.setAttribute('aria-pressed', String(n === count));
+                });
+                cntHint.textContent = cap < 6
+                    ? `合計${LENGTHS.find((l) => l.sec === sec).label}なら${cap}本までお選びいただけます。1本あたりが短くなりすぎないようにしています。`
+                    : '';
+
+                const lenFee = PRICE.perSec * sec;
+                const cntFee = PRICE.perExtra * (count - 1);
+                const total = PRICE.base + lenFee + cntFee;
+                const lenLabel = LENGTHS.find((l) => l.sec === sec).label;
+
+                document.getElementById('calc-total').textContent = yen(total);
+                document.getElementById('calc-base').textContent = yen(PRICE.base);
+                document.getElementById('calc-len-dt').textContent = `尺 ${lenLabel} × ${yen(PRICE.perSec)}`;
+                document.getElementById('calc-lenfee').textContent = yen(lenFee);
+                document.getElementById('calc-cnt-dt').textContent = count === 1
+                    ? '本数 1本'
+                    : `本数 ${count}本（2本目以降 ${count - 1}本）`;
+                document.getElementById('calc-cntfee').textContent = yen(cntFee);
+                document.getElementById('calc-lead-v').textContent = leadTime(sec);
+            }
+
+            document.querySelectorAll('.calc-preset').forEach((b) => {
+                b.addEventListener('click', () => {
+                    sec = Number(b.dataset.len);
+                    count = Number(b.dataset.cnt);
+                    render();
+                });
+            });
+
+            render();
+        }
 
         document.getElementById('year').textContent = new Date().getFullYear();
 
