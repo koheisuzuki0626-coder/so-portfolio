@@ -433,11 +433,27 @@
             padding: clamp(96px, 14vw, 190px) 0;
         }
         .statement .display { max-width: 940px; }
-        .statement .body-text { margin-top: 32px; font-size: 1.1rem; }
+        .statement .body-text { margin-top: 44px; font-size: 1.02rem; }
+        .lead-line {
+            max-width: 760px;
+            margin: 30px 0 0;
+            font-size: clamp(1.06rem, 1.7vw, 1.32rem);
+            font-weight: 400;
+            line-height: 1.75;
+            color: var(--ink);
+        }
+        .lead-line strong { font-weight: 500; color: var(--accent-ink); }
+        .values-head {
+            margin: 54px 0 18px;
+            font-size: 0.78rem;
+            font-weight: 500;
+            letter-spacing: 0.14em;
+            color: var(--accent-ink);
+        }
         /* お客様が受け取る価値を並べる */
         .values {
             list-style: none;
-            margin: 54px 0 0;
+            margin: 0;
             padding: 0;
             display: grid;
             /* 4項目なので2列固定。auto-fit だと3列になって空セルができる */
@@ -448,12 +464,12 @@
             border-radius: 18px;
             overflow: hidden;
         }
-        .values li { background: var(--bg-alt); padding: 30px 28px 32px; }
+        .values li { background: #fff; padding: 34px 32px 36px; }
         .values h3 {
             position: relative;
-            margin: 0 0 10px;
-            padding-left: 24px;
-            font-size: 1.1rem;
+            margin: 0 0 12px;
+            padding-left: 26px;
+            font-size: 1.26rem;
             font-weight: 400;
             letter-spacing: 0.01em;
         }
@@ -465,7 +481,7 @@
             border-radius: 50%;
             border: 1.5px solid var(--accent);
         }
-        .values p { margin: 0; padding-left: 24px; font-size: 0.93rem; color: var(--ink-dim); }
+        .values p { margin: 0; padding-left: 26px; font-size: 0.95rem; color: var(--ink-dim); }
 
         /* ---------- Pinned stages (Apple 風のスクロール連動) ---------- */
         .stage { position: relative; }
@@ -1130,9 +1146,9 @@
             <h1 class="display">撮影しない、<br><em>映像制作</em>。</h1>
             <p class="subhead hero-lead">出演者の手配も、撮影日の調整も、現場への立ち会いもありません。<br>ご用意いただくのは、つくりたい映像のイメージだけです。</p>
             <ul class="hero-chips">
-                <li>社員の顔出し不要</li>
-                <li>撮影日の調整不要</li>
-                <li>ロケ・機材の手配不要</li>
+                <li>社内調整がいらない</li>
+                <li>現場に出なくていい</li>
+                <li>撮り直しが発生しない</li>
             </ul>
             <div class="hero-actions">
                 <a href="#contact" class="pill pill-solid">相談してみる</a>
@@ -1146,9 +1162,9 @@
         <div class="wrap reveal">
             <p class="eyebrow">Service</p>
             <h2 class="display">お願いしたあとは、<br>待っているだけ。</h2>
-            <p class="body-text measure">出演をお願いする相手を探す。関係者全員の予定を合わせる。場所と機材を押さえる。当日は現場に立ち会う。映像を1本つくるたびに、お客様の手元ではこれだけの作業が発生していたはずです。so. にご依頼いただくと、その一つひとつがそのままなくなります。</p>
-            <p class="body-text measure">お客様にお願いするのは、最初に「どんな映像をつくりたいか」をお話しいただくことと、出来上がった映像を一緒に確認していただくこと。この2つだけです。</p>
+            <p class="lead-line">お客様にお願いするのは、最初に「どんな映像をつくりたいか」をお話しいただくことと、出来上がった映像を一緒に確認していただくこと。<strong>この2つだけです。</strong></p>
 
+            <p class="values-head">ご依頼いただくと、こう変わります</p>
             <ul class="values">
                 <li>
                     <h3>社内調整がいらない</h3>
@@ -1167,6 +1183,8 @@
                     <p>出演者の退職や異動で映像が使えなくなることがありません。内容が変わったら、その箇所だけつくり直せます。</p>
                 </li>
             </ul>
+
+            <p class="body-text measure">出演をお願いする相手を探す。関係者全員の予定を合わせる。場所と機材を押さえる。当日は現場に立ち会う。映像を1本つくるたびに、お客様の手元ではこれだけの作業が発生していたはずです。so. にご依頼いただくと、その一つひとつがそのままなくなります。</p>
 
             <div class="clink-row">
                 <a class="clink" href="#genres">つくれる動画を見る</a>
