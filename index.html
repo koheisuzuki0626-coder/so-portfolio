@@ -331,12 +331,12 @@
             <div class="calc reveal">
                 <div class="calc-picks">
                     <div class="calc-row">
-                        <p class="calc-label" id="calc-len-label">合計の尺</p>
-                        <div class="calc-opts" role="group" aria-labelledby="calc-len-label" id="calc-len"></div>
+                        <p class="calc-label" id="calc-len-label"><span class="calc-step">1</span>合計の尺を選ぶ</p>
+                        <div class="calc-opts" role="radiogroup" aria-labelledby="calc-len-label" id="calc-len"></div>
                     </div>
                     <div class="calc-row">
-                        <p class="calc-label" id="calc-cnt-label">本数</p>
-                        <div class="calc-opts" role="group" aria-labelledby="calc-cnt-label" id="calc-cnt"></div>
+                        <p class="calc-label" id="calc-cnt-label"><span class="calc-step">2</span>何本に分けるかを選ぶ</p>
+                        <div class="calc-opts" role="radiogroup" aria-labelledby="calc-cnt-label" id="calc-cnt"></div>
                         <p class="calc-hint" id="calc-cnt-hint"></p>
                     </div>
                     <div class="calc-presets">
@@ -675,38 +675,48 @@
             let sec = 30;
             let count = 1;
 
-            function makeBtn(text, box) {
-                const b = document.createElement('button');
-                b.type = 'button';
-                b.className = 'calc-opt';
-                b.textContent = text;
-                b.setAttribute('aria-pressed', 'false');
-                box.append(b);
-                return b;
+            // 実物のラジオボタンで組む。丸が見えることで「選ぶところ」だと分かる
+            function makeOpt(text, box, group, value, onPick) {
+                const label = document.createElement('label');
+                label.className = 'calc-opt';
+                const input = document.createElement('input');
+                input.type = 'radio';
+                input.name = group;
+                input.value = String(value);
+                const dot = document.createElement('span');
+                dot.className = 'calc-dot';
+                dot.setAttribute('aria-hidden', 'true');
+                const text_ = document.createElement('span');
+                text_.className = 'calc-opt-t';
+                text_.textContent = text;
+                label.append(input, dot, text_);
+                input.addEventListener('change', () => { if (input.checked) onPick(); });
+                box.append(label);
+                return { label, input };
             }
 
             LENGTHS.forEach(({ sec: s, label }) => {
-                const b = makeBtn(label, lenBox);
-                b.dataset.sec = String(s);
-                b.addEventListener('click', () => { sec = s; render(); });
+                const o = makeOpt(label, lenBox, 'calc-len', s, () => { sec = s; render(); });
+                o.label.dataset.sec = String(s);
+                o.input.dataset.sec = String(s);
             });
             for (let n = 1; n <= 6; n += 1) {
-                const b = makeBtn(`${n}本`, cntBox);
-                b.dataset.count = String(n);
-                b.addEventListener('click', () => { count = n; render(); });
+                const o = makeOpt(`${n}本`, cntBox, 'calc-cnt', n, () => { count = n; render(); });
+                o.label.dataset.count = String(n);
+                o.input.dataset.count = String(n);
             }
 
             function render() {
                 const cap = countCap(sec);
                 if (count > cap) count = cap;
 
-                lenBox.querySelectorAll('.calc-opt').forEach((b) => {
-                    b.setAttribute('aria-pressed', String(Number(b.dataset.sec) === sec));
+                lenBox.querySelectorAll('input').forEach((i) => {
+                    i.checked = Number(i.dataset.sec) === sec;
                 });
-                cntBox.querySelectorAll('.calc-opt').forEach((b) => {
-                    const n = Number(b.dataset.count);
-                    b.disabled = n > cap;
-                    b.setAttribute('aria-pressed', String(n === count));
+                cntBox.querySelectorAll('input').forEach((i) => {
+                    const n = Number(i.dataset.count);
+                    i.disabled = n > cap;
+                    i.checked = n === count;
                 });
                 cntHint.textContent = cap < 6
                     ? `合計${LENGTHS.find((l) => l.sec === sec).label}なら${cap}本までお選びいただけます。1本あたりが短くなりすぎないようにしています。`
