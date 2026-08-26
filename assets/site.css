@@ -719,6 +719,14 @@ table.compare tr:last-child th, table.compare tr:last-child td { border-bottom: 
 .flow-step:hover .flow-dot { transform: scale(1.07); border-color: var(--accent); box-shadow: 0 0 0 6px var(--accent-soft); }
 .flow-step h3 { margin: 14px 0 8px; font-size: 1.24rem; font-weight: 400; letter-spacing: 0.01em; }
 .flow-step p { margin: 0; color: var(--ink-2); font-size: 1.02rem; max-width: 640px; }
+/* 各工程の所要日数。本文より先に目に入るよう見出しの直下に置く */
+.flow-step .step-days {
+    margin: 0 0 10px;
+    font-size: 0.86rem;
+    font-weight: 400;
+    color: var(--accent-ink);
+    letter-spacing: 0.02em;
+}
 .who {
     display: inline-block;
     margin-top: 14px;
