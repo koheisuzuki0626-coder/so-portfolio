@@ -5888,6 +5888,37 @@ def _r_explain_question(c):
         return STOP_CHAT
 
 
+# 「作ったものの在り処」を聞く語。進捗そのものを聞く語（できた・まだ等）と
+# 違い、これらは【指せる生成物がある】前提でしか成り立たない。
+_STATUS_WHERE_RE = re.compile(r"^(どこ|見れる|見せて|見たい|url|ＵＲＬ)$", re.I)
+# 文中で過去の生成物を指している言い方。フラグが立っていなくても、
+# 「さっき生成した動画見れる？」は在り処を聞いている。
+_REFERS_PAST_GEN_RE = re.compile(
+    "さっき|先ほど|さきほど|この前|前に|さっきの|"
+    "作った|つくった|生成した|できてた|出来てた")
+
+
+def _asks_where_but_general(c):
+    """在り処ワードで状態確認になっているが、実際は一般的な質問。
+
+    事故（2026-08-27）：「動画制作とかでデータをやり取りする時はどこに
+    データまとめておくの？」が、『動画』（文脈語）と『どこ』（状態語）の
+    2語だけで進捗確認と判定され、作った動画の在り処を答えようとして
+    まったく噛み合わなかった。聞かれているのは一般的なやり方であって、
+    生成物の置き場ではない。
+    """
+    kw = (c.status_kw.group(0) if c.status_kw else "").strip()
+    if not _STATUS_WHERE_RE.match(kw):
+        return False                       # 進捗語（できた等）はここで扱わない
+    if _REFERS_PAST_GEN_RE.search(c.text):
+        return False                       # 「さっき作ったやつ」＝指す先が文中にある
+    if not (c.has_job or c.has_last_gen or c.has_running):
+        return True                        # 指せる生成物が無い＝在り処の話ではない
+    # 生成物はあっても、長い問いかけは一般論を聞いている
+    # （「動画のURLどこ？」のような短い確認だけを状態確認に残す）
+    return bool(c.is_question and not c.short_ask)
+
+
 def _r_status(c):
     """生成物の状態確認（添付なし・状態ワード・文脈）。
     「作って」「作り直して」など生成・修正の依頼は状態確認にしない
@@ -5898,6 +5929,7 @@ def _r_status(c):
             and not re.search(
                 "作って|作りたい|つくって|生成して|作成して|描いて|アニメ化", c.text)
             and not _CONTENT_Q_RE.search(c.text)   # 中身への質問は会話へ
+            and not _asks_where_but_general(c)     # 一般的な質問は会話へ
             and not c.revise_like()):
         return "status"
 
