@@ -786,11 +786,12 @@ def _running_note(cid):
 class _Clock:
     """作業の開始時刻を持つ札。承認待ちを挟む作業では、承認が下りた時点で
     打ち直す（人が返事をするまでの時間を作業時間に混ぜると実測が狂うため）。"""
-    __slots__ = ("t", "measurable")
+    __slots__ = ("t", "measurable", "awaiting")
 
     def __init__(self, t, measurable=True):
         self.t = t
         self.measurable = measurable    # 実測として記録してよいか
+        self.awaiting = False           # 人の返事待ち（ボットは動いていない）
 
 
 def _clock_start(v):
@@ -810,6 +811,29 @@ def _defer_measure():
     c = _current_clock.get()
     if isinstance(c, _Clock):
         c.measurable = False
+
+
+def _pause_for_reply():
+    """ここから先は【本人の返事待ち】。ボットは何もしていない。
+
+    事故（2026-08-27）：「受け取り口作って」の計画を出して承認を待つあいだ、
+    ⏳「エージェント実行」続行中（90秒経過…361秒経過／過去最長を超えています）
+    が流れ続けた。待っているのは本人の返事なのに、処理が長引いているように
+    見え、しかもその考える時間が所要時間の実測として記録されていた。
+    """
+    c = _current_clock.get()
+    if isinstance(c, _Clock):
+        c.awaiting = True
+        c.measurable = False
+
+
+def _resume_after_reply():
+    """返事が来て実作業が始まった合図。ここから計り直す。"""
+    c = _current_clock.get()
+    if isinstance(c, _Clock):
+        c.t = time.time()
+        c.measurable = True
+        c.awaiting = False
 
 
 def _gen_task_name(job):
@@ -843,6 +867,11 @@ async def _heartbeat(cid, context, every=90):
             busy = dict(_busy_tasks(cid))
             if context not in busy:
                 return
+            # 本人の返事待ちの間は黙る。ボットは動いていないので
+            # 「続行中（◯秒経過）」は嘘になる（承認を促す文は別に出ている）。
+            v = (_running.get(cid) or {}).get(context)
+            if isinstance(v, _Clock) and v.awaiting:
+                continue
             try:
                 await send_as(orch, cid,
                               f"⏳ 「{context}」続行中（{_eta_text(context, busy[context])}）")
@@ -9291,7 +9320,8 @@ async def _start_agent(message, cid, content):
         "🛠 コードを触る作業ですね。プランを作ります…"
         "（[✅許可]で実行 / [❌拒否]で中止）"
     )
-    _spawn(_run_agent_task(cid, content, message.author.id), cid, "エージェント実行")
+    _spawn(_run_agent_task(cid, content, message.author.id), cid,
+           "エージェント実行", gated=True)
 
 
 # 連投をまとめる待ち時間。人が続けて打つ間隔より少し長く取る。
@@ -10792,12 +10822,16 @@ async def run_claude_agent(cid, task, owner_id):
         承認された【その計画】をそのまま実行する。"""
         await send_as(orch, cid, _strip_cli_boilerplate(await _exec_now())[:1900])
 
+    # ここから先はボットではなく本人の返事待ち。途中経過を流さず、
+    # 考えていた時間を作業の実測に混ぜない。
+    _pause_for_reply()
     approved = await _await_approval(
         cid, fut, what=f"エージェント実行（{task[:40]}）", resume=_resume)
     if not approved:
         return _stopped_note(cid, "エージェント実行")
 
     # ③ 承認 → 実行（承認済みのためフル権限）
+    _resume_after_reply()
     return await _exec_now()
 
 
@@ -11522,7 +11556,8 @@ async def _cmd_agent(message, cid, arg):
         )
         return
     await message.channel.send(f"🤖 エージェント開始: {arg}")
-    _spawn(_run_agent_task(cid, arg, message.author.id), cid, "エージェント実行")
+    _spawn(_run_agent_task(cid, arg, message.author.id), cid,
+           "エージェント実行", gated=True)
 
 
 async def _cmd_profile(message, cid, arg):
