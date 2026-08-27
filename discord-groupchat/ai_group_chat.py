@@ -4401,6 +4401,12 @@ async def _cut_one_clip(src, rows, clip, idx, workdir):
 # 何が足りなくて始められないのかを覚えておき、「やって」で先に進める。
 _pending_do = {}
 PENDING_DO_SEC = 3600
+# 素材待ちは【会話が別の話題に移ったら失効させる】。時間だけで見ていると、
+# 話が変わったあとの「OK」まで拾ってしまう。
+# 事故（2026-08-28）：00:30 に立った「何を・どの素材でやるか」待ちが、
+# その後30分ぶんのGoogle Drive／OAuth／.env のやり取りを挟んだ 01:00 の
+# 「OK」を横取りし、.env の作業を承認したつもりが動画素材を求められた。
+PENDING_DO_TURNS = 3
 _BARE_GO_RE = re.compile(
     r"^(やって|やろう|お願い(します)?|おねがい|進めて|すすめて|"
     r"始めて|はじめて|go|ゴー|実行|やっちゃって|よろしく|"
@@ -4422,12 +4428,22 @@ _ICLOUD_LINK_RE = re.compile(r"https?://(?:www\.)?icloud\.com/iclouddrive/\S+", 
 
 def _set_pending_do(cid, need, hint=""):
     """『あと何があれば始められるか』を覚える。"""
-    _pending_do[cid] = {"need": need, "hint": hint, "t": time.time()}
+    _pending_do[cid] = {"need": need, "hint": hint, "t": time.time(),
+                        "seq": _fired_seq.get(cid, 0)}
 
 
 def _get_pending_do(cid):
+    """まだ有効な素材待ちだけを返す。
+
+    時間内でも、そのあと会話が何度も別の方へ進んでいるなら、
+    「OK」はその新しい話への返事であって素材待ちの続きではない。
+    """
     d = _pending_do.get(cid)
-    return d if d and time.time() - d["t"] < PENDING_DO_SEC else None
+    if not d or time.time() - d["t"] >= PENDING_DO_SEC:
+        return None
+    if _fired_seq.get(cid, 0) - d.get("seq", 0) > PENDING_DO_TURNS:
+        return None                     # 話題が移った＝この待ちはもう関係ない
+    return d
 
 
 async def _spotlight_find(name):
