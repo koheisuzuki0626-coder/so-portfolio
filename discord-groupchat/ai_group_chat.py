@@ -6281,6 +6281,15 @@ def _r_generate(c):
         # 自動選定へ流さない（クレジットを勝手に使わないため）。
         if _hf_blocked() and not _HF_NAMED_RE.search(c.text):
             return None
+        # 添付【だけ】を根拠に生成へ流さない。本文が自分の作業の完了報告なら、
+        # その添付は素材ではなく報告のスクショ。
+        # 事故（2026-08-27）：Googleドライブの設定中に、作った画面のスクショを
+        # 貼って「作成まで終わった」と送ったら、生成依頼として扱われた。
+        # 添付は「これで何かして」の意思表示、という前提が、報告には当たらない。
+        if (not auto_kw and not media_noun
+                and (c.has_image_att or c.has_video_att)
+                and _SELF_DONE_RE.search(c.text)):
+            return None
         return "hf_auto"
 
 
