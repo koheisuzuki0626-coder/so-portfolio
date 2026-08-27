@@ -109,3 +109,45 @@ npx http-server -p 8777 .        # http://127.0.0.1:8777 で確認
 自動掲載を使わず手で管理したいときは、ワークフローを無効化(Actions 画面から Disable)して
 `index.html` の `#works-grid` 内のカードを直接編集してください。
 `data/videos.json` の `videos` が空なら、書いた内容がそのまま表示されます。
+
+## スマホから作業する(Claude Code の Remote Control)
+
+サイトの機能ではなく、このリポジトリを編集する側の設定です。
+PC で動かしている Claude Code のセッションを、そのままスマホから見て操作できるようにします。
+
+```bash
+node scripts/setup-remote-control.mjs
+```
+
+`~/.claude/settings.json` に次の3つを書き込みます(既存の設定は保持し、`.bak` を残します)。
+
+| キー | 効果 | |
+|------|------|---|
+| `inputNeededNotifEnabled` | 許可を求められたとき・質問されたときスマホに通知 | **最重要** |
+| `agentPushNotifEnabled` | 長い処理が終わったらスマホに通知 | 重要 |
+| `remoteControlAtStartup` | `claude` と打つだけで毎回スマホに繋がる | 接続の土台 |
+
+通知のうち `inputNeededNotifEnabled` がいちばん効きます。Claude Code は許可を求める場面で
+**返事があるまで完全に止まる**ため、これが無いと「席を離れている間ずっと停止していた」が起きます。
+逆にこれさえ入れておけば、止まった瞬間にスマホが鳴り、その場で許可を出して先に進められます。
+
+| オプション | 動作 |
+|-----------|------|
+| `--dry-run` | 何が変わるか表示するだけ。書き込まない |
+| `--check` | 環境の確認だけ。繋がらないときの原因調べに使う |
+| `--off` | 3つを `false` に戻す |
+
+実行後は Claude Code を起動し直してください。入力欄の下に `/rc active` と出れば接続済みです。
+スマホは Claude アプリ(iOS / Android)の下部 **Code** タブにセッションが並びます
+(PCアイコン＋緑の点＝オンライン)。アプリが未インストールなら Claude Code 内で `/mobile` と打つと QR が出ます。
+
+### 繋がらないとき
+
+`--check` が挙げる環境変数(`ANTHROPIC_API_KEY` / `DISABLE_TELEMETRY` / `ANTHROPIC_BASE_URL` など)が
+1つでも立っていると Remote Control は起動しません。先にそれを解除してください。
+認証は claude.ai アカウント(`claude auth login`)が必要で、APIキー認証では使えません。
+
+なお **PC の `claude` プロセスが動いている間だけ**繋がります。ターミナルを閉じるとオフラインになるので、
+閉じても維持したい場合は `tmux` や `screen` の中で起動してください。
+
+> このスクリプトはサイトの表示には一切関係しません。設定が済んだら消してしまっても構いません。
