@@ -6080,12 +6080,33 @@ def _r_channel_stats(c):
         return "ch_stats"
 
 
+# 「ログ」だけを拾うと、ログイン・ログアウトの一部にも当たる。
+_LOG_WORD_RE = re.compile(r"(ログ|log)(?!イン|in\b|アウト|out\b)", re.I)
+# 依頼の語。単独では弱いので「ログ」と隣り合っている時だけ効かせる。
+_LOG_ASK_VERB = ("送って|送っと|送信|共有|出して|上げて|あげて|渡して|見せて|"
+                 "ちょうだい|ください|くれ")
+# 「ログ（を）送って」のように、ログと依頼の語が隣り合っている形。
+_SHARELOG_ASK_RE = re.compile(
+    r"(デバッグ|debug)?\s*(ログ|log)(?!イン|in\b|アウト|out\b)"
+    r"\s*[、,]?\s*(を|は|も|の)?\s*[、,]?\s*(" + _LOG_ASK_VERB + ")",
+    re.I)
+
+
 def _r_sharelog(c):
-    """デバッグログの共有（スクショを撮らずに開発側へ状況を渡す）。"""
-    if re.search("ログ|log", c.text, re.I) and re.search(
-        "送って|送っと|送信|共有|出して|上げて|あげて|渡して|見せて|"
-        "ちょうだい|ください|くれ", c.text
-    ) and not re.search("消して|削除", c.text):
+    """デバッグログの共有（スクショを撮らずに開発側へ状況を渡す）。
+
+    事故（2026-08-27）：ボットの案内文をコピペで貼り付けて「ここから
+    わからない」と聞いたら、貼り付けた文中の「ログイン」の“ログ”と
+    「〜してください」の“ください”が【離れた位置で】揃ってしまい、
+    質問に答えずログを吐いた。長文の中に両方あるだけでは依頼ではない。
+    """
+    if re.search("消して|削除", c.text):
+        return None
+    if _SHARELOG_ASK_RE.search(c.text):
+        return "sharelog"
+    # 短い一言は従来どおり緩く拾う（「ログ、ちょうだい」等）
+    if (len(c.text.strip()) <= 20 and _LOG_WORD_RE.search(c.text)
+            and re.search(_LOG_ASK_VERB, c.text)):
         return "sharelog"
 
 
