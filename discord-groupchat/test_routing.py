@@ -3435,6 +3435,98 @@ def run():
     check("ログに記録された", tmp.exists() and "テスト例外です" in tmp.read_text(), True)
     check("直近エラー取得", "test-context" in bot._recent_errors(), True)
 
+    print("■ 鍵の受け取り口（値をログにもGitHubにも残さない）")
+    # 事故のもと：このボットは会話ログを10分おきにGitHubへpushする。
+    # 「鍵登録 …」を普通の発言として通すと、シークレットが公開リポジトリに載る。
+    check("鍵登録で始まれば拾う", bot._is_key_register("鍵登録 FOO_ID abc123"), True)
+    check("全角スペースでも拾う", bot._is_key_register("鍵登録　FOO_ID abc123"), True)
+    check("2行まとめても拾う",
+          bot._is_key_register("鍵登録 A_ID x\n鍵登録 A_SECRET y"), True)
+    # 形が崩れていても【拾って止める】。ここで漏らすのが一番まずい。
+    check("形が崩れていても止める", bot._is_key_register("鍵登録"), True)
+    check("普通の会話は拾わない", bot._is_key_register("鍵の話をしたい"), False)
+    check("文中の鍵登録は拾わない", bot._is_key_register("あとで鍵登録するね"), False)
+    check("2行ぶん取り出せる",
+          bot._key_registrations("鍵登録 A_ID xxx\n鍵登録 A_SECRET yyy"),
+          [("A_ID", "xxx"), ("A_SECRET", "yyy")])
+    check("名前が変な形なら取らない", bot._key_registrations("鍵登録 1BAD x"), [])
+    check("値だけなら取らない", bot._key_registrations("鍵登録 A_ID"), [])
+    _env_tmp = _plX.Path(tempfile.mkdtemp()) / ".env"
+    _env_real = bot.ENV_FILE
+    bot.ENV_FILE = _env_tmp            # 本物の .env を絶対に触らない
+    try:
+        _env_tmp.write_text("OTHER=keep\nTEST_KEY_A=old\nTEST_KEY_A=dup\n",
+                            encoding="utf-8")
+        bot._env_set([("TEST_KEY_A", "new1"), ("TEST_KEY_B", "new2")])
+        _rows = _env_tmp.read_text(encoding="utf-8").splitlines()
+        check("既存の別の行は残る", "OTHER=keep" in _rows, True)
+        check("同じ名前は置き換わる", "TEST_KEY_A=new1" in _rows, True)
+        check("重複した行は消える", _rows.count("TEST_KEY_A=old"), 0)
+        check("重複した行は1本になる",
+              len([r for r in _rows if r.startswith("TEST_KEY_A=")]), 1)
+        check("新しい名前は足される", "TEST_KEY_B=new2" in _rows, True)
+        check("このプロセスにも入る", os.environ.get("TEST_KEY_B"), "new2")
+    finally:
+        bot.ENV_FILE = _env_real
+        os.environ.pop("TEST_KEY_A", None)
+        os.environ.pop("TEST_KEY_B", None)
+    # 受け取り口は、履歴にもログにも書く【前】に打ち切ること。
+    _disp = bot_src()
+    _disp = _disp[_disp.index("async def _dispatch_message"):]
+    _disp = _disp[:_disp.index("_is_key_register(content)")]
+    check("鍵登録の判定より前で履歴に書いていない",
+          "add_history" in _disp, False)
+    check("鍵登録の判定より前でログ共有していない",
+          "_autoshare_log" in _disp, False)
+
+    print("■ 外部フォルダ（HDD）の読み取り：許可した場所の中しか読まない")
+    _hdd_root = _plX.Path(tempfile.mkdtemp()) / "元データ"
+    (_hdd_root / "sub").mkdir(parents=True)
+    (_hdd_root / "a.mp4").write_bytes(b"x" * 10)
+    (_hdd_root / "sub" / "b.mov").write_bytes(b"y" * 20)
+    (_hdd_root / "memo.txt").write_text("not a video", encoding="utf-8")
+    _outside = _hdd_root.parent / "他"
+    _outside.mkdir()
+    (_outside / "c.mp4").write_bytes(b"z" * 30)
+    _ext_real = bot.EXT_READ_DIRS
+    bot.EXT_READ_DIRS = [str(_hdd_root)]
+    try:
+        check("許可フォルダ自身は読める", bot._ext_allowed(_hdd_root), True)
+        check("その中も読める", bot._ext_allowed(_hdd_root / "sub" / "b.mov"), True)
+        check("外は読めない", bot._ext_allowed(_outside / "c.mp4"), False)
+        # 「挿さっているのに読めない」（macOSのフルディスクアクセス未許可）を
+        # 「繋がっていません」と混同すると、挿さっているHDDを挿し直させ続ける。
+        check("読める時は ok", bot._ext_state(_hdd_root), "ok")
+        check("無い時は missing", bot._ext_state(_hdd_root / "nope"), "missing")
+        _hdd_root.chmod(0o000)
+        try:
+            check("あるのに読めない時は denied",
+                  bot._ext_state(_hdd_root), "denied")
+        finally:
+            _hdd_root.chmod(0o755)
+        check("親をたどっても読めない", bot._ext_allowed(_hdd_root.parent), False)
+        _n, _total, _files = bot._ext_scan(_hdd_root, bot.EXT_MEDIA_EXTS)
+        check("動画だけ数える（txtは除く）", _n, 2)
+        check("合計サイズ", _total, 30)
+        # 許可していない場所は、実在していても中身を返さない
+        check("許可外は何も返さない", bot._ext_scan(_outside, bot.EXT_MEDIA_EXTS),
+              (0, 0, []))
+    finally:
+        bot.EXT_READ_DIRS = _ext_real
+
+    print("■ HDDの話：中身を聞かれた時だけ実際に見に行く")
+    for _t in ("HDDの中身見せて", "HDD繋がってる？", "外付けの一覧出して",
+               "hddに動画何本ある？", "ハードディスクの容量教えて"):
+        check(f"実物を見る: {_t!r}", bot._asks_ext_dirs(_t), True)
+    # 「読めるようにして」は【機能を作る依頼】。いまの中身を返しても噛み合わない
+    # （08-28 実際の発言：「今すぐ受け取り口作ろう、あとHDDの読み込みも
+    #  できるようにしたい」）。
+    for _t in ("HDDの読み込みもできるようにしたい",
+               "HDD読めるようにして",
+               "おれのHDDに過去の会社紹介動画とか大量にあるから吸わせたい",
+               "外付けHDD買おうか迷ってる"):
+        check(f"実物を見に行かない: {_t!r}", bot._asks_ext_dirs(_t), False)
+
     print("■ テストが本物の記録を汚していないこと")
     # 事故（2026-08-21）：テストを流すたびに本物の history/errors.log へ
     # 偽のエラーが書かれ、ボットは再起動のたびに自己テストを流すので、

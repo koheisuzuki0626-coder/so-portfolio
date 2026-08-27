@@ -33,6 +33,7 @@ MESSAGE CONTENT INTENT はオーケストレーター用にだけONにすれば�
   ・Agent（ClaudeとGeminiを同じ形で扱う）
   ・Web検索：Google（Geminiグラウンディング）優先・DDGフォールバック
   ・添付ファイル処理（画像・動画・音声）
+  ・受け取り口（鍵の登録）と外部フォルダの読み取り（HDD）
   ・画像生成（絵コンテ用・Gemini優先で無料枠を活用）
   ・生成モデルの実行時切替（Discordの発言で変更・再起動後も保持）
   ・会話モデル（claude CLI）の切替
@@ -1823,6 +1824,11 @@ BOT_CAPABILITIES = (
     "字幕が付いていない動画は、音声から文字起こしして字幕を自分で作る。"
     "生成モデルを使わないのでクレジットは消費しない\n"
     "・自己改修・再起動・ログ共有／会話モデルの切替\n"
+    "・鍵の受け取り口＝Discordで『鍵登録 <名前> <値>』と送ると、"
+    "中身をログにもチャンネルにも残さずMacの .env へ入れる（発言は自動削除）\n"
+    "・外付けHDDなど、許可された外部フォルダを【読み取り専用】で見られる。"
+    "『HDDの中身見せて』で、繋がっているか・動画が何本か・合計容量・"
+    "ファイル名を実際に見て答える（書き込み・削除はしない）\n"
     "【どれで作るかの既定】\n"
     "・図・表・相関図・年表・サムネ・バナーなど【文字が主役】のもの＝"
     "クロードがHTMLで組んでPNGに書き出す（無料・文字が崩れない）\n"
@@ -2538,6 +2544,274 @@ def _detect_mime_type(data):
         return "image/webp"
     else:
         return "image/jpeg"  # デフォルト
+
+
+# ---------- 受け取り口（鍵の登録）と外部フォルダの読み取り（HDD） ----------
+# 【受け取り口】APIの鍵をDiscordで受け取って .env へ入れる。入院中はスマホしか
+# 使えずMacのターミナルを開けないので、鍵をMacへ運ぶ経路がここしか無い。
+# ただしこのボットは会話ログを10分おきにGitHubへ push する作りなので、
+# 普通に貼るとシークレットがそのまま公開リポジトリに載る。だから
+# 「鍵登録」で始まる発言は【会話にもログにも一切渡さない】で先に処理し、
+# Discord上の発言そのものも消す。返事にも値を書かない（返事もログに載るため）。
+#
+# 【外部フォルダ】外付けHDDの事例フォルダを【読むだけ】できるようにする。
+# 「つながっているか」「何本あるか」は調べれば分かる事実なので、AIに推測
+# させず実際に見て答える（08-28：HDDの中身を一度も見ないまま話が進んだ）。
+
+ENV_FILE = Path(BASE_DIR) / ".env"
+
+# 「鍵登録 <名前> <値>」。名前は環境変数として妥当な形だけ受ける
+# （何が来ても .env の1行にしかならないようにするため）。
+# 値は空白を含まない1語＝鍵・トークンの類はすべてこの形。
+_KEY_CMD_RE = re.compile(r"^\s*(?:鍵登録|かぎ登録|キー登録|鍵の登録)")
+_KEY_LINE_RE = re.compile(
+    r"^\s*(?:鍵登録|かぎ登録|キー登録|鍵の登録)[\s　:：=]+"
+    r"([A-Za-z_][A-Za-z0-9_]{0,63})[\s　:：=]+(\S+)\s*$")
+
+
+def _is_key_register(content):
+    """「鍵登録」で始まる行があるか。真なら【中身をどこにも残さない】。
+
+    形が合っているかはここでは見ない。形が崩れている時こそ値が生のまま
+    会話・履歴・GitHubのログへ流れるので、判定は先頭の語だけで行う。"""
+    return any(_KEY_CMD_RE.match(ln) for ln in (content or "").splitlines())
+
+
+def _key_registrations(content):
+    """「鍵登録 <名前> <値>」の行を全部取り出す。返り値 [(名前, 値), ...]。
+    1通で2行送っても、1行ずつ送っても同じように受ける。"""
+    out = []
+    for ln in (content or "").splitlines():
+        m = _KEY_LINE_RE.match(ln)
+        if m:
+            out.append((m.group(1), m.group(2)))
+    return out
+
+
+def _env_set(pairs):
+    """.env に `名前=値` を書く（同じ名前があれば置き換え）。書けた名前だけ返す。
+
+    値は返り値にも例外にも出さない。os.environ にも入れるので、再起動を
+    待たずにこのプロセスから使える。"""
+    path = Path(ENV_FILE)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    for name, value in pairs:
+        hit = [i for i, ln in enumerate(lines)
+               if re.match(r"^\s*(?:export\s+)?" + re.escape(name) + r"\s*=", ln)]
+        if hit:
+            lines[hit[0]] = f"{name}={value}"
+            for i in reversed(hit[1:]):     # 重複していたら1本にまとめる
+                del lines[i]
+        else:
+            lines.append(f"{name}={value}")
+        os.environ[name] = value
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)               # 本人以外に読ませない
+    except OSError:
+        pass
+    return [n for n, _ in pairs]
+
+
+KEY_REG_USAGE = (
+    "🔐 鍵の受け取り口の使い方（値はログにもDiscordにも残しません）\n"
+    "```\n鍵登録 somethingfun_CLIENT_ID ここにID\n"
+    "鍵登録 somethingfun_CLIENT_SECRET ここにシークレット\n```\n"
+    "・名前は英数字と `_` だけ（先頭は英字か `_`）\n"
+    "・値に空白は入れられません\n"
+    "・2行まとめて送っても、1行ずつ送っても大丈夫です"
+)
+
+
+# 読んでよい外部フォルダ（外付けHDDなど）。**読むだけ**で、書き込み・削除は
+# 一切しない。増やすときは .env の EXT_READ_DIRS に「:」区切りで並べる。
+EXT_READ_DIRS = [
+    p.strip() for p in os.getenv(
+        "EXT_READ_DIRS",
+        "/Volumes/1/サムシングファン/02_その他/03_事例/元データ",
+    ).split(":") if p.strip()
+]
+# 事例フォルダで数えたい素材の種類（過去の会社紹介動画）。
+EXT_MEDIA_EXTS = SUPPORTED_VIDEO_TYPES | {
+    ".mkv", ".m4v", ".mpg", ".mpeg", ".wmv", ".mts", ".m2ts", ".mxf"}
+
+
+def _ext_roots():
+    return [Path(p) for p in EXT_READ_DIRS]
+
+
+def _ext_state(root):
+    """そのフォルダの今の状態。"ok" / "missing"（繋がっていない）/
+    "denied"（あるのに読めない）のどれかを返す。
+
+    この2つを区別すること。macOSは外付けボリュームへのアクセスに許可が要り、
+    許可が無いと【マウントされているのに読めない】。ここを一緒くたに
+    「繋がっていません」と言うと、挿さっているHDDを何度も挿し直させる。"""
+    try:
+        if not Path(root).is_dir():
+            return "missing"
+        return "ok" if os.access(str(root), os.R_OK) else "denied"
+    except OSError:
+        return "missing"
+
+
+def _ext_mounted(root):
+    """そのフォルダを今この場で読めるか。HDDは抜ければ読めなくなるので、
+    「あるはず」ではなく毎回その場で確かめる。"""
+    return _ext_state(root) == "ok"
+
+
+def _ext_allowed(path):
+    """このパスを読んでよいか。許可フォルダとその【中】だけ真。
+    実体のパスで見るので、シンボリックリンクで外へ抜けられない。"""
+    try:
+        p = Path(path).resolve()
+    except OSError:
+        return False
+    for root in _ext_roots():
+        try:
+            r = Path(root).resolve()
+        except OSError:
+            continue
+        if p == r or r in p.parents:
+            return True
+    return False
+
+
+def _human_bytes(n):
+    """バイト数を人が読める単位にする。"""
+    n = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f}B" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+
+
+def _ext_scan(root, exts=None, limit=3000):
+    """許可フォルダの中を数える（読むだけ）。
+    返り値: (件数, 合計バイト, [(相対パス, バイト), ...])。
+    許可されていないパスは、実在していても何も返さない。"""
+    root = Path(root)
+    if not _ext_allowed(root):
+        return 0, 0, []
+    files, total = [], 0
+    try:
+        found = sorted(root.rglob("*"))
+    except OSError:
+        return 0, 0, []
+    for p in found:
+        if len(files) >= limit:
+            break
+        try:
+            if p.name.startswith(".") or not p.is_file():
+                continue
+            if exts and p.suffix.lower() not in exts:
+                continue
+            size = p.stat().st_size
+        except OSError:
+            continue
+        total += size
+        files.append((str(p.relative_to(root)), size))
+    return len(files), total, files
+
+
+async def _ext_report(show_files=True):
+    """外部フォルダの状態と中身を、実際に見て文章にする（推測で答えない）。"""
+    if not EXT_READ_DIRS:
+        return ("読み取りを許可した外部フォルダがありません。"
+                "`.env` の `EXT_READ_DIRS` にパスを入れてください。")
+    lines = ["📀 **外付けHDD（読み取り専用）**"]
+    for root in _ext_roots():
+        st = _ext_state(root)
+        if st == "missing":
+            lines.append(
+                f"❌ `{root}`\n"
+                "　いま**つながっていません**。HDDを挿すか、"
+                "スリープでボリュームが外れていないか確認してください。")
+            continue
+        if st == "denied":
+            lines.append(
+                f"⚠️ `{root}`\n"
+                "　HDDは**挿さっていますが、読む許可がありません**"
+                "（挿し直しても直りません）。\n"
+                "　Macの【システム設定 ▸ プライバシーとセキュリティ ▸ "
+                "フルディスクアクセス】で、ターミナル（またはPython）を"
+                "オンにしてから、ボットを再起動してください。")
+            continue
+        n, total, files = await asyncio.to_thread(_ext_scan, root, EXT_MEDIA_EXTS)
+        lines.append(f"✅ `{root}`\n"
+                     f"　動画 **{n}本** ／ 合計 **{_human_bytes(total)}**")
+        if show_files and files:
+            top = "\n".join(f"　{i + 1}. {name}（{_human_bytes(sz)}）"
+                            for i, (name, sz) in enumerate(files[:20]))
+            lines.append(top + (f"\n　…ほか{n - 20}本" if n > 20 else ""))
+    lines.append("※ここは**読むだけ**です（書き込み・削除はしません）。"
+                 "解析の結果はリポジトリ側にだけ残します。")
+    return "\n".join(lines)
+
+
+# 外付けHDD（外部フォルダ）の中身・接続状態を聞かれた時の入口。
+# 「読めるようにして」は【機能を作る依頼】なので除く（作れと言われた時に
+# いまの中身を返しても噛み合わない）。
+_HDD_WORD_RE = re.compile(
+    r"hdd|ｈｄｄ|ハードディスク|外付け|外部フォルダ|素材フォルダ", re.I)
+_HDD_ASK_RE = re.compile(
+    r"見せ|見て|見れ|見られ|読んで|読める|読み込|開いて|中身|一覧|リスト|"
+    r"何本|本数|容量|つながって|繋がって|接続|挿さ|マウント|状態|確認|スキャン")
+_HDD_BUILD_RE = re.compile(
+    r"できるように|よめるように|読めるように|見れるように|見られるように|"
+    r"対応して|実装|機能を|設定を")
+
+
+def _asks_ext_dirs(content):
+    """外付けHDDの中身・接続状態を聞かれているか。
+    実際に見て答えるための入口（AIに推測で答えさせないため）。"""
+    t = _strip_media_context(content or "")
+    if not _HDD_WORD_RE.search(t) or _HDD_BUILD_RE.search(t):
+        return False
+    return bool(_HDD_ASK_RE.search(t))
+
+
+_CLI_FLAGS = {"add_dir": None}
+
+
+async def _cli_supports_add_dir():
+    """claude CLI が --add-dir を持っているか（1回だけ調べて覚える）。
+
+    持っていない版に渡すと【実行が全部落ちる】ので、必ず先に確かめる。
+    調べられなかった時は「無い」とみなす＝今までどおりの引数で動く。"""
+    if _CLI_FLAGS["add_dir"] is None:
+        _CLI_FLAGS["add_dir"] = False
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                CLAUDE_BIN, "--help",
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+            _CLI_FLAGS["add_dir"] = "--add-dir" in out.decode(errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+    return _CLI_FLAGS["add_dir"]
+
+
+async def _ext_dir_args():
+    """claude CLI に渡す「読んでよい外部フォルダ」の引数。
+
+    渡さないとCLIは作業フォルダの外にあるHDDを一覧すら開けない
+    （08-28：`/Volumes/1/...` がフォルダ一覧すら見られなかった）。
+    今つながっているものだけ渡す＝抜けている時は今までどおりの引数になる。"""
+    roots = [str(r) for r in _ext_roots() if _ext_mounted(r)]
+    if not roots or not await _cli_supports_add_dir():
+        return []
+    args = []
+    for r in roots:
+        args += ["--add-dir", r]
+    return args
 
 
 # ---------- 画像生成（絵コンテ用・Gemini優先で無料枠を活用） ----------
@@ -10683,8 +10957,12 @@ async def _run_claude_exec(task, timeout=600, model=None, neutral=False):
 
 async def _claude_exec_run(task, timeout, model=None, neutral=False):
     args = ["--model", model] if model else _model_args()
+    # 外付けHDDなど、作業フォルダの外にある【読んでよいフォルダ】を渡す。
+    # 渡さないとCLIは一覧すら開けない。neutral（運用マニュアルを読ませない
+    # 機械的な作業）には要らないので付けない。
+    ext = [] if neutral else await _ext_dir_args()
     proc = await asyncio.create_subprocess_exec(
-        CLAUDE_BIN, "-p", "--dangerously-skip-permissions", *args, task,
+        CLAUDE_BIN, "-p", "--dangerously-skip-permissions", *args, *ext, task,
         stdin=asyncio.subprocess.DEVNULL,   # 端末から読ませない（固まるため）
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -11656,6 +11934,41 @@ def _no_slash_note(cmd):
             "ほかは、ふつうの言葉で頼んでもらえればそのまま動きます。")
 
 
+async def _handle_key_register(message, cid, content):
+    """鍵の受け取り口。中身をどこにも残さずに .env へ入れる。
+
+    ここで守ること（どれか1つでも抜けるとシークレットが公開される）：
+      ・会話履歴に足さない（履歴はプロンプトにもGitHubのログにも載る）
+      ・_fired / _trace に本文を渡さない（発言の頭60字がログに出る）
+      ・Discordの発言そのものを消す（チャンネルの履歴に残さない）
+      ・返事に名前だけ書き、値は絶対に書かない（返事もログに載る）
+    """
+    _fired(cid, "鍵登録", "（中身は記録しない）")
+    pairs = _key_registrations(content)
+    try:
+        await message.delete()
+        erased = True
+    except Exception:  # noqa: BLE001
+        erased = False          # 権限が無い等。手で消してもらう
+    if not pairs:
+        await send_as(orch, cid, "⚠️ 形が読み取れませんでした。\n" + KEY_REG_USAGE)
+        return
+    try:
+        names = _env_set(pairs)
+    except OSError as e:
+        # 値は例外にも載せない。理由の種類だけ伝える。
+        await send_as(orch, cid, f"⚠️ .env に書けませんでした（{type(e).__name__}）。")
+        return
+    await send_as(
+        orch, cid,
+        "🔐 登録しました：" + "、".join(f"`{n}`" for n in names) + "\n"
+        + ("（送ってもらった発言は削除しました）" if erased
+           else "⚠️ 発言を削除できませんでした。**手で消してください**"
+                "（ボットに『メッセージの管理』権限がありません）")
+        + "\n次の再起動から使えます（このプロセスにも反映済み）。"
+    )
+
+
 async def _dispatch_message(message):
     content = message.content.strip()
     # テキストまたは添付ファイルがない場合は無視
@@ -11663,6 +11976,13 @@ async def _dispatch_message(message):
         return
     cid = message.channel.id
     _last_seen_cid[cid] = time.time()   # 自動更新の通知先に使う
+
+    # 【最優先】鍵の受け取り口。ここより下には一切通さない。
+    # 下には会話ログへの追記・ログの自動共有（GitHubへpush）があるので、
+    # 1つでも先に走らせるとシークレットが公開リポジトリに載る。
+    if _is_key_register(content):
+        await _handle_key_register(message, cid, content)
+        return
 
     # 初回のみ：導入前の過去ログをDiscordから取り込む（バックグラウンド）
     if cid not in _import_started:
@@ -11697,6 +12017,13 @@ async def _dispatch_message(message):
         add_history(cid, message.author.display_name, content)
         await send_as(orch, cid, await _run_note(
             cid, _note[0], _note[1], message.author.display_name))
+        return
+    # 外付けHDD（読み取り専用）の状態と中身。AIに渡すと「繋がっているはず」と
+    # 推測で答えるので、実際に見た結果だけを返す（状態で守る）。
+    if _asks_ext_dirs(content):
+        _fired(cid, "外部フォルダの読み取り", content)
+        add_history(cid, message.author.display_name, content)
+        await send_as(orch, cid, await _ext_report())
         return
     # 会話モデルの切替・確認（AI判定より前に拾う。AIに任せると
     # 「コードを直さないと変えられない」と答えてしまい、実際そうなった）
