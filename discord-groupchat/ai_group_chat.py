@@ -34,6 +34,7 @@ MESSAGE CONTENT INTENT はオーケストレーター用にだけONにすれば�
   ・Web検索：Google（Geminiグラウンディング）優先・DDGフォールバック
   ・添付ファイル処理（画像・動画・音声）
   ・受け取り口（鍵の登録）と外部フォルダの読み取り（HDD）
+  ・Google Drive（ファイルの受け渡し）
   ・画像生成（絵コンテ用・Gemini優先で無料枠を活用）
   ・生成モデルの実行時切替（Discordの発言で変更・再起動後も保持）
   ・会話モデル（claude CLI）の切替
@@ -55,6 +56,7 @@ MESSAGE CONTENT INTENT はオーケストレーター用にだけONにすれば�
   ・分からないことは、始める前に聞き返す
   ・自己改修＆自己再起動（Discord内で完結）
   ・直した内容を自動で取り込む
+  ・Drive のコマンド
 
 判定のうち【文字列を見るだけで決まるもの】は phrasing.py に分けてある
 （依頼の形か・作り直しか・質問か・題材が書かれているか）。
@@ -1829,6 +1831,8 @@ BOT_CAPABILITIES = (
     "・外付けHDDなど、許可された外部フォルダを【読み取り専用】で見られる。"
     "『HDDの中身見せて』で、繋がっているか・動画が何本か・合計容量・"
     "ファイル名を実際に見て答える（書き込み・削除はしない）\n"
+    "・Google Drive でのファイルの受け渡し。『ドライブ認証』で1回だけ繋いだあと、"
+    "『ドライブ一覧』『ドライブに送って <パス>』『ドライブから取って <名前>』\n"
     "【どれで作るかの既定】\n"
     "・図・表・相関図・年表・サムネ・バナーなど【文字が主役】のもの＝"
     "クロードがHTMLで組んでPNGに書き出す（無料・文字が崩れない）\n"
@@ -2625,6 +2629,199 @@ KEY_REG_USAGE = (
     "・値に空白は入れられません\n"
     "・2行まとめて送っても、1行ずつ送っても大丈夫です"
 )
+
+
+# ---------- Google Drive（ファイルの受け渡し） ----------
+# 鍵（somethingfun_CLIENT_ID / _SECRET）は「鍵登録」で .env に入っている前提。
+#
+# 認証を【Discordだけで終わらせる】ため、ブラウザの戻り先を localhost にして
+# おき、繋がらなかった画面のURLを丸ごと貼ってもらう方式にした。localhost は
+# スマホからは開けないが、認可コードはURLに載っているのでそれで交換できる。
+# （Macの前でしか認証できない作りにすると、外出先・入院中に詰む）
+DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+DRIVE_REDIRECT = "http://localhost:8765/"
+DRIVE_TOKEN_FILE = Path(HISTORY_DIR) / "drive_token.json"   # history/ は .gitignore 済み
+DRIVE_DL_DIR = Path(BASE_DIR) / "drive_in"
+_drive_flow = {}        # 認証の途中経過。プロセス内だけに置く
+
+
+def _human_size(n):
+    """バイト数を読める形にする（0 は「不明」＝Driveがサイズを返さない種類）。"""
+    n = int(n or 0)
+    if n <= 0:
+        return "サイズ不明"
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024.0
+    return f"{n:.1f}GB"
+
+
+def _drive_client_pair():
+    """.env の鍵を返す。未登録なら (None, None)。値はログに出さない。"""
+    return (os.getenv("somethingfun_CLIENT_ID"),
+            os.getenv("somethingfun_CLIENT_SECRET"))
+
+
+def _drive_client_config():
+    cid, sec = _drive_client_pair()
+    return {"installed": {
+        "client_id": cid, "client_secret": sec,
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "redirect_uris": [DRIVE_REDIRECT]}}
+
+
+def _drive_auth_url():
+    """同意画面のURLを作る。戻り値 (URL, エラー文)。"""
+    cid, sec = _drive_client_pair()
+    if not cid or not sec:
+        return None, ("まだ鍵が登録されていません。\n" + KEY_REG_USAGE)
+    try:
+        from google_auth_oauthlib.flow import Flow
+    except ImportError:
+        return None, "⚠️ ライブラリが入っていません（`pip install -r requirements.txt`）。"
+    flow = Flow.from_client_config(_drive_client_config(), scopes=DRIVE_SCOPES,
+                                   redirect_uri=DRIVE_REDIRECT)
+    url, _state = flow.authorization_url(
+        access_type="offline", prompt="consent", include_granted_scopes="true")
+    _drive_flow["flow"] = flow
+    return url, None
+
+
+def _drive_code_from(text):
+    """貼られたURL（または生のコード）から認可コードだけ取り出す。"""
+    from urllib.parse import unquote
+    m = re.search(r"[?&]code=([^&\s]+)", text or "")
+    if m:
+        return unquote(m.group(1))
+    t = (text or "").strip()
+    return t if re.fullmatch(r"[\w./\-]{20,}", t) else None
+
+
+def _drive_save_token(creds):
+    DRIVE_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DRIVE_TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+    try:
+        os.chmod(DRIVE_TOKEN_FILE, 0o600)       # 他ユーザーに読ませない
+    except OSError:
+        pass
+
+
+def _drive_exchange(text):
+    """認可コードをトークンに交換して保存する。戻り値は見せる文。"""
+    code = _drive_code_from(text)
+    if not code:
+        return ("⚠️ 認可コードが読み取れませんでした。ブラウザが"
+                "「接続できません」になった画面の**URLをまるごと**貼ってください。")
+    flow = _drive_flow.get("flow")
+    if flow is None:
+        return "⚠️ 認証の途中経過が消えています（再起動後など）。もう一度『ドライブ認証』から。"
+    try:
+        flow.fetch_token(code=code)
+    except Exception as e:  # noqa: BLE001
+        # 値そのものは出さない。理由の種類だけ伝える。
+        return (f"⚠️ 交換に失敗しました（{type(e).__name__}）。"
+                "コードは1回きり有効です。もう一度『ドライブ認証』から。")
+    _drive_save_token(flow.credentials)
+    _drive_flow.pop("flow", None)
+    return "✅ Google Drive に繋がりました。『ドライブ一覧』で確認できます。"
+
+
+def _drive_creds():
+    """保存済みトークンを返す（期限切れは自動更新）。無ければ None。"""
+    if not DRIVE_TOKEN_FILE.exists():
+        return None
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+    except ImportError:
+        return None
+    try:
+        creds = Credentials.from_authorized_user_file(
+            str(DRIVE_TOKEN_FILE), DRIVE_SCOPES)
+    except Exception:  # noqa: BLE001
+        return None
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+            _drive_save_token(creds)
+        except Exception:  # noqa: BLE001
+            return None
+    return creds if creds and creds.valid else None
+
+
+def _drive_service():
+    creds = _drive_creds()
+    if creds is None:
+        return None
+    from googleapiclient.discovery import build
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+DRIVE_NEED_AUTH = ("まだGoogle Driveに繋がっていません。"
+                   "**『ドライブ認証』**と送ると手順が出ます。")
+
+
+def _drive_list(limit=20):
+    """このボットが扱えるファイルの一覧（新しい順）。"""
+    svc = _drive_service()
+    if svc is None:
+        return DRIVE_NEED_AUTH
+    res = svc.files().list(
+        pageSize=limit, orderBy="modifiedTime desc",
+        fields="files(id,name,size,modifiedTime)").execute()
+    files = res.get("files", [])
+    if not files:
+        return "📂 まだ1件もありません（『ドライブに送って <パス>』で上げられます）。"
+    rows = [f"・{f['name']}　{_human_size(int(f.get('size') or 0))}" for f in files]
+    return "📂 Google Drive（新しい順）\n" + "\n".join(rows)
+
+
+def _drive_upload(path):
+    """Macのファイルを1つ上げる。戻り値は見せる文。"""
+    svc = _drive_service()
+    if svc is None:
+        return DRIVE_NEED_AUTH
+    p = Path(path).expanduser()
+    if not p.is_file():
+        return f"⚠️ ファイルが見つかりません: `{p}`"
+    from googleapiclient.http import MediaFileUpload
+    size = p.stat().st_size
+    media = MediaFileUpload(str(p), resumable=size > 5 * 1024 * 1024)
+    f = svc.files().create(
+        body={"name": p.name}, media_body=media,
+        fields="id,name,webViewLink").execute()
+    return (f"⬆️ 上げました: **{f['name']}**（{_human_size(size)}）\n"
+            + (f.get("webViewLink") or ""))
+
+
+def _drive_download(name):
+    """名前でDriveを探して1つ落とす。戻り値は見せる文。"""
+    svc = _drive_service()
+    if svc is None:
+        return DRIVE_NEED_AUTH
+    safe = (name or "").replace("\\", "\\\\").replace("'", "\\'")
+    res = svc.files().list(
+        q=f"name contains '{safe}' and trashed=false", pageSize=5,
+        orderBy="modifiedTime desc", fields="files(id,name,size)").execute()
+    files = res.get("files", [])
+    if not files:
+        return f"⚠️ `{name}` に合うファイルがDriveにありません。"
+    if len(files) > 1:
+        rows = "\n".join(f"・{f['name']}" for f in files)
+        return f"複数見つかりました。名前をもう少し絞ってください。\n{rows}"
+    f = files[0]
+    DRIVE_DL_DIR.mkdir(parents=True, exist_ok=True)
+    dest = DRIVE_DL_DIR / f["name"]
+    from googleapiclient.http import MediaIoBaseDownload
+    req = svc.files().get_media(fileId=f["id"])
+    with open(dest, "wb") as fh:
+        dl = MediaIoBaseDownload(fh, req)
+        done = False
+        while not done:
+            _status, done = dl.next_chunk()
+    return f"⬇️ 落としました: **{f['name']}**\n`{dest}`"
 
 
 # 読んでよい外部フォルダ（外付けHDDなど）。**読むだけ**で、書き込み・削除は
@@ -11969,6 +12166,83 @@ async def _handle_key_register(message, cid, content):
     )
 
 
+# ---------- Drive のコマンド ----------
+# 認可コードの入った発言は、鍵と同じ扱いで消す（URLに1回きりとはいえ
+# アカウントを触れる値が載るため、ログにもGitHubにも残さない）。
+_DRIVE_CODE_RE = re.compile(
+    r"(?:ドライブ|drive)?\s*(?:認証)?\s*(?:コード)?\s*"
+    r"(https?://localhost:8765/\S*|\S*[?&]code=\S+)", re.I)
+_DRIVE_AUTH_RE = re.compile(r"^\s*(?:ドライブ|drive)\s*認証\s*$", re.I)
+_DRIVE_LIST_RE = re.compile(r"^\s*(?:ドライブ|drive)\s*(?:の)?\s*一覧\s*$", re.I)
+_DRIVE_UP_RE = re.compile(
+    r"^\s*(?:ドライブ|drive)\s*(?:に|へ)\s*(?:送って|あげて|上げて|アップ\S*)\s*(.+?)\s*$", re.I)
+_DRIVE_DOWN_RE = re.compile(
+    r"^\s*(?:ドライブ|drive)\s*(?:から)\s*(?:取って|落として|ダウン\S*)\s*(.+?)\s*$", re.I)
+
+
+def _is_drive_code(content):
+    """Driveの認可コード（またはそれを含むURL）が入っているか。"""
+    return bool(_DRIVE_CODE_RE.search(content or ""))
+
+
+def _is_drive_cmd(content):
+    t = content or ""
+    return bool(_DRIVE_AUTH_RE.match(t) or _DRIVE_LIST_RE.match(t)
+                or _DRIVE_UP_RE.match(t) or _DRIVE_DOWN_RE.match(t))
+
+
+async def _handle_drive_code(message, cid, content):
+    """認可コードを受け取ってトークンに交換する。中身は記録しない。"""
+    _fired(cid, "ドライブ認証コード", "（中身は記録しない）")
+    try:
+        await message.delete()
+        erased = True
+    except Exception:  # noqa: BLE001
+        erased = False
+    note = await asyncio.to_thread(_drive_exchange, content)
+    await send_as(orch, cid, note + (
+        "" if erased else "\n⚠️ 貼ってもらった発言を削除できませんでした。**手で消してください**"))
+
+
+async def _handle_drive_cmd(message, cid, content):
+    """認証の案内・一覧・アップロード・ダウンロード。"""
+    t = content.strip()
+    if _DRIVE_AUTH_RE.match(t):
+        _fired(cid, "ドライブ認証", t)
+        url, err = await asyncio.to_thread(_drive_auth_url)
+        if err:
+            await send_as(orch, cid, err)
+            return
+        await send_as(
+            orch, cid,
+            "🔑 **Google Drive につなぎます**（1回だけの作業です）\n\n"
+            "**1.** 下のURLを開いて、Googleアカウントで許可してください\n"
+            f"{url}\n\n"
+            "**2.** 許可すると「このサイトにアクセスできません」という画面になります。"
+            "**これで正常です。**\n\n"
+            "**3.** その画面の**アドレスバーのURLをまるごとコピー**して、"
+            "そのままここに貼ってください。\n"
+            "（`http://localhost:8765/?code=...` で始まる長いURLです）\n\n"
+            "※貼った発言は自動で削除します。")
+        return
+    if _DRIVE_LIST_RE.match(t):
+        _fired(cid, "ドライブ一覧", t)
+        await send_as(orch, cid, await asyncio.to_thread(_drive_list))
+        return
+    m = _DRIVE_UP_RE.match(t)
+    if m:
+        _fired(cid, "ドライブへ送る", t)
+        await send_as(orch, cid, "⬆️ 上げています…")
+        await send_as(orch, cid, await asyncio.to_thread(_drive_upload, m.group(1)))
+        return
+    m = _DRIVE_DOWN_RE.match(t)
+    if m:
+        _fired(cid, "ドライブから取る", t)
+        await send_as(orch, cid, "⬇️ 落としています…")
+        await send_as(orch, cid, await asyncio.to_thread(_drive_download, m.group(1)))
+        return
+
+
 async def _dispatch_message(message):
     content = message.content.strip()
     # テキストまたは添付ファイルがない場合は無視
@@ -11982,6 +12256,15 @@ async def _dispatch_message(message):
     # 1つでも先に走らせるとシークレットが公開リポジトリに載る。
     if _is_key_register(content):
         await _handle_key_register(message, cid, content)
+        return
+
+    # 【最優先の次】Driveの認可コード。URLの中に鍵と同じ重みの値が入るので、
+    # 会話ログにもGitHubにも載せない（貼った発言も消す）。
+    if _is_drive_code(content):
+        await _handle_drive_code(message, cid, content)
+        return
+    if _is_drive_cmd(content):
+        await _handle_drive_cmd(message, cid, content)
         return
 
     # 初回のみ：導入前の過去ログをDiscordから取り込む（バックグラウンド）

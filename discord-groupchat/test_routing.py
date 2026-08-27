@@ -3527,6 +3527,22 @@ def run():
                "外付けHDD買おうか迷ってる"):
         check(f"実物を見に行かない: {_t!r}", bot._asks_ext_dirs(_t), False)
 
+    print("■ Google Drive のコマンドと、認可コードの秘匿")
+    # 認可コードはURLに載る。鍵と同じで、会話ログにもGitHubにも残してはいけない。
+    for _t in ("http://localhost:8765/?code=4/0AX4XfWh-abc&scope=drive.file",
+               "ドライブ認証コード http://localhost:8765/?code=abc123defghij"):
+        check(f"認可コードとして消す: {_t[:40]!r}", bot._is_drive_code(_t), True)
+    check("URLからコードだけ取り出す",
+          bot._drive_code_from("http://localhost:8765/?code=4/0AX4a&scope=x"),
+          "4/0AX4a")
+    for _t in ("ドライブ認証", "ドライブ一覧", "ドライブに送って /tmp/a.mp4",
+               "ドライブから取って 資料.pdf"):
+        check(f"Driveのコマンド: {_t!r}", bot._is_drive_cmd(_t), True)
+    # 「ドライブ」を含むだけの雑談を巻き込まない
+    for _t in ("ドライブってどう使うの？", "グーグルドライブの話", "ログ送って"):
+        check(f"会話のまま: {_t!r}",
+              bool(bot._is_drive_cmd(_t) or bot._is_drive_code(_t)), False)
+
     print("■ テストが本物の記録を汚していないこと")
     # 事故（2026-08-21）：テストを流すたびに本物の history/errors.log へ
     # 偽のエラーが書かれ、ボットは再起動のたびに自己テストを流すので、
