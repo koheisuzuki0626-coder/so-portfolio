@@ -5817,7 +5817,7 @@ STOP_CHAT = "__chat__"      # ここで打ち切って会話にする（None＝�
 class RouteCtx:
     """1発言について、判定に使う材料を1回だけ計算して持ち回る。"""
 
-    __slots__ = ("text", "cid", "has_attachments", "has_video_att",
+    __slots__ = ("text", "raw_text", "cid", "has_attachments", "has_video_att",
                  "has_image_att", "has_job", "has_last_gen", "after_credits",
                  "has_running", "last_was_design", "last_was_slideshow",
                  "design_ctx", "is_question",
@@ -5828,7 +5828,15 @@ class RouteCtx:
                  has_image_att=False, has_job=False, has_last_gen=False,
                  after_credits=False, has_running=False, last_was_design=False,
                  last_was_slideshow=False, design_ctx=False, cid=None):
-        self.text = content or ""
+        # 機能トリガーの判定は、返信の引用や添付/YouTube解析で追記された
+        # 【…】ブロックを除いた【本人が実際に打った文】だけで行う。
+        # 事故（2026-08-27）：ボットの案内文に返信して「ここからわからない」と
+        # 聞いたら、引用文の中の「ログイン」の“ログ”と「〜してください」の
+        # “ください”が揃ってログ共有が誤発動し、質問に答えずログを吐いた。
+        # 各規則が個別に _strip_media_context を呼ぶ運用だと呼び忘れる。
+        # 引用ごと見たい規則だけ raw_text を使う。
+        self.raw_text = content or ""
+        self.text = _strip_media_context(self.raw_text)
         self.cid = cid
         # 直近の会話がビジュアル制作の相談か（構成案・カット割り・図解など）。
         # last_was_design は【前に1枚作れていること】が前提なので、
