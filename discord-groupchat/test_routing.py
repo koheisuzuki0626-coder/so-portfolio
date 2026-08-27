@@ -3505,12 +3505,39 @@ def run():
         finally:
             _hdd_root.chmod(0o755)
         check("親をたどっても読めない", bot._ext_allowed(_hdd_root.parent), False)
-        _n, _total, _files = bot._ext_scan(_hdd_root, bot.EXT_MEDIA_EXTS)
-        check("動画だけ数える（txtは除く）", _n, 2)
-        check("合計サイズ", _total, 30)
-        # 許可していない場所は、実在していても中身を返さない
-        check("許可外は何も返さない", bot._ext_scan(_outside, bot.EXT_MEDIA_EXTS),
-              (0, 0, []))
+        _sc = bot._ext_scan(_hdd_root, bot.EXT_MEDIA_EXTS)
+        check("動画だけ数える（txtは除く）", _sc.count, 2)
+        check("合計サイズ", _sc.total, 30)
+        check("再帰で拾う（sub/b.mov も）", ("sub/b.mov", 20) in _sc.files, True)
+        # 08-28：読み取り拒否を「動画0本」と報告し、実体172本を見落とした。
+        # 「読めた（error=None）」と「読めなかった」を必ず区別する。
+        check("読めた時は error なし", _sc.error, None)
+        check("動画以外は others に件数で残す", _sc.others.get(".txt"), 1)
+        # 許可していない場所は、実在していても中身を返さない（が、空とは言わない）
+        _sc_out = bot._ext_scan(_outside, bot.EXT_MEDIA_EXTS)
+        check("許可外は count 0", _sc_out.count, 0)
+        check("許可外は『空』ではなく error を返す", bool(_sc_out.error), True)
+        # 読めないフォルダを「0本」と言わない（フルディスクアクセス未許可の再現）
+        _hdd_root.chmod(0o000)
+        try:
+            _sc_denied = bot._ext_scan(_hdd_root, bot.EXT_MEDIA_EXTS)
+            check("読めない時は error を立てる", bool(_sc_denied.error), True)
+            check("読めない時に嘘の0本を返さない",
+                  _sc_denied.count == 0 and _sc_denied.error is not None, True)
+        finally:
+            _hdd_root.chmod(0o755)
+        # 動画0本でも、中身（others）があれば「空」と言い切らない材料を持つ
+        _empty = _hdd_root / "空だが動画以外あり"
+        _empty.mkdir()
+        (_empty / "readme.pdf").write_bytes(b"p" * 5)
+        _ext_real2 = bot.EXT_READ_DIRS
+        bot.EXT_READ_DIRS = [str(_empty)]
+        try:
+            _sc_e = bot._ext_scan(_empty, bot.EXT_MEDIA_EXTS)
+            check("動画0本でも error なし", _sc_e.error, None)
+            check("動画0本でも中身は見えている", _sc_e.others.get(".pdf"), 1)
+        finally:
+            bot.EXT_READ_DIRS = _ext_real2
     finally:
         bot.EXT_READ_DIRS = _ext_real
 

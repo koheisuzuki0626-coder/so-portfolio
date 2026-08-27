@@ -63,6 +63,7 @@ MESSAGE CONTENT INTENT はオーケストレーター用にだけONにすれば�
 """
 
 import asyncio
+import collections
 import contextvars
 import io
 import json
@@ -2847,11 +2848,22 @@ def _ext_state(root):
 
     この2つを区別すること。macOSは外付けボリュームへのアクセスに許可が要り、
     許可が無いと【マウントされているのに読めない】。ここを一緒くたに
-    「繋がっていません」と言うと、挿さっているHDDを何度も挿し直させる。"""
+    「繋がっていません」と言うと、挿さっているHDDを何度も挿し直させる。
+
+    `os.access` はモードビットしか見ず、macOSのフルディスクアクセス未許可を
+    見抜けない（08-28：ボットが「動画0本」と報告したが、実体は172本。
+    launchd起動のプロセスにボリュームの読み取り許可が無かった）。
+    実際に1件読んでみて、拒否されたら denied にする。"""
     try:
         if not Path(root).is_dir():
             return "missing"
-        return "ok" if os.access(str(root), os.R_OK) else "denied"
+        if not os.access(str(root), os.R_OK):
+            return "denied"
+        with os.scandir(str(root)) as it:
+            next(it, None)
+        return "ok"
+    except PermissionError:
+        return "denied"
     except OSError:
         return "missing"
 
@@ -2888,32 +2900,72 @@ def _human_bytes(n):
         n /= 1024
 
 
+# 読むだけスキャンの結果。「動画0本」と「読めなかった」を取り違えないため、
+# 空だったのか・拒否されたのか（error）、途中で飛ばしたフォルダ（skipped）、
+# 動画以外に何が入っていたか（others）まで持ち帰る。
+_ExtScan = collections.namedtuple(
+    "_ExtScan", "count total files skipped others error")
+
+
 def _ext_scan(root, exts=None, limit=3000):
-    """許可フォルダの中を数える（読むだけ）。
-    返り値: (件数, 合計バイト, [(相対パス, バイト), ...])。
-    許可されていないパスは、実在していても何も返さない。"""
+    """許可フォルダの中を数える（読むだけ）。返り値は _ExtScan。
+
+    count/total/files … 対象の動画（件数・合計バイト・[(相対パス, バイト)]）
+    skipped … 読めずに飛ばした場所 [(相対パス, 理由), ...]。黙って握りつぶさない。
+    others  … 動画以外に入っていたもの {拡張子: 件数}。0本の時の手がかり。
+    error   … ルートそのものを開けなかった時の理由（str）。None なら開けた。
+              空フォルダと読めないフォルダを区別する唯一の手がかり
+              （08-28：拒否を「0本」と報告し、172本を見落とした）。
+    許可されていないパスは error に理由を入れて返す。"""
     root = Path(root)
     if not _ext_allowed(root):
-        return 0, 0, []
+        return _ExtScan(0, 0, [], [], {}, "読み取りを許可していない場所です")
     files, total = [], 0
-    try:
-        found = sorted(root.rglob("*"))
-    except OSError:
-        return 0, 0, []
-    for p in found:
-        if len(files) >= limit:
-            break
+    skipped, others = [], {}
+    walked_any = False
+
+    def _on_err(exc):
+        # os.walk は既定でエラーを黙って飲む。件数で見せるために記録する。
+        name = getattr(exc, "filename", "") or ""
         try:
-            if p.name.startswith(".") or not p.is_file():
+            rel = str(Path(name).relative_to(root)) if name else "(不明)"
+        except ValueError:
+            rel = name or "(不明)"
+        skipped.append((rel, exc.__class__.__name__))
+
+    for dirpath, dirnames, filenames in os.walk(
+            root, onerror=_on_err, followlinks=False):
+        walked_any = True
+        # 隠しフォルダ（.Spotlight-V100 / .Trashes など）には入らない
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for fname in filenames:
+            if len(files) >= limit:
+                break
+            if fname.startswith("."):
+                continue  # ._ AppleDouble・.DS_Store
+            fp = Path(dirpath) / fname
+            suf = fp.suffix.lower()
+            if exts and suf not in exts:
+                key = suf or "(拡張子なし)"
+                others[key] = others.get(key, 0) + 1
                 continue
-            if exts and p.suffix.lower() not in exts:
+            try:
+                size = fp.stat().st_size
+                rel = str(fp.relative_to(root))
+            except (OSError, ValueError):
+                skipped.append((fname, "stat失敗"))
                 continue
-            size = p.stat().st_size
-        except OSError:
-            continue
-        total += size
-        files.append((str(p.relative_to(root)), size))
-    return len(files), total, files
+            total += size
+            files.append((rel, size))
+
+    error = None
+    if not walked_any:
+        # walk が1周も回らなかった = ルートの readdir 自体が拒否された。
+        # macOS のフルディスクアクセス未許可でよく起きる。
+        error = ("フォルダを開けませんでした"
+                 "（macOSのフルディスクアクセス未許可の可能性）")
+    files.sort()
+    return _ExtScan(len(files), total, files, skipped, others, error)
 
 
 async def _ext_report(show_files=True):
@@ -2939,13 +2991,34 @@ async def _ext_report(show_files=True):
                 "フルディスクアクセス】で、ターミナル（またはPython）を"
                 "オンにしてから、ボットを再起動してください。")
             continue
-        n, total, files = await asyncio.to_thread(_ext_scan, root, EXT_MEDIA_EXTS)
+        sc = await asyncio.to_thread(_ext_scan, root, EXT_MEDIA_EXTS)
+        if sc.error:
+            # 「0本」と言わない。読めなかったことをそのまま出す。
+            lines.append(
+                f"⚠️ `{root}`\n"
+                f"　**中を読めませんでした**：{sc.error}\n"
+                "　Macの【システム設定 ▸ プライバシーとセキュリティ ▸ "
+                "フルディスクアクセス】で、ボットを動かしている "
+                "Python（と `/bin/bash`）をオンにしてから再起動してください。")
+            continue
         lines.append(f"✅ `{root}`\n"
-                     f"　動画 **{n}本** ／ 合計 **{_human_bytes(total)}**")
-        if show_files and files:
+                     f"　動画 **{sc.count}本** ／ 合計 **{_human_bytes(sc.total)}**")
+        if show_files and sc.files:
             top = "\n".join(f"　{i + 1}. {name}（{_human_bytes(sz)}）"
-                            for i, (name, sz) in enumerate(files[:20]))
-            lines.append(top + (f"\n　…ほか{n - 20}本" if n > 20 else ""))
+                            for i, (name, sz) in enumerate(sc.files[:20]))
+            lines.append(top + (f"\n　…ほか{sc.count - 20}本"
+                                if sc.count > 20 else ""))
+        if sc.count == 0 and (sc.others or sc.skipped):
+            # 動画0本でも「空」とは限らない。中身をそのまま見せる。
+            if sc.others:
+                inv = "／".join(f"{k} {v}件"
+                               for k, v in sorted(sc.others.items()))
+                lines.append(f"　（動画は0本。ほかに入っていたもの：{inv}）")
+        if sc.skipped:
+            names = "、".join(rel for rel, _ in sc.skipped[:5])
+            more = f" ほか{len(sc.skipped) - 5}件" if len(sc.skipped) > 5 else ""
+            lines.append(f"　⚠️ 読めずに飛ばした場所 **{len(sc.skipped)}件**"
+                         f"（{names}{more}）")
     lines.append("※ここは**読むだけ**です（書き込み・削除はしません）。"
                  "解析の結果はリポジトリ側にだけ残します。")
     return "\n".join(lines)
