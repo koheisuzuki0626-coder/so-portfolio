@@ -2986,6 +2986,20 @@ def run():
     check("_run_self_fix のコード自体は残す（戻せるように）",
           "_run_self_fix(cid," in _src, True)
 
+    print("■ エージェント実行：プロンプトは stdin で渡す（--add-dir に飲まれない）")
+    # 事故（2026-08-28）：HDD動画173本の分析を承認したら
+    # 「Error: Input must be provided ... when using --print」で失敗。
+    # task を位置引数で渡していたため、直前の --add-dir <path> が
+    # スペース区切りで複数ディレクトリを取る版の CLI に task ごと飲まれた。
+    _ex = bot_src()
+    _ex = _ex[_ex.index("async def _claude_exec_run"):]
+    _ex = _ex[:_ex.index("\nasync def ")]
+    check("位置引数で task を渡していない",
+          '*ext, task,' not in _ex and '*ext,task,' not in _ex, True)
+    check("stdin=PIPE で渡す", "stdin=asyncio.subprocess.PIPE" in _ex, True)
+    check("communicate に task を入れる",
+          "input=(task or \"\").encode()" in _ex, True)
+
     print("■ 制作を頼む普通の言い方が、会話に落ちないこと")
     # 事故（2026-08-21）：構成案を決めたあとの「一枚目やろっか」「制作開始」
     # 「クロードで作ろう」がどの規則にも当たらず会話に落ち、ボットは

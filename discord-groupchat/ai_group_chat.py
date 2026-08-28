@@ -11250,15 +11250,20 @@ async def _claude_exec_run(task, timeout, model=None, neutral=False):
     # 渡さないとCLIは一覧すら開けない。neutral（運用マニュアルを読ませない
     # 機械的な作業）には要らないので付けない。
     ext = [] if neutral else await _ext_dir_args()
+    # プロンプトは stdin で渡す。位置引数で渡すと、直前の --add-dir が
+    # スペース区切りで複数ディレクトリを取る版の CLI では task ごと飲み込まれ、
+    # 「Input must be provided ... when using --print」で落ちる
+    # （08-28：HDD動画173本の分析タスクがこれで失敗した）。
     proc = await asyncio.create_subprocess_exec(
-        CLAUDE_BIN, "-p", "--dangerously-skip-permissions", *args, *ext, task,
-        stdin=asyncio.subprocess.DEVNULL,   # 端末から読ませない（固まるため）
+        CLAUDE_BIN, "-p", "--dangerously-skip-permissions", *args, *ext,
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=_neutral_cwd() if neutral else BASE_DIR,
     )
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        out, err = await asyncio.wait_for(
+            proc.communicate(input=(task or "").encode()), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await _reap(proc)
