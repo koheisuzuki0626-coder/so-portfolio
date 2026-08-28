@@ -3000,6 +3000,19 @@ def run():
     check("communicate に task を入れる",
           "input=(task or \"\").encode()" in _ex, True)
 
+    print("■ エージェント実行：短い指示にも直近の会話を添える")
+    # 事故（2026-08-28）：20分HDD動画の話をした後の「一覧作って」に、
+    # 「何の一覧か確定させる」という汎用プランが返り、承認ループになった。
+    # task 単体でなく直近の会話を渡し、文脈から対象を読み取らせる。
+    _ag = bot_src()
+    _ag = _ag[_ag.index("async def run_claude_agent"):]
+    _ag = _ag[:_ag.index("\nasync def ", 10)]
+    check("直近の会話を task に添える",
+          "build_transcript(_hist[-12:])" in _ag, True)
+    check("計画プロンプトに文脈版を渡す", "task_full" in _ag.split("plan_prompt")[1][:200], True)
+    check("実行にも文脈版を渡す", "_run_claude_exec(task_full)" in _ag, True)
+    check("聞き返さず具体化するよう指示", "聞き返さず具体的な計画" in _ag, True)
+
     print("■ 制作を頼む普通の言い方が、会話に落ちないこと")
     # 事故（2026-08-21）：構成案を決めたあとの「一枚目やろっか」「制作開始」
     # 「クロードで作ろう」がどの規則にも当たらず会話に落ち、ボットは

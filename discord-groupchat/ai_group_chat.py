@@ -11376,10 +11376,23 @@ def _gate(message, cid, summary, plan, factory, label, cost="", engine="",
 
 async def run_claude_agent(cid, task, owner_id):
     """プラン承認型：計画を提示→Discordで承認→実行。SDK不要。"""
+    # 短い指示（「一覧作って」「作業に入って」）は単体では対象が分からず、
+    # 計画が「何の一覧か確定させる」という汎用文になって空回りする
+    # （08-28：20分HDD動画の話をした後に実際に起きた）。直近の会話を添えて、
+    # 文脈から対象を読み取らせる。表示とタイムアウト表記は短い task のまま。
+    _hist = get_history(cid)
+    task_full = task
+    if len(_hist) > 1:
+        _ctx = build_transcript(_hist[-12:])
+        task_full = (f"{task}\n\n"
+                     "【この指示までの会話（ここから対象・目的を読み取ること）】\n"
+                     f"{_ctx}")
     # ① 計画（実行せず、やることの計画をテキストで）
     plan_prompt = (
         "次のタスクを実行するとしたら、行う手順やコマンドの【計画】だけを日本語で"
-        "箇条書きにしてください。まだ実行はしないこと。\n\nタスク: " + task
+        "箇条書きにしてください。まだ実行はしないこと。"
+        "会話の文脈から対象が分かるなら、聞き返さず具体的な計画にすること。"
+        "\n\nタスク: " + task_full
     )
     try:
         plan = await run_claude_cli(plan_prompt)
@@ -11402,7 +11415,7 @@ async def run_claude_agent(cid, task, owner_id):
     async def _exec_now():
         await send_as(orch, cid, "▶️ 承認されました。実行します…")
         # CLAUDE.md 由来の再起動案内や内部ナレーションは、そのまま見せない
-        return (_strip_cli_boilerplate(await _run_claude_exec(task))
+        return (_strip_cli_boilerplate(await _run_claude_exec(task_full))
                 or "(完了・出力なし)")
 
     async def _resume():
