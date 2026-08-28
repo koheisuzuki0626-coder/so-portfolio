@@ -2967,6 +2967,25 @@ def run():
     check("守り手が実際に使われている",
           "_is_selffix_order(latest)" in bot_src(), True)
 
+    print("■ Discordからの自己改修は既定オフ（2026-08-28・本人の指示）")
+    # 「Discord上でコード触るときにうまくできないことが多い」ため、実行を止めた。
+    # 「直して」だけで巨大な調査プランを出す不具合もこれで消える。
+    check("既定は無効", bot.SELFFIX_ENABLED, False)
+    _src = bot_src()
+    # selffix と分類されても、_run_self_fix を回す前に SELFFIX_ENABLED で止める
+    _gate_at = _src.find("SELFFIX_ENABLED")
+    _spawn_at = _src.find("_run_self_fix(cid,")
+    check("実行の前に SELFFIX_ENABLED で門がある",
+          0 < _src.find("if kind == \"selffix\" and not SELFFIX_ENABLED")
+          < _spawn_at, True)
+    check("オフの時は会話で返す（プランを作らない）",
+          "Discord からのコード修正は、いま" in _src, True)
+    # 分類そのものは変えていない（simulate.py の selffix 判定を壊さないため）
+    check("selffix は分類の種類として残っている",
+          "selffix" in bot._ACTION_KINDS, True)
+    check("_run_self_fix のコード自体は残す（戻せるように）",
+          "_run_self_fix(cid," in _src, True)
+
     print("■ 制作を頼む普通の言い方が、会話に落ちないこと")
     # 事故（2026-08-21）：構成案を決めたあとの「一枚目やろっか」「制作開始」
     # 「クロードで作ろう」がどの規則にも当たらず会話に落ち、ボットは

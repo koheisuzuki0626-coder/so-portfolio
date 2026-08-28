@@ -1826,7 +1826,8 @@ BOT_CAPABILITIES = (
     "Mac上のffmpegで縦型9:16に切り出して日本語字幕を焼き付ける。"
     "字幕が付いていない動画は、音声から文字起こしして字幕を自分で作る。"
     "生成モデルを使わないのでクレジットは消費しない\n"
-    "・自己改修・再起動・ログ共有／会話モデルの切替\n"
+    "・再起動・ログ共有／会話モデルの切替（自己改修は既定オフ。"
+    "コードの直しは Claude Code のセッションでやる）\n"
     "・鍵の受け取り口＝Discordで『鍵登録 <名前> <値>』と送ると、"
     "中身をログにもチャンネルにも残さずMacの .env へ入れる（発言は自動削除）\n"
     "・外付けHDDなど、許可された外部フォルダを【読み取り専用】で見られる。"
@@ -5944,6 +5945,12 @@ def _match_casual_lead(text):
 # restart / talk / profile / trend は害が小さいので対象外。
 _ACTION_KINDS = ("selffix", "exec", "video", "image")
 
+# Discord からの自己改修（コードを実際に書き換える）は、テストを壊す・
+# タイムアウトする・巻き戻る、で「うまくいかないことが多い」（2026-08-28、
+# 本人の指示で既定オフ）。コードと分類は残すが、実行は止める。
+# 直しは Claude Code のセッションでやる。戻すなら .env に SELFFIX_ENABLED=1。
+SELFFIX_ENABLED = os.getenv("SELFFIX_ENABLED", "0") == "1"
+
 # 自分のコードを書き換えろ、という【命令】の形。
 # 事故（2026-08-21）：「クロードだけで動画制作したい」（＝やり方の希望）を
 # 自己改修と判定し、コードを書き換えてテストを壊し、自動で巻き戻った。
@@ -9994,6 +10001,18 @@ async def _handle_orchestrator(message, cid):
     # selffix と判定してコードを書き換え、テストを壊して自動で巻き戻った。
     # CLAUDE.md には「〜したいは相談。実際に直して/変えてと命令された時だけ」と
     # 書いてあるが、プロンプトの文章では守られなかったのでコード側で止める。
+    # Discord からのコード改修は既定でオフ。「直して」だけで巨大な調査プランを
+    # 出す不具合の元でもあったので、短く「オフです」と返して終わる。
+    if kind == "selffix" and not SELFFIX_ENABLED:
+        print("[plan] selffix は既定オフ（Discordからのコード改修は無効）")
+        _fired(cid, "selffix→無効（Discord改修オフ）", latest)
+        _off = ("🛠 Discord からのコード修正は、いまオフにしています"
+                "（うまくいかないことが多かったため）。\n"
+                "コードの直しは Claude Code のセッションでやります。"
+                "直したい内容だけ教えてもらえれば、次にそこで対応します。")
+        add_history(cid, "Orchestrator", _off)
+        await send_as(orch, cid, _off)
+        return
     if kind == "selffix" and not _is_selffix_order(latest):
         print(f"[plan] selffix→chat に降格（希望であって改修の命令ではない）: {latest[:40]}")
         _fired(cid, "selffix→会話に戻した", latest)
