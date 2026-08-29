@@ -12182,6 +12182,56 @@ async def _cmd_agent(message, cid, arg):
            "エージェント実行", gated=True)
 
 
+_analyze_running = {"on": False}
+
+
+async def _run_hdd_analyze(cid, arg):
+    """tools/analyze_hdd_videos.py をボット本体から直接回す。
+
+    エージェント実行（claude -p にプランを立てさせる方式）はこの作業で
+    毎回ハングしたため、決め打ちのスクリプトを subprocess で回して、
+    標準出力を Discord に間引いて流す。ボットは bash 経由でフルディスク
+    アクセスがあるので /Volumes/1 を読める。"""
+    _analyze_running["on"] = True
+    try:
+        script = str(Path(BASE_DIR) / "tools" / "analyze_hdd_videos.py")
+        cmd = [sys.executable, script] + (arg.split() if arg else [])
+        await send_as(orch, cid, f"🎞 元データの解析を開始します（`{' '.join(cmd[1:])}`）")
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=str(BASE_DIR),
+            stdin=asyncio.subprocess.DEVNULL,   # 端末から読ませない（SIGTTINで止まる）
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        buf, last_flush = [], time.time()
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            buf.append(line.decode(errors="replace").rstrip())
+            # 45秒ごと、または20行たまったら1回まとめて流す
+            if time.time() - last_flush > 45 or len(buf) >= 20:
+                await send_as(orch, cid, "```\n" + "\n".join(buf) + "\n```")
+                buf, last_flush = [], time.time()
+        await proc.wait()
+        if buf:
+            await send_as(orch, cid, "```\n" + "\n".join(buf) + "\n```")
+        tail = ("✅ 解析スクリプトが正常終了しました。"
+                if proc.returncode == 0 else
+                f"⚠️ 解析スクリプトが終了コード {proc.returncode} で止まりました。")
+        await send_as(orch, cid, tail + "（台帳: `discord-groupchat/history/hdd_video_vision.jsonl`）")
+    finally:
+        _analyze_running["on"] = False
+
+
+async def _cmd_analyze(message, cid, arg):
+    """!analyze [--limit N] [--only 語] [--redo] — 元データ動画の画を1本ずつ読む。"""
+    if _analyze_running["on"]:
+        await message.channel.send("いま解析が回っています。二重には起動しません。")
+        return
+    _spawn(_run_hdd_analyze(cid, arg or ""), cid, "元データ解析")
+
+
 async def _cmd_profile(message, cid, arg):
     p = _load_profiles()
     if p:
@@ -12238,6 +12288,7 @@ _COMMANDS = {
     "!project": _cmd_project,
     "!cancel": _cmd_cancel,
     "!agent": _cmd_agent,
+    "!analyze": _cmd_analyze,
     "!profile": _cmd_profile,
     "!trend": _cmd_trend,
     "!search": _cmd_search,

@@ -2166,6 +2166,28 @@ def run():
     check("存在しないコマンドを挙げない",
           "/memory" not in _note.split("記号で使えるのは")[-1], True)
 
+    print("■ !analyze：元データ解析はエージェント実行を通さず専用スクリプトを回す")
+    # 事故（2026-08-29〜30）：100本超の動画をエージェント実行（claude -p に
+    # プランを立てさせる方式）で回そうとして、毎回ハングしDiscordごと無反応に
+    # なった（6回以上）。決め打ちのスクリプトを subprocess で回す口を用意した。
+    check("!analyze が登録されている", "!analyze" in bot._COMMANDS, True)
+    _asrc = bot_src()
+    _asrc = _asrc[_asrc.index("async def _run_hdd_analyze"):]
+    _asrc = _asrc[:_asrc.index("\nasync def _cmd_analyze")] + \
+        bot_src().split("async def _cmd_analyze")[1][:400]
+    check("専用スクリプトを直接起動する",
+          "tools\" / \"analyze_hdd_videos.py" in _asrc
+          or "analyze_hdd_videos.py" in _asrc, True)
+    check("エージェント実行（_run_agent_task）は通さない",
+          "_run_agent_task" not in _asrc and "run_claude_agent" not in _asrc, True)
+    check("子プロセスの標準入力を切る",
+          "stdin=asyncio.subprocess.DEVNULL" in _asrc, True)
+    check("二重起動を防ぐ", "_analyze_running" in _asrc, True)
+    import pathlib as _plAn
+    check("スクリプト本体が在る",
+          (_plAn.Path(bot.__file__).parent / "tools" /
+           "analyze_hdd_videos.py").exists(), True)
+
     print("■ Router のテーブル（段階2）")
     # 41個のif文を宣言的な表にした。表の並び順がそのまま優先順位。
     check("規則が表になっている", len(bot.ROUTE_RULES) >= 20, True)
