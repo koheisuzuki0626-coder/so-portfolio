@@ -6348,6 +6348,7 @@ def _match_gen_model(content):
 ACT_ROUTES = frozenset({
     "design", "image", "hf_auto", "hf_model", "revise", "edit", "short",
     "ad", "motion", "style_learn", "clip", "virality", "slideshow",
+    "hdd_analyze",
 })
 
 
@@ -6536,6 +6537,29 @@ def _r_status(c):
             and not _asks_where_but_general(c)     # 一般的な質問は会話へ
             and not c.revise_like()):
         return "status"
+
+
+# 元データHDDの動画をまとめて「見る」依頼。エージェント実行（claude -p に
+# プランを立てさせる方式）で回すと100本超でハングするため、専用スクリプト
+# （tools/analyze_hdd_videos.py）へ直結する。!analyze と同じ入口。
+_HDD_ANALYZE_RE = re.compile(
+    r"(元データ|ＨＤＤ|hdd|ハードディスク|事例(素材)?|素材フォルダ|過去の(会社|事例))"
+    r"[^。、\n]{0,24}(動画|映像|ムービー|クリップ|素材)[^。、\n]{0,24}"
+    r"(分析|解析|見て|見る|読ん|読む|傾向|棚卸|チェック)"
+    r"|(動画|映像)(の|を)?(中身の?)?(分析|解析)(して|進めて|お願い|してほしい|"
+    r"しといて|する|回して|に入って)"
+    r"|(元データ|事例|素材)(の)?(動画|映像)?(を|の)?(分析|解析)(して|進めて|回して)",
+    re.I)
+# 「バズる動画作って、あとで分析して」のように制作が主目的の文は除く。
+_MAKE_INTENT_RE = re.compile(r"作って|作成して|生成して|つくって|作り直して")
+
+
+def _r_hdd_analyze(c):
+    if c.is_question or _MAKE_INTENT_RE.search(c.text):
+        return None
+    if _HDD_ANALYZE_RE.search(c.text):
+        return "hdd_analyze"
+    return None
 
 
 def _r_clip(c):
@@ -7051,6 +7075,7 @@ ROUTE_RULES = (
     ("今すぐではない", _r_not_now),
     ("説明を求める質問", _r_explain_question),
     ("状態確認", _r_status),
+    ("元データ動画の解析", _r_hdd_analyze),
     ("切り抜き", _r_clip),
     # 「動画化して」は作り直しより先に見る。後ろに置くと、同じ絵を
     # 作り直して終わる（実際に2回そうなった。2026-08-22）
@@ -12865,6 +12890,18 @@ async def _dispatch_message(message):
         ):
             return
         route = None
+
+    if route == "hdd_analyze":
+        # 「動画分析して」など自然文でも、!analyze と同じ専用スクリプトへ。
+        # エージェント実行は100本超でハングするので通さない。
+        add_history(cid, message.author.display_name, content)
+        if _analyze_running["on"]:
+            await message.channel.send(
+                "いま元データの解析が回っています。二重には起動しません。"
+                "（進捗はこのチャンネルに流れます）")
+            return
+        _spawn(_run_hdd_analyze(cid, ""), cid, "元データ解析")
+        return
 
     if route == "revise":
         add_history(cid, message.author.display_name, content)
