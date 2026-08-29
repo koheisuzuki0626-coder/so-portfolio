@@ -6562,6 +6562,23 @@ def _r_hdd_analyze(c):
     return None
 
 
+# 「解析どこまで？」「分析何本終わった？」は、PM に推測で答えさせず台帳を数える。
+# 事故（2026-08-30）：55/106 本読めているのに「まだ0本」「詰まっています」と
+# 何度も答えた（解析はボットの外で回っており、PM から見えなかった）。
+_HDD_PROGRESS_RE = re.compile(
+    r"(解析|分析)[^。\n]{0,10}(進捗|どこまで|状況|何本|進んで|終わ|済ん|完了|できた)"
+    r"|(何本|どこまで)[^。\n]{0,10}(解析|分析)(でき|終わ|済|進)"
+    r"|(元データ|hdd|ＨＤＤ|動画)[^。\n]{0,12}(解析|分析)[^。\n]{0,12}"
+    r"(進捗|どこまで|何本|終わ|済ん|完了|できた|状況)",
+    re.I)
+
+
+def _r_hdd_progress(c):
+    if _HDD_PROGRESS_RE.search(c.text):
+        return "hdd_progress"
+    return None
+
+
 def _r_clip(c):
     """長い動画の切り抜き（素材を渡して「ショートにして」）。
     完パケ編集より先に見る。編集はHiggsfieldのクラウドでffmpegを回すが、
@@ -7072,6 +7089,7 @@ def _r_maker_fallback(c):
 
 # 上から順に見る。この並び順がそのまま優先順位。
 ROUTE_RULES = (
+    ("元データ解析の進捗", _r_hdd_progress),
     ("今すぐではない", _r_not_now),
     ("説明を求める質問", _r_explain_question),
     ("状態確認", _r_status),
@@ -12210,6 +12228,64 @@ async def _cmd_agent(message, cid, arg):
 _analyze_running = {"on": False}
 
 
+def _hdd_progress():
+    """元データ解析の実際の進み具合を台帳から数える（推測で答えないため）。
+    返り値: (画を読めた本数, 一覧の総数, 台帳の行数)。"""
+    led = Path(BASE_DIR) / "history" / "hdd_video_vision.jsonl"
+    done, lines = set(), 0
+    try:
+        for ln in led.read_text(encoding="utf-8").splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            lines += 1
+            try:
+                rec = json.loads(ln)
+            except ValueError:
+                continue
+            if rec.get("rel") and rec.get("vision"):
+                done.add(rec["rel"])
+    except OSError:
+        pass
+    total = 0
+    try:
+        lj = (Path(BASE_DIR).parent / "成果物" / "事例素材一覧"
+              / "事例素材一覧.json")
+        total = len(json.loads(lj.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        pass
+    return len(done), total, lines
+
+
+def _hdd_analyze_alive():
+    """解析スクリプトが（ボット経由でも外からでも）動いているか。
+    ロックファイルの PID を見る。"""
+    if _analyze_running["on"]:
+        return True
+    lock = Path(BASE_DIR) / "history" / "hdd_video_vision.lock"
+    try:
+        pid = int(lock.read_text().strip() or "0")
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _hdd_progress_text():
+    d, t, _ = _hdd_progress()
+    running = _hdd_analyze_alive()
+    if t and d >= t:
+        return (f"元データ動画の画の解析は **完了**（{d}/{t} 本）。"
+                "台帳: `discord-groupchat/history/hdd_video_vision.jsonl`")
+    if d:
+        return (f"元データ動画の画の解析：**{d}/{t or '?'} 本 完了**、残り "
+                f"{max((t or d) - d, 0)} 本。"
+                + ("いま回っています。" if running else
+                   "いまは止まっています（「分析進めて」で再開）。"))
+    return ("元データ動画の画の解析は、まだ1本も終わっていません。"
+            "「分析進めて」で始めます。")
+
+
 async def _run_hdd_analyze(cid, arg):
     """tools/analyze_hdd_videos.py をボット本体から直接回す。
 
@@ -12228,12 +12304,14 @@ async def _run_hdd_analyze(cid, arg):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        buf, last_flush = [], time.time()
+        buf, last_flush, seen = [], time.time(), []
         while True:
             line = await proc.stdout.readline()
             if not line:
                 break
-            buf.append(line.decode(errors="replace").rstrip())
+            s = line.decode(errors="replace").rstrip()
+            buf.append(s)
+            seen.append(s)
             # 45秒ごと、または20行たまったら1回まとめて流す
             if time.time() - last_flush > 45 or len(buf) >= 20:
                 await send_as(orch, cid, "```\n" + "\n".join(buf) + "\n```")
@@ -12241,10 +12319,14 @@ async def _run_hdd_analyze(cid, arg):
         await proc.wait()
         if buf:
             await send_as(orch, cid, "```\n" + "\n".join(buf) + "\n```")
-        tail = ("✅ 解析スクリプトが正常終了しました。"
-                if proc.returncode == 0 else
-                f"⚠️ 解析スクリプトが終了コード {proc.returncode} で止まりました。")
-        await send_as(orch, cid, tail + "（台帳: `discord-groupchat/history/hdd_video_vision.jsonl`）")
+        # ロックに当たって即終了した場合は「正常終了」と言わない
+        if any("すでに解析が動いています" in x for x in seen):
+            tail = "🔁 別の解析がすでに動いています（重複起動なし）。"
+        elif proc.returncode == 0:
+            tail = "✅ 解析スクリプトが正常終了しました。"
+        else:
+            tail = f"⚠️ 解析スクリプトが終了コード {proc.returncode} で止まりました。"
+        await send_as(orch, cid, f"{tail}\n{_hdd_progress_text()}")
     finally:
         _analyze_running["on"] = False
 
@@ -12890,6 +12972,11 @@ async def _dispatch_message(message):
         ):
             return
         route = None
+
+    if route == "hdd_progress":
+        add_history(cid, message.author.display_name, content)
+        await message.channel.send(_hdd_progress_text())
+        return
 
     if route == "hdd_analyze":
         # 「動画分析して」など自然文でも、!analyze と同じ専用スクリプトへ。
