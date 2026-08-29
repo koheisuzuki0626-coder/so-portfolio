@@ -169,6 +169,46 @@ def _read_frames_with_gemini(frames):
     return None, " / ".join(errs)[:300]
 
 
+def _read_frames_with_claude(frames):
+    """Gemini が枠切れの時の代役。claude CLI（サブスク・画像読み取り無料）で
+    フレームを読む。(vision_text, "claude-cli") か (None, 理由)。"""
+    claude = shutil.which("claude")
+    if not claude:
+        return None, "claude CLI が見つからない"
+    tmpdir = frames[0].parent
+    listing = "\n".join(f"- {f}" for f in frames)
+    prompt = (f"次の画像ファイル（1本の企業VP・事例動画から時系列順に抜いた"
+              f"代表フレーム {len(frames)} 枚）を Read して読んでください:\n{listing}\n\n"
+              + VISION_PROMPT + "\n\n読み取り結果の本文だけを返してください。")
+    try:
+        r = subprocess.run(
+            [claude, "-p", "--dangerously-skip-permissions",
+             "--add-dir", str(tmpdir)],
+            input=prompt.encode(), capture_output=True, timeout=240)
+    except subprocess.TimeoutExpired:
+        return None, "claude CLI タイムアウト"
+    out = (r.stdout.decode(errors="replace") or "").strip()
+    err = (r.stderr.decode(errors="replace") or "").strip()
+    if r.returncode != 0 or not out:
+        low = (err or out).lower()
+        if "limit" in low or "quota" in low:
+            return None, f"claude 上限: {(err or out)[:120]}"
+        return None, f"claude CLI 失敗: {(err or out)[:160]}"
+    return out, "claude-cli"
+
+
+def _read_frames(frames):
+    """まず Gemini（速い・枠がある間）、だめなら claude CLI（サブスク）。"""
+    txt, used = _read_frames_with_gemini(frames)
+    if txt:
+        return txt, used
+    g_err = used
+    txt, used = _read_frames_with_claude(frames)
+    if txt:
+        return txt, used
+    return None, f"gemini→{g_err[:120]} / claude→{used[:120]}"
+
+
 def _append_ledger(rec):
     LEDGER.parent.mkdir(parents=True, exist_ok=True)
     with LEDGER.open("a", encoding="utf-8") as f:
@@ -197,6 +237,27 @@ def main():
     if not _ffmpeg_ok():
         _log("ffmpeg / ffprobe が見つかりません（brew install ffmpeg）。")
         sys.exit(3)
+
+    # 二重起動の防止（ボット再起動・!analyze と自然文の両方から起動されうる）。
+    lock = LEDGER.parent / "hdd_video_vision.lock"
+    if lock.exists():
+        try:
+            pid = int(lock.read_text().strip() or "0")
+        except ValueError:
+            pid = 0
+        alive = False
+        if pid > 0:
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except OSError:
+                alive = False
+        if alive:
+            _log(f"すでに解析が動いています（PID {pid}）。二重には起動しません。")
+            sys.exit(0)
+        lock.unlink(missing_ok=True)      # 前回の残骸
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(str(os.getpid()))
 
     rows = _load_list()
     done = set() if args.redo else _load_done()
@@ -235,7 +296,7 @@ def main():
                                 "src": str(src), "t": time.time()})
                 miss += 1
                 continue
-            vis, used = _read_frames_with_gemini(frames)
+            vis, used = _read_frames(frames)
             rec = {"rel": rel, "title": title, "folder": folder,
                    "src": str(src), "dur_sec": row.get("尺(秒)"),
                    "resolution": row.get("解像度"), "orient": row.get("向き"),
@@ -259,8 +320,18 @@ def main():
     el = time.time() - t0
     _log(f"\n完了。読めた {ok} 本 ／ 画の保留 {novis} 本 ／ 取得不可 {miss} 本"
          f"／ 所要 {el:.0f}s（平均 {el / max(len(todo), 1):.0f}s/本）")
+    if novis:
+        _log("※ 保留分は Gemini/Claude の枠が戻ってから同じコマンドで拾い直せます。")
     _log(f"台帳: {LEDGER}")
 
 
 if __name__ == "__main__":
-    main()
+    _lock = LEDGER.parent / "hdd_video_vision.lock"
+    try:
+        main()
+    finally:
+        try:
+            if _lock.exists() and _lock.read_text().strip() == str(os.getpid()):
+                _lock.unlink()
+        except OSError:
+            pass
