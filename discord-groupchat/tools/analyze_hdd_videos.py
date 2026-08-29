@@ -100,14 +100,25 @@ def _load_done():
 
 
 def _extract_frames(src, dur_sec, out_dir, n_frames):
+    """代表フレームを抜く。1枚が遅い/失敗しても run 全体を落とさない。
+    外付けHDD（exFAT・USB）は1フレームの取り出しに時間がかかることがあり、
+    以前は ffmpeg のタイムアウトが未捕捉で run ごと死んでいた（08-30）。"""
     fracs = FRAME_FRACTIONS if n_frames >= 5 else FRAME_FRACTIONS[:n_frames]
     frames = []
     for i, fr in enumerate(fracs):
         t = max(0.0, min(dur_sec * fr, max(dur_sec - 0.5, 0.0))) if dur_sec else i
         out = out_dir / f"f{i:02d}.jpg"
-        cmd = ["ffmpeg", "-nostdin", "-y", "-ss", f"{t:.2f}", "-i", str(src),
+        cmd = ["ffmpeg", "-nostdin", "-y", "-noaccurate_seek",
+               "-ss", f"{t:.2f}", "-i", str(src), "-map", "0:v:0",
                "-frames:v", "1", "-q:v", "3", "-vf", "scale=640:-1", str(out)]
-        r = subprocess.run(cmd, capture_output=True, timeout=120)
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=90)
+        except subprocess.TimeoutExpired:
+            _log(f"      （フレーム{i} が90秒で取れず。スキップ）")
+            continue
+        except Exception as e:  # noqa: BLE001
+            _log(f"      （フレーム{i} 抽出エラー: {str(e)[:80]}）")
+            continue
         if out.is_file() and out.stat().st_size > 0:
             frames.append(out)
     return frames
@@ -311,6 +322,13 @@ def main():
             else:
                 _log(f"{head} … △ 画の読み取り保留（{used[:80]}）")
                 novis += 1
+        except Exception as e:  # noqa: BLE001
+            # 1本の想定外エラーで run 全体を止めない。次回 --resume で拾い直す。
+            _log(f"{head} … ✗ 想定外のエラーでスキップ: {str(e)[:120]}")
+            _append_ledger({"rel": rel, "title": title, "folder": folder,
+                            "vision": None, "error": f"exception: {str(e)[:200]}",
+                            "src": str(src), "t": time.time()})
+            miss += 1
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         if idx <= 5 or idx % 10 == 0:
