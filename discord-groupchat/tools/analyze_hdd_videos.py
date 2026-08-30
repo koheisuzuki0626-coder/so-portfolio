@@ -226,6 +226,35 @@ def _append_ledger(rec):
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
+# 演出のヒント・映像の分析結果は、どんなものでも1か所に集める（本人の指示・
+# 2026-08-31）。走らせた事実がどこにも残らないと、また探し回ることになる。
+KNOWLEDGE = BASE / "fixtures" / "youtube_insights.md"
+
+
+def _note_in_knowledge(ok, novis, miss):
+    """解析を走らせたら、その事実を『映像制作の知見』に1件残す。"""
+    try:
+        total = 0
+        try:
+            total = len({json.loads(l)["rel"] for l in
+                         LEDGER.read_text(encoding="utf-8").splitlines()
+                         if l.strip() and json.loads(l).get("vision")})
+        except (OSError, ValueError, KeyError):
+            pass
+        stamp = time.strftime("%Y-%m-%d %H:%M")
+        entry = (f"\n## {stamp}\n"
+                 f"【自動・元データ動画の映像解析】今回 {ok} 本を読み取り"
+                 f"（保留 {novis} / 取得不可 {miss}）。累計 **{total} 本**。\n"
+                 f"1本ごとの読み取り（被写体・構図・カメラワーク・テロップ・色調）は "
+                 f"`{LEDGER.name}`。傾向と演出のヒントは、このファイル上部の"
+                 f"【A. プロの事例動画の演出】に集約してある。\n")
+        with KNOWLEDGE.open("a", encoding="utf-8") as f:
+            f.write(entry)
+        _log(f"知見に追記: {KNOWLEDGE}")
+    except OSError as e:
+        _log(f"（知見への追記に失敗: {str(e)[:80]}）")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="処理する本数の上限（0=全部）")
@@ -341,6 +370,8 @@ def main():
     if novis:
         _log("※ 保留分は Gemini/Claude の枠が戻ってから同じコマンドで拾い直せます。")
     _log(f"台帳: {LEDGER}")
+    if ok:
+        _note_in_knowledge(ok, novis, miss)
 
 
 if __name__ == "__main__":
