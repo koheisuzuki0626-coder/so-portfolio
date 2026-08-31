@@ -3,6 +3,28 @@
 映像ポートフォリオサイト(静的HTML / GitHub Pages)。
 公開URL: https://koheisuzuki0626-coder.github.io/so-portfolio/
 
+## 公開範囲
+
+いまは **URL を知っている人だけに見せる** 設定にしている。
+
+- `index.html` / `about.html` の `<meta name="robots" content="noindex, nofollow">`
+- `robots.txt` から `Sitemap:` の行を外している
+
+検索結果には出ないが、**アクセス制限ではない**。URL を知っていれば誰でも見られるし、
+リポジトリが public なのでソースも読める。パスワードをかけたい場合は
+GitHub Pages では対応できないため、別のホスティングが必要。
+
+`robots.txt` で `Disallow: /` にしていないのは意図的。クロールを止めると
+`noindex` 自体を読んでもらえず、外部リンク経由で URL だけ検索結果に出ることがある。
+
+### 検索に載せたくなったら
+
+1. 両ページの `<meta name="robots">` の行（とその上のコメント）を削除
+2. `robots.txt` に `Sitemap: <公開URL>sitemap.xml` を戻す
+3. Google Search Console でサイトを登録し、`sitemap.xml` を送信
+
+`sitemap.xml` はそのまま置いてあるので作り直しは不要。
+
 ## 公開URLを変えるとき
 
 canonical / og:url / og:image / 構造化データ / sitemap.xml / robots.txt には
