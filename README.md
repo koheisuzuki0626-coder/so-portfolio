@@ -3,6 +3,21 @@
 映像ポートフォリオサイト(静的HTML / GitHub Pages)。
 公開URL: https://koheisuzuki0626-coder.github.io/so-portfolio/
 
+## 公開URLを変えるとき
+
+canonical / og:url / og:image / 構造化データ / sitemap.xml / robots.txt には
+絶対URLが必要で、いま17か所に散っている。1か所でも直し忘れると検索エンジンに
+古いURLを伝え続けることになるため、まとめて書き換えるスクリプトを用意している。
+
+```bash
+node scripts/set-site-url.mjs --show                    # いまの設定を表示
+node scripts/set-site-url.mjs https://example.jp/       # 独自ドメインへ(CNAME も生成)
+node scripts/set-site-url.mjs https://xxx.github.io/    # github.io へ(CNAME は削除)
+```
+
+独自ドメインを指定した場合は、このあと GitHub 側で
+**Settings → Pages → Custom domain** の設定と **Enforce HTTPS** が必要。
+
 ## ページ構成
 
 | ファイル | 内容 |
