@@ -5429,6 +5429,18 @@ _TREND_STRIP_TOOL_RE = re.compile(
     r"(で|の|を|から|について)?\s*(youtube|ユーチューブ|you\s*tube|"
     r"ショート|shorts)?\s*(で|の|を|から|について)?\s*$", re.I)
 _TREND_TOOL_ONLY_RE = re.compile(r"^(youtube|ユーチューブ|you\s*tube)$", re.I)
+# 頭に付く「やり直しの合図」。題材ではないので落とす。
+# 事故（2026-09-01）：「もう一回会社プロモーションで〜」が
+# 『もう一回会社プロモーション』という語で検索された。
+_TREND_STRIP_HEAD_RE = re.compile(
+    r"^(もう一回|もう一度|もういっかい|もっかい|再度|改めて|あらためて|また|"
+    r"次は|今度は|こんどは)\s*")
+# 題材は【名詞】。打ち消し・言い直しを含む文は、依頼の訂正であって検索語ではない。
+# 事故（2026-09-01）：確認待ち中の「編集はしなくていいよ、分析だけ」が
+# そのまま検索語になり「合う動画が見つかりませんでした」と返した。
+_TREND_NOT_TOPIC_RE = re.compile(
+    r"しなくていい|しないで|じゃなくて|ではなく|いらない|要らない|"
+    r"だけでいい|でいいよ|ないで$|なくて")
 
 
 def _trend_topic(text):
@@ -5442,7 +5454,10 @@ def _trend_topic(text):
     # 「〜でYouTube」「〜のYouTube」の道具名と、末尾に残った助詞を落とす
     t = _TREND_STRIP_TOOL_RE.sub("", t).strip("　 。、")
     t = re.sub(r"[はがをでにのとやも]+$", "", t).strip("　 。、")
+    t = _TREND_STRIP_HEAD_RE.sub("", t).strip("　 。、")
     if _TREND_TOOL_ONLY_RE.match(t):       # 「YouTube」だけ＝題材ではない
+        return ""
+    if _TREND_NOT_TOPIC_RE.search(t):      # 依頼の訂正＝検索語ではない
         return ""
     return t
 
@@ -6616,6 +6631,23 @@ def _r_text_rework(c):
     return None
 
 
+# YouTubeのリサーチの依頼。事故（2026-09-01）：「もう一回会社プロモーションで
+# YouTubeリサーチして」の『もう一回』を【作り直し】が先に拾い、動画の再生成プラン
+# （英語プロンプト・クレジット消費）を出した。リサーチはクレジットを使わない
+# 別物なので、作り直しより先に会話（＝AI判定→trend）へ渡す。
+_YT_RESEARCH_RE = re.compile(
+    r"(youtube|ユーチューブ)[^。\n]{0,10}(リサーチ|調査|調べ|分析)"
+    r"|(リサーチ|調査)[^。\n]{0,10}(して|してほしい|お願い|進めて)", re.I)
+
+
+def _r_youtube_research(c):
+    if c.is_question:
+        return None
+    if _YT_RESEARCH_RE.search(c.text):
+        return STOP_CHAT                 # AI判定（trend）へ回す
+    return None
+
+
 def _r_clip(c):
     """長い動画の切り抜き（素材を渡して「ショートにして」）。
     完パケ編集より先に見る。編集はHiggsfieldのクラウドでffmpegを回すが、
@@ -7128,6 +7160,7 @@ def _r_maker_fallback(c):
 ROUTE_RULES = (
     ("元データ解析の進捗", _r_hdd_progress),
     ("文章の言い直し（絵に触らない）", _r_text_rework),
+    ("YouTubeリサーチ（作り直しに渡さない）", _r_youtube_research),
     ("今すぐではない", _r_not_now),
     ("説明を求める質問", _r_explain_question),
     ("状態確認", _r_status),
