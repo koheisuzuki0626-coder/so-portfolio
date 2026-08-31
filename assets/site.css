@@ -1041,6 +1041,41 @@ table.compare tr:last-child th, table.compare tr:last-child td { border-bottom: 
     .calc-total { font-size: 2.1rem; }
 }
 
+/* ---------- FAQ ---------- */
+.faq { border-top: 1px solid var(--line); max-width: 860px; }
+.faq-item { border-bottom: 1px solid var(--line); }
+.faq-item summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex; align-items: flex-start; gap: 16px;
+    padding: 24px 0;
+    font-size: 1.06rem; font-weight: 500; line-height: 1.6;
+    transition: color 0.22s ease;
+}
+.faq-item summary::-webkit-details-marker { display: none; }
+.faq-item summary:hover { color: var(--accent-ink); }
+.faq-item summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+/* 開閉の記号。開くと縦棒が消えて「−」になる */
+.faq-item summary::after {
+    content: "";
+    flex: none; margin-left: auto; margin-top: 0.42em;
+    width: 13px; height: 13px;
+    background:
+        linear-gradient(var(--accent-ink), var(--accent-ink)) center/13px 1px no-repeat,
+        linear-gradient(var(--accent-ink), var(--accent-ink)) center/1px 13px no-repeat;
+    transition: transform 0.28s var(--ease), background-size 0.28s var(--ease);
+}
+.faq-item[open] summary::after {
+    background-size: 13px 1px, 1px 0;
+    transform: rotate(180deg);
+}
+.faq-a { padding: 0 40px 26px 0; }
+.faq-a p { margin: 0; font-size: 1rem; line-height: 1.85; color: var(--ink-2); }
+@media (prefers-reduced-motion: no-preference) {
+    .faq-item[open] .faq-a { animation: faqOpen 0.32s var(--ease); }
+    @keyframes faqOpen { from { opacity: 0; transform: translateY(-6px); } }
+}
+
 /* ---------- Works ---------- */
 .grid {
     display: grid;
