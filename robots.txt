@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://koheisuzuki0626-coder.github.io/so-portfolio/sitemap.xml
