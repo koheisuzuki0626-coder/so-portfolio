@@ -6326,12 +6326,28 @@ _STATUS_WORD_RE = re.compile(
 _COST_WORD_RE = re.compile("クレジット|残高|料金|いくら|課金|値段|コスト")
 
 
+# 「ローテーション」は画像モデルの話とは限らない。
+# 事故（2026-09-01）：リサーチの検索ワードを列挙して「ここら辺をローテーション
+# したい」と頼んだら、Gemini画像モデルの一覧が返ってきた。
+# 『この言葉はこの機能のことしか指さない』という前提が崩れていた。
+_ROTATE_OTHER_RE = re.compile(
+    "リサーチ|検索|キーワード|ワード|テーマ|ジャンル|お題|"
+    "動画|映像|撮影|案件|投稿|ネタ")
+
+
 def _asks_image_model_status(text):
     t = text or ""
     if _COST_WORD_RE.search(t):
         return False                       # 料金の話は別（credits へ）
     if re.search("ローテ", t):
-        return True                        # この言葉はこの機能のことしか指さない
+        if re.search("モデル|gemini|ジェミニ|画像生成", t, re.I):
+            return True                    # はっきり画像モデルの話
+        if _ROTATE_OTHER_RE.search(t):
+            return False                   # 別のものを回したい話
+        # 何を回すか書かれていない時は、【状態を尋ねる形】の時だけ状態を出す。
+        # 「ローテーションできてるのか分からない」＝状態の質問、
+        # 「ここら辺をローテーションしたい」＝依頼。後者で一覧を返すのは誤り。
+        return bool(_STATUS_WORD_RE.search(t))
     return bool(re.search("モデル", t)
                 and re.search("gemini|ジェミニ|画像", t, re.I)
                 and _STATUS_WORD_RE.search(t))
