@@ -1411,6 +1411,33 @@ def run():
     check("はっきりした言い方は生成が無くても通る",
           bot._looks_revise("作り直して", False), True)
 
+    print("■ ナレーターのボイスサンプルをリサーチから外すこと")
+    # 本人の依頼（2026-09-01）：「企業VP」で検索すると上位がほぼ声の見本市で、
+    # 実制作の事例が読めない。タイトル・説明文・タグの3つを見て外す。
+    for _v in (
+        {"title": "【ボイスサンプル】和風・伝統行事VP風｜ナレーター 藤岡健一郎"},
+        {"title": "Japanese Corporate Voiceover Reel | Professional Narration"},
+        {"title": "企業VPサンプル（宮﨑愛里ver）", "desc": "ナレーターの宮﨑です"},
+        {"title": "企業紹介", "tags": ["宅録", "声優"]},
+    ):
+        check(f"外す: {str(_v.get('title'))[:28]!r}", bot._is_voice_sample(_v), True)
+    for _v in (
+        {"title": "【会社紹介】株式会社コージーを宜しくお願いします。"},
+        {"title": "29歳足場屋社長の会社紹介"},
+        {"title": "【企業VP】買取サービス『カウセル』 サービス紹介動画"},
+        {"title": "原田建設有限会社 紹介動画", "desc": "建設会社の紹介"},
+    ):
+        check(f"残す: {str(_v.get('title'))[:28]!r}", bot._is_voice_sample(_v), False)
+    # 説明文のキーは desc（description ではない）。取り違えると黙って素通りする。
+    check("説明文のキーを間違えていない",
+          bot._is_voice_sample({"title": "企業紹介", "desc": "ボイスサンプルです"}),
+          True)
+    _srcV = bot_src()
+    check("除外した本数を報告する", "ボイスサンプルを **{_excluded}本** 除外" in _srcV
+          or "_excluded}本" in _srcV, True)
+    check("全部外れたら外さずに見る（0本で終わらせない）",
+          "_excluded = 0" in _srcV, True)
+
     print("■ 毎日のリサーチのジャンルを変えられること")
     for _t, _want in (
         ("リサーチはアート系にして", ("set", "アート系")),

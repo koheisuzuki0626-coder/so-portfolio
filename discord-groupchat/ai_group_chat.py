@@ -1745,6 +1745,12 @@ OPS_RULES = (
     "（実際にそう答えて話が止まった）。自分の構成や仕様の話も、"
     "分かる範囲でその場で普通に答える。仕様変更が要るなら"
     "『それは作り込みが要るから、直してほしければそう言って』と伝えるだけでよい。"
+    "【重要】自分でコードを書き換える機能は、いまオフになっている。"
+    "『コード側の変更なので、書いて反映したうえで次回から効くようにします』"
+    "のように、自分がコードを直すと約束してはいけない（実際に約束して"
+    "何も起きず、話が宙に浮いた・2026-09-01）。"
+    "仕様変更が必要なときは『それは作り込みが要る。直しておくので、"
+    "次のリサーチから効くようにする』程度に留め、実装したとは言わない。"
     "『再起動してください』という案内は、ユーザーが"
     "【コードの修正をボットに反映すること】について聞いてきた時だけ使う。"
     "作業結果の報告や普通の質問の末尾に再起動の案内を付けるのは禁止。"
@@ -5462,6 +5468,28 @@ def _trend_topic(text):
     return t
 
 
+# ナレーター・声優の営業動画（ボイスサンプル／宅録デモ）。
+# 本人の依頼（2026-09-01）：「企業VP」で検索すると上位がこれで埋まり、
+# 実制作の事例が読めない。タイトルと説明文の両方を見て外す。
+_VOICE_SAMPLE_RE = re.compile(
+    r"ボイスサンプル|ヴォイスサンプル|voice\s*sample|voice\s*over\s*reel|"
+    r"ボイスリール|デモリール(?=.{0,12}(声|ナレ))|宅録|"
+    r"ナレーター|ナレーション\s*サンプル|声優|voice\s*actor|narrat(or|ion)\s*(demo|reel|sample)",
+    re.I)
+
+
+def _is_voice_sample(v):
+    """その動画がナレーターの営業動画か（タイトル・説明文・タグで判定）。
+    ※ 内部形式の説明文のキーは `desc`（`description` ではない）。
+    間違えると何にも当たらず、黙って素通りする。"""
+    text = "\n".join([
+        str(v.get("title") or ""),
+        str(v.get("desc") or "")[:400],
+        " ".join(str(t) for t in (v.get("tags") or [])),
+    ])
+    return bool(_VOICE_SAMPLE_RE.search(text))
+
+
 async def _run_trend_study(cid, query=None, skip_analyzed=None):
     """YouTube動画のリサーチ。query なし＝急上昇TOP100 / query あり＝そのお題で
     検索した人気動画。上位数本を視聴・分析 → レポート保存＆ダイジェスト投稿。"""
@@ -5492,6 +5520,16 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
         v for v in videos
         if v["id"] not in analyzed and 0 < v["duration"] <= TREND_MAX_MINUTES * 60
     ]
+    # ナレーターの営業動画（ボイスサンプル）を外す。本人の依頼（2026-09-01）：
+    # 「企業VP」で検索すると上位がほぼ声の見本市になり、実制作の事例が読めない。
+    _before = len(candidates)
+    candidates = [v for v in candidates if not _is_voice_sample(v)]
+    _excluded = _before - len(candidates)
+    if _excluded and not candidates:
+        # 全部外れたら、外さずに見る（0本で終わるほうが困る）
+        candidates = [v for v in videos if v["id"] not in analyzed
+                      and 0 < v["duration"] <= TREND_MAX_MINUTES * 60]
+        _excluded = 0
     # 上位から順に取ると、ランキングが動かない限り毎日ほぼ同じ顔ぶれになる。
     # 候補を日替わりの並びにしてから選ぶ（同じ日は何度回しても同じ結果）。
     # 事故（2026-08-22）：本人から「いつも同じ動画」と指摘された。
@@ -5505,7 +5543,9 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
     targets = candidates[:TREND_DEEP_COUNT]
     await channel.send(
         f"🎬 {label}の動画{len(videos)}本を取得しました。"
-        f"うち{len(targets)}本を視聴して映像分析します（数分かかります）…"
+        + (f"ナレーターのボイスサンプルを **{_excluded}本** 除外し、"
+           if _excluded else "")
+        + f"うち{len(targets)}本を視聴して映像分析します（数分かかります）…"
     )
 
     # お題指定時は、その観点を重視して視聴する
