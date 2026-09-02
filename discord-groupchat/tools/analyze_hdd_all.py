@@ -584,16 +584,38 @@ def extract_frames(src, dur_sec, out_dir, n_frames=5):
     return frames
 
 
+def _ok_jpeg(p):
+    return p.is_file() and p.stat().st_size > 0
+
+
 def to_jpeg(src, out_path, max_px=900):
-    """静止画・psd/ai を jpeg に落とす。sips は macOS 標準で psd/ai も読める。"""
+    """静止画・psd/ai を jpeg に落とす。
+
+    まず sips（macOS標準・psd や普通の画像はこれで足りる）。
+    `.ai` の多くは PDF ではなく PostScript(EPS) なので sips が失敗する
+    （実測：621件の .ai が全滅した・2026-09-02）。その場合だけ
+    Ghostscript に回す。gs が無い環境では従来どおり失敗扱い。
+    """
     try:
         r = subprocess.run(
             ["sips", "-s", "format", "jpeg", "-Z", str(max_px),
              str(src), "--out", str(out_path)],
             capture_output=True, timeout=120)
+        if r.returncode == 0 and _ok_jpeg(out_path):
+            return True
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    if not shutil.which("gs"):
+        return False
+    try:
+        subprocess.run(
+            ["gs", "-dNOPAUSE", "-dBATCH", "-dSAFER", "-sDEVICE=jpeg",
+             "-r72", "-dFirstPage=1", "-dLastPage=1", "-dJPEGQ=85",
+             f"-sOutputFile={out_path}", str(src)],
+            capture_output=True, timeout=180)
     except (subprocess.TimeoutExpired, OSError):
         return False
-    return r.returncode == 0 and out_path.is_file() and out_path.stat().st_size > 0
+    return _ok_jpeg(out_path)
 
 
 def _dur_from_ledger(path):
