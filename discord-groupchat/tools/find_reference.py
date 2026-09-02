@@ -26,7 +26,44 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 SRC = BASE / "history" / "finished_videos.json"
+EMB = BASE / "history" / "finished_embeddings.json"
 LEDGER = BASE / "history" / "hdd_all_analysis.jsonl"
+
+
+def _embed_query(q):
+    """質問文を埋め込みに変換。索引が無ければ None を返して bigram に落とす。"""
+    if not EMB.exists():
+        return None, None
+    import os
+    env = BASE / ".env"
+    if env.exists() and not os.getenv("GEMINI_API_KEY"):
+        for ln in env.read_text(encoding="utf-8").splitlines():
+            ln = ln.strip()
+            if ln.startswith("GEMINI_API_KEY=") and "=" in ln:
+                os.environ.setdefault("GEMINI_API_KEY", ln.split("=", 1)[1].strip())
+    try:
+        from google import genai
+        model = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-2")
+        # クライアントは変数に保持する。式の中で使い捨てにすると、応答を
+        # 読む前に破棄されて "client has been closed" になる。
+        cl = genai.Client()
+        r = cl.models.embed_content(model=model, contents=[q])
+        qv = list(r.embeddings[0].values)
+    except Exception as e:  # noqa: BLE001
+        print(f"（埋め込み検索が使えないので文字bigramで探します: {str(e)[:80]}）")
+        return None, None
+    vecs = {r["path"]: r["vec"] for r in
+            json.loads(EMB.read_text(encoding="utf-8"))}
+    return qv, vecs
+
+
+def _cos(a, b):
+    s = na = nb = 0.0
+    for x, y in zip(a, b):
+        s += x * y
+        na += x * x
+        nb += y * y
+    return s / (math.sqrt(na) * math.sqrt(nb) or 1.0)
 
 
 def bigrams(text):
@@ -71,6 +108,8 @@ def main():
     ap.add_argument("--dur", type=float, default=0, help="尺で絞る（±2秒）")
     ap.add_argument("--root", default="", help="ルート名で絞る")
     ap.add_argument("--full", action="store_true", help="読み取りを全文表示")
+    ap.add_argument("--bigram", action="store_true",
+                    help="埋め込みを使わず文字bigramで探す（APIを叩かない）")
     args = ap.parse_args()
 
     if not SRC.exists():
@@ -89,16 +128,24 @@ def main():
         print("条件に合う実例がありません。--dur / --root を緩めてください。")
         return
 
-    idf, vecs = build(docs)
-    qv = query_vec(args.query, idf)
-    scored = []
-    for d, v in zip(docs, vecs):
-        s = sum(x * v.get(g, 0) for g, x in qv.items())
-        scored.append((s, d))
-    scored.sort(key=lambda x: -x[0], reverse=False)
+    # 埋め込みがあれば意味で探す（語彙が違っても拾える）。無ければ文字bigram。
+    qvec, evecs = (None, None) if args.bigram else _embed_query(args.query)
+    if qvec and evecs:
+        how = "意味で検索（埋め込み）"
+        scored = [(_cos(qvec, evecs[d["path"]]), d)
+                  for d in docs if d["path"] in evecs]
+        if not scored:                      # 索引が母集団とずれている
+            qvec = None
+    if not qvec:
+        how = "語の一致で検索（文字bigram）"
+        idf, vecs = build(docs)
+        qv = query_vec(args.query, idf)
+        scored = [(sum(x * v.get(g, 0) for g, x in qv.items()), d)
+                  for d, v in zip(docs, vecs)]
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    print(f"「{args.query}」に近い実例 上位{args.n}件（母集団 {len(docs)} 本）\n")
+    print(f"「{args.query}」に近い実例 上位{args.n}件"
+          f"（母集団 {len(docs)} 本 / {how}）\n")
     for i, (s, d) in enumerate(scored[:args.n], 1):
         dur = d.get("dur_sec")
         wh = f"{d.get('width')}x{d.get('height')}" if d.get("width") else "?"
