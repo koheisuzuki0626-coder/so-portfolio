@@ -56,7 +56,9 @@ FINISHED_RE = NAME_RE          # 互換のため残す（score 内では使い�
 RAW_RE = re.compile(
     r"撮影データ|確認用|Vコン|Video Previews|pvw|ラッシュ|rush|"
     r"テスト|test|NG\d|没|ボツ|検討|バックアップ|backup|"
-    r"検証|小道具|ロケハン|オフライン|プレビュー|素材/|/素材|demo", re.I)
+    r"検証|小道具|ロケハン|オフライン|プレビュー|素材/|/素材|demo|"
+    # 購入前のストック素材（透かし入りプレビュー）。完成映像ではない。
+    r"AdobeStock|MotionElements|gettyimages|shutterstock|_Preview", re.I)
 # 6〜7秒は偶然その長さのクリップが多く、規格尺の手がかりにならない
 # （実測：オーディション素材が大量に引っかかった）。CMの実尺だけに絞る。
 STD_DURATIONS = [15, 30, 60, 90, 120]
