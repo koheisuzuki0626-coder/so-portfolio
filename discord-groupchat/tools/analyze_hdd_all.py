@@ -328,8 +328,29 @@ def parse_prproj(path):
     }, None
 
 
+_TC_RE = re.compile(r"(\d\d):(\d\d):(\d\d):(\d\d)")
+
+
+def _tc_sec(tc, fps):
+    h, m, s, fr = (int(x) for x in tc)
+    return h * 3600 + m * 60 + s + fr / fps
+
+
 def parse_edl(path):
-    """EDL（カット表）。行数＝カット数の目安、使用テープ名、尺。"""
+    """EDL（カット表）。カット数・使用テープ名に加えて【1カットの長さ】を出す。
+
+    標準CMX3600の1行はこの形：
+      000001  A002C038_190521_R5F8  V  C  <src_in> <src_out> <rec_in> <rec_out>
+    後ろ2つがタイムライン上の位置なので、その差が1カットの尺になる。
+
+    なぜ尺まで取るか：AI動画生成が「作り物」に見える一番の原因が長回しで、
+    実際のプロがどのくらいの速さで切っているかを裏付けたいから
+    （2026-09-02。台帳の先頭25行だけで試算したら中央値1.17秒で、
+    それまで一般論として言っていた「2〜3秒」より遥かに速かった）。
+
+    fps は EDL に書かれていないので30固定で計算し、その旨を添える。
+    23.98素材なら実尺は約1.25倍になる。
+    """
     try:
         txt = path.read_text(encoding="utf-8", errors="replace")[:2 * 1024 * 1024]
     except OSError as e:
@@ -338,12 +359,26 @@ def parse_edl(path):
     events = [l for l in lines if re.match(r"^\d{3,6}\s+\S+", l)]
     reels = sorted({m.group(1) for l in events
                     if (m := re.match(r"^\d{3,6}\s+(\S+)", l))})
-    return {"title": next((l.split(":", 1)[1].strip() for l in lines[:5]
-                           if l.upper().startswith("TITLE:")), None),
-            "event_count": len(events),
-            "reels": reels[:60],
-            "reel_count": len(reels),
-            "head": "\n".join(lines[:25])}, None
+    cuts = []
+    for l in events:
+        tcs = _TC_RE.findall(l)
+        if len(tcs) >= 4:
+            d = _tc_sec(tcs[3], 30) - _tc_sec(tcs[2], 30)
+            if 0.03 < d < 120:            # 明らかな異常値だけ捨てる
+                cuts.append(round(d, 3))
+    out = {"title": next((l.split(":", 1)[1].strip() for l in lines[:5]
+                          if l.upper().startswith("TITLE:")), None),
+           "event_count": len(events),
+           "reels": reels[:60],
+           "reel_count": len(reels),
+           "cut_secs": cuts[:2000],
+           "cut_fps_assumed": 30,
+           "head": "\n".join(lines[:25])}
+    if cuts:
+        s = sorted(cuts)
+        out["cut_median"] = s[len(s) // 2]
+        out["cut_total_sec"] = round(sum(cuts), 2)
+    return out, None
 
 
 def _zip_text(path, member_prefix, tag):
