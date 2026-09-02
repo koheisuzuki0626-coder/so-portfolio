@@ -12,6 +12,17 @@ NotebookLM の制限（2026-09時点）：
 
 出力先：`成果物/NotebookLM用/`（作業ブランチとmainの両方に置く方針の場所）
 
+**出力は決定的にすること（重要）。**
+同じ台帳から作り直したら1バイトも変わらない、を守る。そうであれば
+git の差分が出ず、何度作り直しても履歴は膨らまない（32MBがコミット
+済みなので、ここが崩れると作り直すたびに32MB積み上がる）。
+具体的には：
+  - 日時・実行環境・乱数を出力に含めない
+  - 並び順を固定する（dict の挿入順に頼らず sorted を使う）
+  - 「N件中M件目」のような、母数で変わる番号を振らない
+変更したら `python3 tools/export_for_notebooklm.py` を2回走らせて
+`git status` が空のままかを確認すること。
+
 使い方：
   python3 tools/export_for_notebooklm.py
 """
@@ -52,7 +63,9 @@ def load_ledger():
             k = r.get(key) or (r.get("paths") or [None])[0]
             if k:
                 out[k] = r
-        return list(out.values())
+        # パスで並べ替える。台帳の追記順に頼ると、--redo で行が増えたときに
+        # 中身が同じでも並びが変わり、32MB全部が差分になってしまう。
+        return [out[k] for k in sorted(out)]
     return dedup(vis, "path"), dedup(meta, "path")
 
 
@@ -96,7 +109,8 @@ def main():
 
     # ① プロ品質の完成CM（主力）
     if FINISHED.exists():
-        fin = json.loads(FINISHED.read_text(encoding="utf-8"))
+        fin = sorted(json.loads(FINISHED.read_text(encoding="utf-8")),
+                     key=lambda d: d["path"])
         blocks = [block_for(d) for d in fin]
         made += write(
             "01_プロの完成CM_1274本",
