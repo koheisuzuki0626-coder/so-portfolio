@@ -443,11 +443,59 @@ def parse_document(path, ext):
                     "text_len": len(text)}, None
         except Exception as e:  # noqa: BLE001
             return None, f"xlsx 解析失敗: {str(e)[:120]}"
-    # TODO(2026-09-02 本人と合意・後回し): .xls / .doc / .ppt の旧バイナリ形式が
-    # 未対応（openpyxl は xlsx 専用）。対象は27件程度と少ないので後で足す。
-    # やるなら xlrd（xls）と antiword/textract 相当が要る。
-    # .key（Keynote・30件）も同様に未対応。新しい版は zip なので拾える見込み。
-    if ext in ("txt", "rtf"):
+    if ext == "xls":
+        # 旧Excel。openpyxl は xlsx 専用なので xlrd を使う（xlrd 2.x は xls のみ）。
+        try:
+            import xlrd
+            wb = xlrd.open_workbook(str(path))
+            sheets, buf = [], []
+            for sh in wb.sheets()[:12]:
+                sheets.append(sh.name)
+                for i in range(min(sh.nrows, 200)):
+                    buf.append(" ".join(str(c.value) for c in sh.row(i)
+                                        if c.value not in ("", None)))
+            text = re.sub(r"\s+", " ", " ".join(buf))
+            return {"sheets": sheets, "text": text[:20000],
+                    "text_len": len(text)}, None
+        except Exception as e:  # noqa: BLE001
+            return None, f"xls 解析失敗: {str(e)[:120]}"
+    if ext in ("doc", "rtf"):
+        # 旧Word。macOS標準の textutil が .doc/.rtf をテキストに落とせる。
+        # 外部ライブラリを増やさずに済む（antiword/textract は不要）。
+        try:
+            r = subprocess.run(
+                ["textutil", "-convert", "txt", "-stdout", str(path)],
+                capture_output=True, timeout=120)
+            if r.returncode != 0:
+                return None, f"textutil 失敗: {r.stderr.decode(errors='replace')[:120]}"
+            text = re.sub(r"\s+", " ", r.stdout.decode("utf-8", "replace"))
+            return {"text": text[:20000], "text_len": len(text)}, None
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return None, f"textutil 失敗: {str(e)[:120]}"
+    if ext == "key":
+        # Keynote。新しい版は zip で、中の Index/*.iwa は圧縮protobufなので
+        # 本文は取れない。プレビューやメタからテキストが拾える範囲だけ拾う。
+        try:
+            z = zipfile.ZipFile(path)
+            names = z.namelist()
+            chunks = []
+            for n in names:
+                if n.endswith((".xml", ".plist", ".txt")):
+                    try:
+                        x = z.read(n).decode("utf-8", "replace")
+                    except (KeyError, OSError):
+                        continue
+                    chunks += re.findall(r">([^<>]{3,})<", x)
+            z.close()
+            text = re.sub(r"\s+", " ", " ".join(chunks))
+            return {"members": len(names), "text": text[:20000],
+                    "text_len": len(text),
+                    "note": "Keynoteの本文は圧縮protobuf(.iwa)のため取得不可"}, None
+        except (zipfile.BadZipFile, OSError) as e:
+            return None, f"key 解析失敗: {str(e)[:120]}"
+    # .ppt（旧PowerPoint・7件）は未対応のまま。バイナリ形式で textutil も
+    # 扱えず、7件のために依存を増やす価値が無い。
+    if ext in ("txt",):
         try:
             t = path.read_text(encoding="utf-8", errors="replace")[:20000]
             return {"text": t, "text_len": len(t)}, None
