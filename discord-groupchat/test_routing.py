@@ -2366,6 +2366,26 @@ def run():
         bot._pending_approvals.update(_keep_pa)
         bot._pending_do.clear()
 
+    print("■ 画像を添付して【文章】を頼んだら生成に流さない _WANTS_TEXT_RE")
+    # 事故（2026-09-02）：NotebookLMの入力欄のスクショを添付して
+    # 「違う、ここの文章を考えて欲しい」と送ったら、画像添付だけを根拠に
+    # 生成へ流れ、9項目の確認を出したうえでクレジットを使う生成が始まった。
+    # 添付は「これで何かして」の意思表示だが、【何を】してほしいかは本文で決まる。
+    for _t in ("違う、ここの文章を考えて欲しい",
+               "ここに入れるプロンプトを考えて",
+               "この画面のキャッチコピー書いて",
+               "スクショの説明文を作って",
+               "この画像を説明する文章を書いて",
+               "どんな動画にも使えるプロンプトにして"):
+        check(f"添付ありでも会話にする: {_t}",
+              bot.classify_route(_t, has_image_att=True, has_attachments=True),
+              None)
+    # 守りすぎの確認：添付して【絵や映像】を頼むのは、従来どおり生成に通す
+    for _t, _want in (("この写真から動画にして", "slideshow"),
+                      ("この画像をいい感じに加工して", "image")):
+        _got = bot.classify_route(_t, has_image_att=True, has_attachments=True)
+        check(f"添付＋映像/画像の依頼は通す: {_t} → {_got}", _got is not None, True)
+
     print("■ 『〜って何？』で機能を起動しない _EXPLAIN_Q_RE")
     # 実例：「実績ってどうやって見るの」で実績分析が、
     #       「クロード3ってどんな役割？」で複数視点の呼び出しが走っていた
