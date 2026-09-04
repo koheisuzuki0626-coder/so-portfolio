@@ -7240,10 +7240,20 @@ def _r_do_proposal(c):
         return None
     said = c.text
     bare = bool(_BARE_GO_RE.search(said))
+    # 「おまかせ」は提案への合意。全体の依頼判定には入れず、ここだけで受ける
+    # （「おまかせ」単体を作業の合図にすると、雑談で誤爆しうるため）。
+    if re.fullmatch(r"(おまかせ|お任せ|まかせる|任せる|おまかせする|"
+                    r"お任せする|どれでもいい|任せた)[。、!！\s]*", said.strip()):
+        bare = True
     # 「ok」「了解」は依頼の【形】ではないが、提案への返事としては
     # 「やって」と同じ意味。事故（2026-08-21）：構成案に合意したあと
     # 「ok」を3回送っても何も始まらず、ボットは「制作開始します」と
     # 言い続けるだけだった（どれも会話に落ちていた）。
+    # 提案された候補を名指しした返事は、それ自体が選択＝合意。
+    # 「ブランドムービー メーカーで」のように依頼の形になっていなくても通す。
+    _prev0 = _recent_bot_say(c.cid) or ""
+    if any(t in said for t in _proposed_research_topics(_prev0)):
+        return "trend"
     if not (bare or _wants_action(said)):
         return None
     if len(_strip_media_context(said)) > 60:
@@ -7253,6 +7263,10 @@ def _r_do_proposal(c):
     prev = _recent_bot_say(c.cid)
     if not prev:
         return None
+    # 検索語の候補を挙げて「どれで回す？」と聞いた提案への合意は、リサーチへ。
+    # ここが無かったので、合意しても会話で終わっていた（2026-09-04）。
+    if _proposed_research_topics(prev):
+        return "trend"
     # 直前の提案がコード・仕組みの話だった時だけ。雑談の「それやって」は通さない
     if _CODE_WORK_RE.search(prev) or _CODE_WORK_RE.search(said):
         return "selffix"
@@ -7261,6 +7275,40 @@ def _r_do_proposal(c):
     if c.design_ctx and _PROPOSAL_ASK_RE.search(prev):
         return "design"
     return None
+
+
+# ボットが「この語で回しましょうか」と検索語の候補を並べた返事か。
+# 事故（2026-09-04 10:07〜16:43）：ボットが候補を4つ挙げて
+# 「どれで回すか一つ決めてくれれば、その語でリサーチします」と言い、
+# 「おまかせする」と答えたのに、_r_do_proposal が selffix と design に
+# しか繋がっておらずリサーチが始まらなかった。会話で終わったまま
+# 「回します」と言い続け、6時間後に「まだ結果が返ってきていません」。
+_RESEARCH_PROPOSAL_RE = re.compile(
+    r"(リサーチ|検索|調べ)[^。\n]{0,20}(語|ワード|キーワード|どれ|一つ|ひとつ)|"
+    r"(語|ワード|キーワード)[^。\n]{0,14}(ずらし|変え|決め)")
+# 提案文の中の候補（「〜」で囲われた語）。上から順に第1候補とみなす。
+_QUOTED_TOPIC_RE = re.compile(r"[「『]([^」』\n]{2,30})[」』]")
+
+
+def _proposed_research_topics(prev):
+    """直前のボットの提案から、検索語の候補を取り出す。
+
+    候補は箇条書きで並ぶので、【行頭が箇条書きの行】の「」だけを採る。
+    地の文の「」は、たいてい却下された語の方（「ここ数回『企業PV』系は
+    母数が少ない」）なので、混ぜると第1候補を取り違える。
+    """
+    if not prev or not _RESEARCH_PROPOSAL_RE.search(prev):
+        return []
+    bullets, anywhere = [], []
+    for line in prev.splitlines():
+        s = line.strip()
+        for m in _QUOTED_TOPIC_RE.finditer(s):
+            t = m.group(1).strip()
+            # 「やって」「おまかせ」など操作の合図は候補ではない
+            if not t or re.fullmatch(r"(やって|おまかせ|OK|ok|やめて)", t):
+                continue
+            (bullets if re.match(r"^[-・*●\d]", s) else anywhere).append(t)
+    return bullets or anywhere
 
 
 def _r_maker_fallback(c):
@@ -10314,6 +10362,13 @@ async def _handle_orchestrator(message, cid):
         # 題材が取れないまま急上昇TOP100に落とすと、話が繋がらない。
         if not topic and _TREND_MORE_RE.match((_raw_msg or "").strip()):
             topic = _last_trend_topic.get(cid) or ""
+        if not topic:
+            # ボットが候補を並べた提案に合意した場合。ユーザーがどれかを
+            # 名指ししていればそれ、「おまかせ」なら第1候補で回す。
+            _cands = _proposed_research_topics(_recent_bot_say(cid) or "")
+            if _cands:
+                _named = next((t for t in _cands if t in (_raw_msg or "")), None)
+                topic = _named or _cands[0]
         if topic:
             _last_trend_topic[cid] = topic
         _gate(message, cid, f"YouTubeのリサーチ（{topic or '急上昇'}）",
