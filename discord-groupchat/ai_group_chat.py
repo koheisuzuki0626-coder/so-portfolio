@@ -5463,6 +5463,20 @@ _TREND_STRIP_QTY_RE = re.compile(
     r"[0-9０-９]*\s*(回|本|件)?\s*(やろ|やって|やる|お願い)?\s*")
 
 
+# 「他の動画ない？」「他には？」「もっとある？」は、前回と同じ題材で
+# 【別の動画】を見せてほしいという続きの依頼。この言い方自体を検索語に
+# してはいけない。
+# 事故（2026-09-04 09:38）：企業プロモーションビデオのリサーチ直後に
+# 「他の動画ない？」と送ったら、『他の動画ない』という語でYouTubeを検索し、
+# 無関係な動画8本を取ってきた。
+_TREND_MORE_RE = re.compile(
+    r"^(他|ほか|別)(の|に)?(動画|やつ|の)?(は)?(ない|無い|ある|ありますか|"
+    r"あります|見せて|出して|ちょうだい)?[？?！!。]*$|"
+    r"^(もっと|他にも|ほかにも|続き)(見せて|出して|ある|ない|ちょうだい)?[？?！!。]*$")
+# 直前にどの題材でリサーチしたか（チャンネルごと）。続きの依頼で使い回す。
+_last_trend_topic = {}
+
+
 def _pick_trend_line(text):
     """複数行の依頼から、題材が書かれている行を選ぶ。
 
@@ -5485,6 +5499,8 @@ def _pick_trend_line(text):
 def _trend_topic(text):
     """リサーチの依頼文から、実際に検索する語だけを取り出す。
     取り出せなければ空（＝急上昇TOP100を見る）。"""
+    if _TREND_MORE_RE.match((text or "").strip()):
+        return ""                          # 続きの依頼。呼び出し側が前回の題材を使う
     t = _strip_media_context(_pick_trend_line(text) or "").strip()
     m = _TREND_FRAME_RE.match(t)
     if m and m.group("topic").strip():
@@ -10292,7 +10308,14 @@ async def _handle_orchestrator(message, cid):
                 "YOUTUBE_API_KEY が未設定のためリサーチできません（README参照）。"
             )
             return
-        topic = _trend_topic(_latest_user_msg(history))
+        _raw_msg = _latest_user_msg(history)
+        topic = _trend_topic(_raw_msg)
+        # 「他の動画ない？」は前回と同じ題材で別の動画を見せる依頼。
+        # 題材が取れないまま急上昇TOP100に落とすと、話が繋がらない。
+        if not topic and _TREND_MORE_RE.match((_raw_msg or "").strip()):
+            topic = _last_trend_topic.get(cid) or ""
+        if topic:
+            _last_trend_topic[cid] = topic
         _gate(message, cid, f"YouTubeのリサーチ（{topic or '急上昇'}）",
               "人気動画を検索して内容を視聴・分析し、レポートにまとめます",
               lambda: _run_trend_study(cid, topic or None), "YouTubeリサーチ",
