@@ -5447,12 +5447,49 @@ _TREND_STRIP_HEAD_RE = re.compile(
 _TREND_NOT_TOPIC_RE = re.compile(
     r"しなくていい|しないで|じゃなくて|ではなく|いらない|要らない|"
     r"だけでいい|でいいよ|ないで$|なくて")
+# 「Xで検索して」「Xとかの語句で検索」「Xというワードで調べて」から X を取る。
+# 事故（2026-09-04）：「YouTubeリサーチ今日4回やろ／全部企業プロモーション
+# ビデオとかの語句で検索して」が、発言まるごと検索語になって0件だった。
+# 末尾の依頼表現を削る方式だけでは「〜で検索」という一番普通の言い方が残る。
+# `.+` を貪欲にしているのは、題材自体に「で」が入る場合
+# （「ドローンで撮影した映像で検索」）に最後の「で検索」で切るため。
+_TREND_FRAME_RE = re.compile(
+    r"^(?P<topic>.+?)\s*(とか|など|みたいな|という|といった|って)?\s*(の)?\s*"
+    r"(語句|ワード|キーワード|単語|用語)?\s*[でを]\s*"
+    r"(検索|調べ|リサーチ|探し|探す)", re.S)
+# 題材の前に付く数量・範囲の指定。題材ではないので落とす。
+_TREND_STRIP_QTY_RE = re.compile(
+    r"^(全部|ぜんぶ|すべて|全て|全|今日|明日|毎日|今回|次)?\s*"
+    r"[0-9０-９]*\s*(回|本|件)?\s*(やろ|やって|やる|お願い)?\s*")
+
+
+def _pick_trend_line(text):
+    """複数行の依頼から、題材が書かれている行を選ぶ。
+
+    「YouTubeリサーチ今日4回やろ」＋「全部〇〇で検索して」のように、
+    回数の指示と題材の指示が別の行に分かれて送られてくる。
+    検索の枠（〜で検索／語句／ワード）を持つ行を優先し、無ければ最長の行。
+    """
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    if len(lines) <= 1:
+        return lines[0] if lines else ""
+    framed = [l for l in lines
+              if re.search(r"(検索|語句|ワード|キーワード|調べ|リサーチ)", l)
+              and not re.match(r"^(youtube|ユーチューブ)", l, re.I)]
+    if framed:
+        # 枠を持つ行が複数なら、題材が長く書かれている方を採る
+        return max(framed, key=len)
+    return max(lines, key=len)
 
 
 def _trend_topic(text):
     """リサーチの依頼文から、実際に検索する語だけを取り出す。
     取り出せなければ空（＝急上昇TOP100を見る）。"""
-    t = _strip_media_context(text or "").strip()
+    t = _strip_media_context(_pick_trend_line(text) or "").strip()
+    m = _TREND_FRAME_RE.match(t)
+    if m and m.group("topic").strip():
+        t = m.group("topic").strip()
+    t = _TREND_STRIP_QTY_RE.sub("", t).strip("　 。、")
     prev = None
     while prev != t:                       # 末尾の依頼表現を繰り返し落とす
         prev = t
