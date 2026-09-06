@@ -5534,6 +5534,44 @@ _VOICE_SAMPLE_RE = re.compile(
     re.I)
 
 
+# 「企業VP」で検索すると、実制作の事例に混じって【営業・見本・教材】が上位に来る。
+# 本人の依頼（2026-09-06）：プロモーションビデオになっていないものは弾く。
+# 実例（09-05 のリサーチで実際に混ざったもの）：
+#   ・【Commercial Music Reel】映像・CM・企業VP向けBGM作品集
+#   ・企業VPサンプル（音瀬麻美ver）／（秋月舞花ver）
+#   ・動画編集ポートフォリオ｜企業VP・商品紹介・SNS広告対応｜小夏
+# 種別ごとに分けてあるのは、どれが効いたかログで分かるようにするため。
+_NOT_PROMO_PATTERNS = (
+    ("BGM・音源の見本", re.compile(
+        r"BGM|music\s*reel|музыка|作曲|劇伴|サウンドトラック|"
+        r"音源|フリー音楽|著作権フリー|royalty\s*free", re.I)),
+    ("制作者のポートフォリオ", re.compile(
+        r"ポートフォリオ|portfolio|デモリール|demo\s*reel|showreel|"
+        r"リール|実績(集|紹介|まとめ)|作品集|お仕事(募集|承ります)|"
+        r"受注|承ります|案件募集|フリーランス", re.I)),
+    ("作り方の解説・教材", re.compile(
+        r"作り方|やり方|(の)?コツ|講座|チュートリアル|tutorial|"
+        r"解説|入門|초보|使い方|テンプレート配布|素材配布|"
+        r"稼(ぐ|げる)|副業|月収|案件の取り方", re.I)),
+    ("サンプル・見本そのもの", re.compile(
+        r"サンプル|sample|見本|テスト(動画|映像)|試作|デモ(動画|映像)", re.I)),
+)
+
+
+def _not_promo_reason(v):
+    """プロモーションビデオでないと判断できる場合、その理由を返す。
+
+    タイトルだけを見る。説明文まで見ると、本物の企業VPの概要欄にある
+    「制作：〇〇（お仕事のご依頼はこちら）」で誤爆する（説明文を見る
+    _is_voice_sample と違い、こちらは語が一般的すぎるため）。
+    """
+    title = str(v.get("title") or "")
+    for label, pat in _NOT_PROMO_PATTERNS:
+        if pat.search(title):
+            return label
+    return None
+
+
 def _is_voice_sample(v):
     """その動画がナレーターの営業動画か（タイトル・説明文・タグで判定）。
     ※ 内部形式の説明文のキーは `desc`（`description` ではない）。
@@ -5579,8 +5617,20 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
     # ナレーターの営業動画（ボイスサンプル）を外す。本人の依頼（2026-09-01）：
     # 「企業VP」で検索すると上位がほぼ声の見本市になり、実制作の事例が読めない。
     _before = len(candidates)
-    candidates = [v for v in candidates if not _is_voice_sample(v)]
+    _drop_why = {}
+    _kept = []
+    for v in candidates:
+        why = "ボイスサンプル" if _is_voice_sample(v) else _not_promo_reason(v)
+        if why:
+            _drop_why[why] = _drop_why.get(why, 0) + 1
+        else:
+            _kept.append(v)
+    candidates = _kept
     _excluded = _before - len(candidates)
+    if _drop_why:
+        print("[trend] 除外: "
+              + " / ".join(f"{k} {n}本" for k, n in sorted(_drop_why.items())),
+              flush=True)
     if _excluded and not candidates:
         # 全部外れたら、外さずに見る（0本で終わるほうが困る）
         candidates = [v for v in videos if v["id"] not in analyzed
@@ -5599,8 +5649,9 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
     targets = candidates[:TREND_DEEP_COUNT]
     await channel.send(
         f"🎬 {label}の動画{len(videos)}本を取得しました。"
-        + (f"ナレーターのボイスサンプルを **{_excluded}本** 除外し、"
-           if _excluded else "")
+        # 何を弾いたかを内訳で出す。除外が効きすぎている時に気づけるように。
+        + (f"制作事例でないもの（{'・'.join(f'{k}{n}' for k, n in sorted(_drop_why.items()))}）を"
+           f"**{_excluded}本** 除外し、" if _excluded else "")
         + f"うち{len(targets)}本を視聴して映像分析します（数分かかります）…"
     )
 
