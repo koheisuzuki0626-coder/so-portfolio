@@ -5440,7 +5440,11 @@ _TREND_TOOL_ONLY_RE = re.compile(r"^(youtube|ユーチューブ|you\s*tube)$", r
 # 『もう一回会社プロモーション』という語で検索された。
 _TREND_STRIP_HEAD_RE = re.compile(
     r"^(もう一回|もう一度|もういっかい|もっかい|再度|改めて|あらためて|また|"
-    r"次は|今度は|こんどは)\s*")
+    r"次は|今度は|こんどは|"
+    # 事故（2026-09-08 08:42）：「今リサーチしてみて」の『今』が検索語になり、
+    # YouTubeで「今」を検索して50本取ってきた。時や様子を表す語は題材ではない。
+    r"今すぐ|いますぐ|今から|今|いま|すぐ|さっそく|早速|"
+    r"ちょっと|少し|すこし|試しに|ためしに|一回|一度|軽く|とりあえず)\s*")
 # 題材は【名詞】。打ち消し・言い直しを含む文は、依頼の訂正であって検索語ではない。
 # 事故（2026-09-01）：確認待ち中の「編集はしなくていいよ、分析だけ」が
 # そのまま検索語になり「合う動画が見つかりませんでした」と返した。
@@ -5505,6 +5509,9 @@ def _trend_topic(text):
     if _TREND_MORE_RE.match((text or "").strip()):
         return ""                          # 続きの依頼。呼び出し側が前回の題材を使う
     t = _strip_media_context(_pick_trend_line(text) or "").strip()
+    # 頭の「今／ちょっと／試しに」は先に落とす。末尾の依頼表現を削ってからだと
+    # 「ちょっと」が「ちょっ」の残骸になって題材に見えてしまう。
+    t = _TREND_STRIP_HEAD_RE.sub("", t).strip("　 。、")
     m = _TREND_FRAME_RE.match(t)
     if m and m.group("topic").strip():
         t = m.group("topic").strip()
@@ -10482,6 +10489,12 @@ async def _handle_orchestrator(message, cid):
             if _cands:
                 _named = next((t for t in _cands if t in (_raw_msg or "")), None)
                 topic = _named or _cands[0]
+        if not topic:
+            # 題材を言わずに「今リサーチして」と頼まれたら、毎朝のお題で回す。
+            # 設定したばかりのお題を無視して急上昇TOP100を見に行くのは、
+            # 頼んだ側の意図と違う（2026-09-08：お題を設定した直後に
+            # 「今リサーチしてみて」と言われた）。
+            topic = (gen_settings.get("trend_query") or "").strip()
         if topic:
             _last_trend_topic[cid] = topic
         _gate(message, cid, f"YouTubeのリサーチ（{topic or '急上昇'}）",
