@@ -7934,6 +7934,22 @@ _CLI_NARRATION_RE = re.compile(
     re.I,
 )
 _JA_RE = re.compile(r"[ぁ-んァ-ヶ一-龥]")
+# CLI や SDK が吐く診断メッセージ。返事に混ざると意味不明な英文になる。
+# 事故（2026-09-07）：普通の労いの返事の末尾に
+#   Client.listTools() called but server does not advertise tools capability
+#   - returning empty list
+# が付いてきた。動作に影響は無いが、ユーザーには何のことか分からない。
+# ナレーション（_CLI_NARRATION_RE）とは形が違うので別に受ける。
+# 日本語を含まない行にだけ当てるので、本文を巻き込む心配は小さい。
+_CLI_DIAG_RE = re.compile(
+    r"^\s*(?:"
+    r"[A-Za-z_][\w.]*\.\w+\(\)"          # Client.listTools() のような呼び出し
+    r"|Warning:|Error:|Traceback|Deprecat"
+    r"|\[?(?:MCP|mcp)\]?\b"
+    r"|.*\b(?:does not advertise|returning empty|not advertise)\b"
+    r"|.*\bcapability\b.*\breturning\b"
+    r")",
+)
 
 
 def _strip_cli_boilerplate(text):
@@ -7946,7 +7962,7 @@ def _strip_cli_boilerplate(text):
     for line in _CLI_TAIL_RE.sub("", text).splitlines():
         s = line.strip()
         if (s and not _JA_RE.search(s) and "http" not in s
-                and _CLI_NARRATION_RE.match(s)):
+                and (_CLI_NARRATION_RE.match(s) or _CLI_DIAG_RE.match(s))):
             continue
         kept.append(line)
     return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()

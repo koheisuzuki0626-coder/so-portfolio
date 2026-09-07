@@ -3650,6 +3650,22 @@ def run():
     check("URLの行は消さない",
           bot._strip_cli_boilerplate("Here is the URL: https://x/y.mp4"),
           "Here is the URL: https://x/y.mp4")
+    # 事故（2026-09-07）：普通の労いの返事の末尾に、CLIが吐いた診断メッセージが
+    # そのまま付いてきた。動作に影響は無いが、ユーザーには何のことか分からない。
+    _diag = ("退院後の移動と外食で今日はもう十分動いてる。あとはゆっくり休んで。\n"
+             "Client.listTools() called but server does not advertise tools "
+             "capability - returning empty list")
+    check("CLIの診断メッセージを落とす",
+          bot._strip_cli_boilerplate(_diag),
+          "退院後の移動と外食で今日はもう十分動いてる。あとはゆっくり休んで。")
+    for _l in ("Client.listTools() called but server does not advertise tools capability",
+               "Warning: there are non-text parts in the response",
+               "[MCP] connection closed",
+               "Traceback (most recent call last):"):
+        check(f"診断として拾う: {_l[:34]}", bool(bot._CLI_DIAG_RE.match(_l)), True)
+    # 守りすぎの確認：普通の英文・箇条書きは診断ではない
+    for _l in ("Good Time is a song by Owl City.", "OK", "1. Motion 2. Lumetri"):
+        check(f"診断にしない: {_l[:34]}", bool(bot._CLI_DIAG_RE.match(_l)), False)
     check("日本語混じりの行は消さない",
           bot._strip_cli_boilerplate("Doneした。完了です。"), "Doneした。完了です。")
     check("空文字はそのまま", bot._strip_cli_boilerplate(""), "")
