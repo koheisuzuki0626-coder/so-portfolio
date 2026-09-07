@@ -5631,11 +5631,15 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
         print("[trend] 除外: "
               + " / ".join(f"{k} {n}本" for k, n in sorted(_drop_why.items())),
               flush=True)
-    if _excluded and not candidates:
-        # 全部外れたら、外さずに見る（0本で終わるほうが困る）
-        candidates = [v for v in videos if v["id"] not in analyzed
-                      and 0 < v["duration"] <= TREND_MAX_MINUTES * 60]
-        _excluded = 0
+    # 全部が営業素材だった時は、黙って弾くのをやめて全部見る——ではなく、
+    # そう言って止める。
+    # 事故（2026-09-08 08:00）：「企業VP」15本が全部営業素材で、この逃げ道が
+    # 働いた結果 _excluded が0に戻り、除外の通知も出ないまま
+    # 「爽やかで優しい企業VP向けアコースティックBGM」を分析していた。
+    # フィルタが一番必要な場面で、黙って無効になっていた。
+    # 本人の要望は「客向けの本編を見たい」なので、営業素材で埋めるより
+    # 検索語を変えてもらう方がいい。
+    _all_excluded = bool(_excluded and not candidates)
     # 上位から順に取ると、ランキングが動かない限り毎日ほぼ同じ顔ぶれになる。
     # 候補を日替わりの並びにしてから選ぶ（同じ日は何度回しても同じ結果）。
     # 事故（2026-08-22）：本人から「いつも同じ動画」と指摘された。
@@ -5646,6 +5650,16 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
         _pool = list(candidates)
         _rnd.Random(datetime.now(JST).strftime("%Y%m%d")).shuffle(_pool)
         candidates = _pool
+    if _all_excluded:
+        await channel.send(
+            f"🔎 {label}で{len(videos)}本取れましたが、**全部が営業素材**でした"
+            f"（{'・'.join(f'{k}{n}' for k, n in sorted(_drop_why.items()))}）。\n"
+            "客向けの本編に当てるなら、検索語をこの方向にずらすのが早いです：\n"
+            "・「会社紹介動画 制作事例」「映像制作 実績」（制作会社の納品事例）\n"
+            "・「採用ムービー」「ブランドフィルム」「周年記念ムービー」\n"
+            "・企業名を足す（例：「〇〇株式会社 会社紹介」）\n"
+            "「**リサーチのジャンルを〇〇にして**」で毎朝のお題を変えられます。")
+        return
     targets = candidates[:TREND_DEEP_COUNT]
     await channel.send(
         f"🎬 {label}の動画{len(videos)}本を取得しました。"
@@ -7383,6 +7397,12 @@ def _proposed_research_topics(prev):
             t = m.group(1).strip()
             # 「やって」「おまかせ」など操作の合図は候補ではない
             if not t or re.fullmatch(r"(やって|おまかせ|OK|ok|やめて)", t):
+                continue
+            # 「『企業VP』を外して」のように、直後で否定されている語は候補でない。
+            # 事故（2026-09-08）：勧められた語ではなく、やめろと言われた語が
+            # 第1候補になっていた。
+            tail = s[m.end():m.end() + 12]
+            if re.match(r"\s*(?:を|は|も)?\s*(外し|抜き|やめ|除|使わ|避け)", tail):
                 continue
             (bullets if re.match(r"^[-・*●\d]", s) else anywhere).append(t)
     return bullets or anywhere
@@ -13019,6 +13039,14 @@ async def _dispatch_message(message):
     # 拾ってしまうと確認が承認されず、いつまでも作業が始まらない。
     if _BARE_GO_RE.match(content.strip()) and cid not in _pending_approvals:
         _pend = _get_pending_do(cid)
+        # 直前にボットが具体的な案を出しているなら、「やって」はその実行の
+        # 合図。素材待ちの案内で行き止まりにしない。
+        # 事故（2026-09-08 08:32〜08:33）：ボットが検索語の案を並べて
+        # 「『やって』と送れば始めます」と案内したのに、「やって」に対して
+        # 「何を・どの素材でやるかが分からない」と返した。案内した本人が
+        # 受け取れていない状態だった。
+        if _pend and classify_route(content, cid=cid):
+            _pend = None
         if _pend:
             _fired(cid, f"やって（{_pend['need']}待ち）", content)
             add_history(cid, message.author.display_name, content)
