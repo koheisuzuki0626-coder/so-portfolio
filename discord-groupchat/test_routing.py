@@ -2981,6 +2981,26 @@ def run():
                                  "desc": "制作：△△（お仕事のご依頼は概要欄から）"}),
           None)
 
+    print("■ リサーチの依頼がコード作業に分類されたら戻す")
+    # 事故（2026-09-09 08:26）：直前にコード修正の計画を出した文脈に引きずられ、
+    # 「YouTubeリサーチもう一回やって」に「🛠 コードを触る作業ですね」と答えた。
+    # ルーティングは正しくリサーチと判定しており、AIの分類だけが間違っていた。
+    import re as _reR
+    _asks_research = lambda s: bool(
+        bot._YT_RESEARCH_RE.search(s)
+        or _reR.search(r"(youtube|ユーチューブ)?\s*(リサーチ|トレンド調査)",
+                       s, _reR.I))
+    _srcR = bot_src()
+    check("selffix/exec からtrendに戻す保険がある",
+          "trend に戻す（リサーチの依頼）" in _srcR, True)
+    # 戻す条件：発言そのものにリサーチの語があること
+    for _t in ("YouTubeリサーチもう一回やって", "リサーチやり直して",
+               "企業VPでリサーチして", "リサーチもう一回"):
+        check(f"リサーチの依頼と分かる: {_t}", _asks_research(_t), True)
+    # 守りすぎの確認：本当のコード依頼は戻さないこと
+    for _t in ("_trend_topic を直して", "コードを修正して", "テストを追加して"):
+        check(f"コード依頼のまま: {_t}", _asks_research(_t), False)
+
     print("■ 自分のコードを直す計画は、exec でも実行しない")
     # 事故（2026-09-09 08:16）：selffix は SELFFIX_ENABLED=0 で塞いであるのに、
     # 同じ作業が exec（エージェント実行）として計画されると素通りし、

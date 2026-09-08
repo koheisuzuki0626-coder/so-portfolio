@@ -10503,6 +10503,21 @@ async def _handle_orchestrator(message, cid):
                 "sheet") and _looks_like_question(latest):
         print(f"[plan] {kind}→chat に降格（質問/相談と判断）")
         kind, reply = "chat", ""   # 降格時の返事は無いので通常の回答フェーズへ
+    # リサーチの依頼が、コード作業に分類されたら戻す。
+    # 事故（2026-09-09 08:26）：直前にコード修正の計画を出した文脈に引きずられ、
+    # 「YouTubeリサーチもう一回やって」に対して「🛠 コードを触る作業ですね。
+    # プランを作ります…」と答えた。ルーティングは正しくリサーチと判定していて、
+    # AIの分類だけが間違っていた。発言そのものにリサーチの語があるなら、
+    # 直前の話題より発言を優先する。
+    # 「リサーチもう一回」のように語尾が無い形も拾う（_YT_RESEARCH_RE は
+    # 「リサーチして/お願い」まで含む形なので、単独の語では当たらない）。
+    _asks_research = bool(
+        _YT_RESEARCH_RE.search(latest or "")
+        or re.search(r"(youtube|ユーチューブ)?\s*(リサーチ|トレンド調査)",
+                     latest or "", re.I))
+    if kind in ("selffix", "exec") and _asks_research:
+        print(f"[plan] {kind}→trend に戻す（リサーチの依頼）")
+        kind, reply = "trend", ""
     # 自分のコードを書き換えるのは、はっきり「直して／変えて」と命令された時だけ。
     # 事故（2026-08-21）：「クロードだけで動画制作したい」＝【やり方の希望】を
     # selffix と判定してコードを書き換え、テストを壊して自動で巻き戻った。
