@@ -5474,6 +5474,8 @@ async def _apply_youtube_context(message, content):
 # 落としていなかったため、道具の名前（YouTube）と助詞が題材に混ざっていた。
 _TREND_STRIP_TAIL_RE = re.compile(
     r"(の)?(トレンド|急上昇|リサーチ|調査|分析|研究|調べて|調べ|見てきて|"
+    # 「やって」「やり直して」「回して」が入っていなかった（2026-09-09）。
+    r"やって|やり直して|やりなおして|やり直し|回して|まわして|"
     r"して|してみて|しといて|ちょうだい|ください|下さい|お願い(します)?|"
     r"欲しい|ほしい|たい|よ|ね|な)+$")
 # 道具・場所の名前。題材ではないので落とす（「〜でYouTubeを」の『で』ごと）
@@ -5555,8 +5557,17 @@ def _trend_topic(text):
     if _TREND_MORE_RE.match((text or "").strip()):
         return ""                          # 続きの依頼。呼び出し側が前回の題材を使う
     t = _strip_media_context(_pick_trend_line(text) or "").strip()
-    # 頭の「今／ちょっと／試しに」は先に落とす。末尾の依頼表現を削ってからだと
-    # 「ちょっと」が「ちょっ」の残骸になって題材に見えてしまう。
+    # 頭に付く道具の名前（「YouTubeリサーチ」「リサーチ」）を先に落とす。
+    # 事故（2026-09-09）：「YouTubeリサーチもう一回やって」が丸ごと検索語に
+    # なった。_TREND_STRIP_HEAD_RE は ^ 固定なので、頭が「YouTubeリサーチ」だと
+    # 「もう一回」に届かず、やり直しの合図を落とせなかった。
+    t = re.sub(r"^(youtube|ユーチューブ|you\s*tube)?\s*"
+               # 助詞に「も」を入れてはいけない。「もう一回」の『も』を食べて
+               # 「う一回」になり、やり直しの合図を落とせなくなる（2026-09-09）。
+               r"(リサーチ|調査|トレンド|急上昇)\s*[はをでの]?\s*", "", t,
+               flags=re.I).strip("　 。、")
+    # 頭の「今／ちょっと／試しに／もう一回」は末尾処理より先に落とす。
+    # 末尾から削ってからだと「ちょっと」が「ちょっ」の残骸になって題材に見える。
     t = _TREND_STRIP_HEAD_RE.sub("", t).strip("　 。、")
     m = _TREND_FRAME_RE.match(t)
     if m and m.group("topic").strip():
@@ -6235,6 +6246,27 @@ _ACTION_KINDS = ("selffix", "exec", "video", "image")
 # 本人の指示で既定オフ）。コードと分類は残すが、実行は止める。
 # 直しは Claude Code のセッションでやる。戻すなら .env に SELFFIX_ENABLED=1。
 SELFFIX_ENABLED = os.getenv("SELFFIX_ENABLED", "0") == "1"
+
+# 計画の本文が「このボットのコードを直す作業」かどうか。
+# 種別（kind）ではなく中身で見る。selffix を塞いでも、同じ作業が exec として
+# 計画されると素通りしていた（2026-09-09）。
+# 判定は【このリポジトリの実ファイル名】が出てくるかどうか。話題として
+# 「コード」と言っただけでは止めない（相談まで塞ぐと不便）。
+_OWN_CODE_FILES_RE = re.compile(
+    r"ai_group_chat\.py|phrasing\.py|test_routing\.py|test_phrasing\.py|"
+    r"simulate\.py|fixtures/regressions\.md|discord-groupchat/", re.I)
+_CODE_EDIT_VERB_RE = re.compile(
+    r"追加|修正|直す|直し|書き換え|変更|実装|置き換え|削除|コミット|プッシュ|"
+    r"リファクタ|パッチ")
+
+
+def _plan_touches_own_code(plan):
+    """立てた計画が、このボット自身のコードを書き換えるものか。"""
+    if not plan:
+        return False
+    return bool(_OWN_CODE_FILES_RE.search(plan)
+                and _CODE_EDIT_VERB_RE.search(plan))
+
 
 # 自分のコードを書き換えろ、という【命令】の形。
 # 事故（2026-08-21）：「クロードだけで動画制作したい」（＝やり方の希望）を
@@ -11936,6 +11968,21 @@ async def run_claude_agent(cid, task, owner_id):
         plan = await run_claude_cli(plan_prompt)
     except Exception as e:  # noqa: BLE001
         return f"⚠️ 計画の作成に失敗: {str(e)[:300]}"
+
+    # 計画の中身が【このボットのコードの修正】なら、承認を求める前に止める。
+    # selffix は SELFFIX_ENABLED=0 で塞いであるが、同じ作業が exec（エージェント
+    # 実行）として計画されると素通りしていた。
+    # 事故（2026-09-09 08:16）：_trend_topic の不具合を直す計画が立ち、
+    # ai_group_chat.py・test_routing.py・regressions.md を書き換える手順まで
+    # 出したうえで許可を求めた。門が種別（kind）で決まっていたのが原因。
+    # 種別ではなく【計画の中身】で見る。
+    if not SELFFIX_ENABLED and _plan_touches_own_code(plan):
+        _clear_pending(cid)
+        return ("🛠 これは自分のコードを直す作業なので、ここでは実行しません"
+                "（Discordからのコード修正はオフにしています）。\n"
+                "Claude Code のセッションで対応します。"
+                "立てた計画は次の通りなので、そのまま伝えれば早いです：\n\n"
+                f"{plan[:1200]}")
 
     # ② Discordで承認（ボタン or テキストの「許可/拒否」）
     fut = asyncio.get_running_loop().create_future()

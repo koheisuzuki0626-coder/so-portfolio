@@ -2899,6 +2899,17 @@ def run():
         # 守りすぎの確認：頭に時の語があっても、題材が書かれていれば残すこと
         ("今から企業VPでリサーチして", "企業VP"),
         ("試しに採用動画で検索して", "採用動画"),
+        # 事故（2026-09-09）：「YouTubeリサーチもう一回やって」が丸ごと検索語に
+        # なった。_TREND_STRIP_HEAD_RE は ^ 固定なので、頭が「YouTubeリサーチ」だと
+        # 「もう一回」に届かない。頭の道具名を先に落としてから頭の合図を落とす。
+        ("YouTubeリサーチもう一回やって", ""),
+        ("YouTubeリサーチもう一度して", ""),
+        ("リサーチもう一回やって", ""),
+        ("リサーチやり直して", ""),
+        ("リサーチまた回して", ""),
+        # 守りすぎの確認：道具名の後ろに題材があれば残すこと
+        ("YouTubeリサーチを企業VPで回して", "企業VP"),
+        ("リサーチを採用ムービーにして", "採用ムービー"),
     ):
         check(f"検索語を取り出す: {_t[:22]!r}", bot._trend_topic(_t), _want)
 
@@ -2969,6 +2980,23 @@ def run():
           bot._not_promo_reason({"title": "〇〇株式会社 企業VP",
                                  "desc": "制作：△△（お仕事のご依頼は概要欄から）"}),
           None)
+
+    print("■ 自分のコードを直す計画は、exec でも実行しない")
+    # 事故（2026-09-09 08:16）：selffix は SELFFIX_ENABLED=0 で塞いであるのに、
+    # 同じ作業が exec（エージェント実行）として計画されると素通りし、
+    # ai_group_chat.py・test_routing.py を書き換える手順まで出して許可を求めた。
+    # 門が種別（kind）で決まっていたのが原因。種別ではなく計画の中身で見る。
+    for _p in ("## 3. コード修正（discord-groupchat/ai_group_chat.py）\n"
+               "- _trend_topic() に処理を追加",
+               "fixtures/regressions.md に追記し、test_routing.py にテストを1件追加",
+               "phrasing.py の正規表現を修正してコミットする"):
+        check(f"止める: {_p[:30]}", bot._plan_touches_own_code(_p), True)
+    # 守りすぎの確認：コードに触らない計画は通すこと
+    for _p in ("1. HDDの動画をffprobeで調べる\n2. 結果をエクセルにまとめる",
+               "YouTubeで企業VPを検索して分析する",
+               "コードの話をしたが、今回は構成案を作るだけ"):
+        check(f"通す: {_p[:30]}", bot._plan_touches_own_code(_p), False)
+    check("SELFFIX_ENABLED は既定オフ", bot.SELFFIX_ENABLED, False)
 
     print("■ 検索語が絞りすぎの時に広げる _query_variants")
     # 事故（2026-09-09 08:00）：「会社紹介動画 制作事例」で3本しか取れず、
