@@ -2970,6 +2970,30 @@ def run():
                                  "desc": "制作：△△（お仕事のご依頼は概要欄から）"}),
           None)
 
+    print("■ 検索語が絞りすぎの時に広げる _query_variants")
+    # 事故（2026-09-09 08:00）：「会社紹介動画 制作事例」で3本しか取れず、
+    # しかも「3Dプリント制作事例」のような別業種が混ざった。
+    check("複数語はORと主要語に広げる",
+          bot._query_variants("会社紹介動画 制作事例"),
+          ["会社紹介動画 制作事例", "会社紹介動画|制作事例", "会社紹介動画"])
+    check("1語なら広げない", bot._query_variants("企業VP"), ["企業VP"])
+    check("空なら何もしない", bot._query_variants(""), [])
+
+    print("■ 企業のプロモーション映像らしさ _corporate_score")
+    check("会社チャンネル＋会社紹介の題名は2点",
+          bot._corporate_score({"title": "株式会社〇〇 会社紹介動画",
+                                "channel": "株式会社〇〇"}), 2)
+    check("題名だけでも1点",
+          bot._corporate_score({"title": "ブランドムービー「未来へ」",
+                                "channel": "TOYOTA"}), 1)
+    check("どちらも無ければ0点",
+          bot._corporate_score({"title": "【AI制作事例】模擬診療サービスの紹介",
+                                "channel": "AIチャンネル"}), 0)
+    # 並べ替えに使うだけで、落とすのには使わないこと（0本になるのを避けるため）
+    _srcQ = bot_src()
+    check("企業らしさは並べ替えに使う（除外しない）",
+          "_corporate_score" in _srcQ and "を優先" in _srcQ, True)
+
     print("■ 一回きりの依頼で、毎日のリサーチ設定を書き換えないこと")
     # 事故（2026-09-04 16:53）：「YouTubeリサーチを企業VPに関連する語句で回して」
     # という今回だけの依頼が毎日のお題の変更として扱われ、翌朝から

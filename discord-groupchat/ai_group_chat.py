@@ -4222,6 +4222,52 @@ TREND_DAILY_DAYS = int(os.getenv("TREND_DAILY_DAYS", "14"))
 TREND_POOL = int(os.getenv("TREND_POOL", "50"))
 
 
+def _query_variants(query):
+    """検索語が絞りすぎで数が取れない時に試す、広げ方の候補を作る。
+
+    事故（2026-09-09 08:00）：「会社紹介動画 制作事例」で **3本** しか取れず、
+    しかも「3Dプリント制作事例」のような別業種が混ざった。YouTubeの検索は
+    複数語をAND寄りに扱うので、語を足すほど当たらなくなる。
+
+    広げ方は2段階：
+      1. 語をORでつなぐ（「会社紹介動画|制作事例」）
+      2. 一番効く語だけにする（最長の語＝具体性が高いと見なす）
+    元の語で足りていれば、ここは使わない。
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+    parts = [p for p in re.split(r"[\s　]+", q) if p]
+    out = [q]
+    if len(parts) > 1:
+        out.append("|".join(parts))
+        out.append(max(parts, key=len))
+    return out
+
+
+# 企業のプロモーション映像らしさ。落とすのではなく【前に出す】ために使う。
+# 事故（2026-09-09）：「制作事例」という語で「イラストからフィギュアが作れる！
+# 3Dプリント制作事例」が上位に来た。語の一致だけでは業種が絞れない。
+_CORP_CHANNEL_RE = re.compile(
+    r"株式会社|有限会社|合同会社|\(株\)|（株）|グループ|"
+    r"\b(inc|corp|corporation|co\.,?\s*ltd|company)\b", re.I)
+_CORP_TITLE_RE = re.compile(
+    r"会社紹介|企業紹介|事業紹介|コーポレート|corporate|ブランドムービー|"
+    r"ブランドフィルム|brand\s*(movie|film)|企業(VP|PV|CM|ムービー)|"
+    r"採用(動画|ムービー|映像)|リクルート(動画|ムービー)|周年(記念)?(動画|ムービー)|"
+    r"会社案内|社員インタビュー|1日密着|密着", re.I)
+
+
+def _corporate_score(v):
+    """企業のプロモーション映像らしさ（0〜2）。高いものから見る。"""
+    s = 0
+    if _CORP_CHANNEL_RE.search(str(v.get("channel") or "")):
+        s += 1
+    if _CORP_TITLE_RE.search(str(v.get("title") or "")):
+        s += 1
+    return s
+
+
 async def _search_videos(query, limit=50, days=None):
     """YouTube Data API でキーワード検索し、直近N日の人気動画を再生数順に取得。
     days を渡すと窓を狭められる（毎日のリサーチが同じ顔ぶれになるのを防ぐ）。"""
@@ -5600,13 +5646,27 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
     if query:
         # 毎日の自動リサーチ（skip_analyzed=True）は、窓を狭めたうえで
         # その母数（既定50本）の中から選ぶ。母数が広いほど顔ぶれが偏らない。
-        videos = await _search_videos(
-            query,
-            limit=TREND_POOL if skip_analyzed else 50,
-            days=TREND_DAILY_DAYS if skip_analyzed else None)
+        # 語を絞りすぎて数本しか取れないことがある（2026-09-09：「会社紹介動画
+        # 制作事例」で3本）。母数が薄いと、その中の外れも避けられない。
+        # 足りなければ検索語を広げて足す。使った語は後で報告する。
+        _limit = TREND_POOL if skip_analyzed else 50
+        _days = TREND_DAILY_DAYS if skip_analyzed else None
+        videos, _used_queries = [], []
+        for _q in _query_variants(query):
+            _got = await _search_videos(_q, limit=_limit, days=_days)
+            _known = {v["id"] for v in videos}
+            videos.extend(v for v in _got if v["id"] not in _known)
+            _used_queries.append(_q)
+            if len(videos) >= max(10, TREND_DEEP_COUNT * 3):
+                break
+        videos.sort(key=lambda v: v["views"], reverse=True)
         if not videos:
             await channel.send(f"🔎 {label}に合う動画が見つかりませんでした。")
             return
+        if len(_used_queries) > 1:
+            await channel.send(
+                f"🔎 {label}だけでは母数が薄かったので、"
+                f"「{'」「'.join(_used_queries[1:])}」でも探しました。")
     else:
         videos = await _fetch_trending(100)
 
@@ -5647,6 +5707,17 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
     # 本人の要望は「客向けの本編を見たい」なので、営業素材で埋めるより
     # 検索語を変えてもらう方がいい。
     _all_excluded = bool(_excluded and not candidates)
+    # 企業のプロモーション映像らしいものを前に出す。
+    # 事故（2026-09-09）：「制作事例」という語で「3Dプリント制作事例」が
+    # 上位に来た。語の一致だけでは業種が絞れないので、チャンネル名（株式会社等）と
+    # 題名（会社紹介・採用・ブランドムービー等）で見分ける。
+    # 落とすのではなく並べ替えにするのは、0本になるのを避けるため。
+    # 該当が1本も無い時は、元の並び（再生数順）のまま。
+    _corp = [v for v in candidates if _corporate_score(v) > 0]
+    if _corp and len(_corp) >= min(TREND_DEEP_COUNT, 3):
+        _rest = [v for v in candidates if _corporate_score(v) == 0]
+        candidates = sorted(_corp, key=_corporate_score, reverse=True) + _rest
+        print(f"[trend] 企業動画らしいもの {len(_corp)}本を優先", flush=True)
     # 上位から順に取ると、ランキングが動かない限り毎日ほぼ同じ顔ぶれになる。
     # 候補を日替わりの並びにしてから選ぶ（同じ日は何度回しても同じ結果）。
     # 事故（2026-08-22）：本人から「いつも同じ動画」と指摘された。
