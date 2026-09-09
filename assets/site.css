@@ -117,10 +117,18 @@ h1, h2, h3, .display, .headline, .subhead { text-wrap: balance; }
 .pill-ghost:hover { border-color: var(--ink); transform: translateY(-1px); }
 
 /* ---------- Logo ---------- */
-/* 社名の「.」を録画ボタンの ● として描く。
-   サイトの見出しはすべて句点で終わるので、その句点がそのままマークになる。
-   文字ではなく図形にしてあるぶん、小さくしても潰れない */
-#nav .logo, .f-logo { display: inline-flex; align-items: baseline; }
+/* シンボルマーク(花)＋社名の組み。
+   「.」は録画ボタンの ● として図形で描いてあり、小さくしても潰れない */
+#nav .logo, .f-logo { display: inline-flex; align-items: center; gap: 0.42em; }
+.logo-word { display: inline-flex; align-items: baseline; }
+.logo-mark {
+    flex: none;
+    /* 社名の文字サイズに連動させる。小さい画面でも比率が変わらない */
+    width: auto;
+    height: 1.62em;
+    /* 花の重心は上寄りなので、文字の中心とそろうよう少しだけ下げる */
+    transform: translateY(0.02em);
+}
 .logo-dot {
     flex: none;
     width: 0.235em;
