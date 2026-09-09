@@ -6906,8 +6906,20 @@ _HDD_PROGRESS_RE = re.compile(
     re.I)
 
 
+# HDDにある過去の制作実績を出してほしい、という依頼。
+# 本人の指示（2026-09-09）：既に解析してあるので、作り直さず置き場を答える。
+# 事故：「HDDから実績抜き出して」がYouTubeチャンネルの再生数分析に流れていた。
+_HDD_RECORD_RE = re.compile(
+    r"(HDD|ハードディスク|外付け|/Volumes|制作データ|元データ|"
+    r"過去の(制作|案件|仕事))"
+    r"[^。、\n]{0,20}"
+    r"(実績|作品|案件|一覧|リスト|棚卸)"
+    r"|(実績|作品|案件)[^。、\n]{0,12}(HDD|ハードディスク|外付け|/Volumes)",
+    re.I)
+
+
 def _r_hdd_progress(c):
-    if _HDD_PROGRESS_RE.search(c.text):
+    if _HDD_PROGRESS_RE.search(c.text) or _HDD_RECORD_RE.search(c.text):
         return "hdd_progress"
     return None
 
@@ -12815,7 +12827,80 @@ def _hdd_analyze_alive():
         return False
 
 
+def _hdd_all_progress():
+    """HDD4台の全種別解析（2026-09-02 実施）の実績を台帳から数える。
+
+    _hdd_progress は事例動画173本の古い台帳しか見ておらず、
+    「HDDから実績抜き出して」に対して何も答えられなかった（2026-09-09）。
+    こちらは tools/analyze_hdd_all.py の台帳を読む。
+    返り値: {"meta": 件数, "vision": 件数, "files": ファイル数, "index": 索引数}
+    """
+    out = {"meta": 0, "vision": 0, "files": 0, "index": 0}
+    hist = Path(BASE_DIR) / "history"
+    try:
+        out["index"] = sum(1 for _ in (hist / "hdd_all_index.jsonl")
+                           .open(encoding="utf-8"))
+    except OSError:
+        pass
+    seen_meta, seen_vis, files = set(), set(), 0
+    try:
+        for ln in (hist / "hdd_all_analysis.jsonl").open(encoding="utf-8"):
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                rec = json.loads(ln)
+            except ValueError:
+                continue
+            if rec.get("error"):
+                continue
+            if rec.get("phase") == "meta" and rec.get("path"):
+                seen_meta.add(rec["path"])
+            elif rec.get("phase") == "vision" and rec.get("vision"):
+                key = rec.get("path") or (rec.get("paths") or [""])[0]
+                if key and key not in seen_vis:
+                    seen_vis.add(key)
+                    files += len(rec.get("paths") or [1])
+    except OSError:
+        pass
+    out["meta"], out["vision"], out["files"] = len(seen_meta), len(seen_vis), files
+    return out
+
+
+def _hdd_deliverables_text():
+    """解析済みの制作実績が【どこにあるか】を答える。
+
+    本人の指示（2026-09-09）：「HDDから実績抜き出して」には、
+    既にある解析結果とその置き場を答えること。作り直さない。
+    """
+    a = _hdd_all_progress()
+    if not (a["meta"] or a["vision"]):
+        return ""
+    repo = Path(BASE_DIR).parent
+    lines = [f"📼 **HDDの制作実績は解析済みです**（索引 {a['index']:,} ファイル）",
+             f"・書誌・編集データ（ffprobe / Premiere / 書類）: **{a['meta']:,}件**",
+             f"・映像の読み取り: **{a['vision']:,}リクエスト＝{a['files']:,}ファイル**",
+             "",
+             "**置き場（GitHubの Codeタブ の中）**"]
+    for rel, what in (
+            ("成果物/事例素材一覧/事例素材一覧.xlsx", "事例動画の一覧（表）"),
+            ("成果物/事例素材一覧/映像分析まとめ.md", "傾向のまとめ"),
+            ("成果物/事例素材一覧/演出ヒント集.md", "演出のヒント"),
+            ("成果物/NotebookLM用/", "NotebookLMに入れる用（20ファイル）"),
+            ("discord-groupchat/fixtures/youtube_insights.md", "知見（D章が全解析）")):
+        if (repo / rel.rstrip("/")).exists():
+            lines.append(f"・`{rel}` … {what}")
+    lines.append("")
+    lines.append("案件から似た実例を引くなら "
+                 "`python3 tools/find_reference.py \"工場 職人\"`。")
+    return "\n".join(lines)
+
+
 def _hdd_progress_text():
+    # まず「もう解析してある」ことと置き場を答える。無ければ従来の進捗表示。
+    deliv = _hdd_deliverables_text()
+    if deliv:
+        return deliv
     d, t, _ = _hdd_progress()
     running = _hdd_analyze_alive()
     if t and d >= t:
