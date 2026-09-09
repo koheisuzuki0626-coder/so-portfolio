@@ -116,6 +116,21 @@ h1, h2, h3, .display, .headline, .subhead { text-wrap: balance; }
 .pill-ghost { border-color: rgba(0,0,0,0.2); color: var(--ink); }
 .pill-ghost:hover { border-color: var(--ink); transform: translateY(-1px); }
 
+/* ---------- Logo ---------- */
+/* 社名の「.」を録画ボタンの ● として描く。
+   サイトの見出しはすべて句点で終わるので、その句点がそのままマークになる。
+   文字ではなく図形にしてあるぶん、小さくしても潰れない */
+#nav .logo, .f-logo { display: inline-flex; align-items: baseline; }
+.logo-dot {
+    flex: none;
+    width: 0.235em;
+    height: 0.235em;
+    margin-left: 0.075em;
+    border-radius: 50%;
+    background: var(--accent);
+    transform: translateY(-0.01em);
+}
+
 /* ---------- Nav ---------- */
 .progress {
     position: fixed;
@@ -147,6 +162,7 @@ h1, h2, h3, .display, .headline, .subhead { text-wrap: balance; }
 /* 黒いセクションに重なったときはヘッダーを反転させる */
 #nav.on-dark { background: rgba(0, 0, 0, 0.6); border-bottom-color: rgba(255,255,255,0.12); }
 #nav.on-dark .logo { color: #f5f5f7; }
+#nav.on-dark .logo-dot { background: #d9b45f; }
 #nav.on-dark .nav-item { color: rgba(245,245,247,0.66); }
 #nav.on-dark .nav-item:hover, #nav.on-dark .nav-item.active,
 #nav.on-dark .nav-trigger[aria-expanded="true"] { color: #fff; }
@@ -154,7 +170,6 @@ h1, h2, h3, .display, .headline, .subhead { text-wrap: balance; }
 #nav.on-dark .nav-cta:hover { background: var(--accent); color: #fff; }
 #nav.on-dark .burger span { background: #f5f5f7; }
 #nav .logo { flex: none; font-size: 1.24rem; font-weight: 500; letter-spacing: 0.01em; }
-#nav .logo span { color: var(--accent-ink); }
 .nav-main { display: flex; align-items: center; gap: 30px; }
 .nav-item {
     position: relative;
@@ -1232,7 +1247,6 @@ footer { background: var(--bg-alt); border-top: 1px solid var(--line); }
     gap: 44px;
 }
 .f-logo { font-size: 1.4rem; font-weight: 500; letter-spacing: 0.01em; }
-.f-logo span { color: var(--accent-ink); }
 .f-tagline { margin: 12px 0 0; font-size: 1rem; font-weight: 400; letter-spacing: 0.01em; }
 .f-note { margin: 10px 0 0; font-size: 0.89rem; color: var(--ink-dim); max-width: 300px; }
 .f-cta { margin-top: 22px; }
