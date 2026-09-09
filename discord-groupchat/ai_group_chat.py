@@ -5703,17 +5703,29 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
     else:
         videos = await _fetch_trending(100)
 
-    # 視聴対象：長すぎない動画を上位から選ぶ。急上昇モードは分析済みをスキップして
-    # 毎日知見を蓄積、お題指定モードは目的優先で分析済みも対象にする。
-    # 毎日回す時は、前に見た動画を飛ばして知見を貯める。
-    # その場限りのお題指定では、目的優先で分析済みも対象にする。
+    # 視聴対象：長すぎない動画を上位から選ぶ。前に見た動画は飛ばして知見を貯める。
+    # 事故（2026-09-10）：本人から「同じ動画拾ってんだけど」。
+    # 毎朝の自動リサーチは skip_analyzed=True で飛ばしていたが、手動の
+    # 「リサーチ実行して」は未指定で、お題がある＝飛ばさない扱いになっていた。
+    # 題材を言わない手動リサーチは毎朝のお題に落ちるので、毎回まったく同じ
+    # 顔ぶれを analyze し直していた。既定を「飛ばす」に変える。
     if skip_analyzed is None:
-        skip_analyzed = not query
+        skip_analyzed = True
     analyzed = _load_analyzed_ids() if skip_analyzed else set()
-    candidates = [
-        v for v in videos
-        if v["id"] not in analyzed and 0 < v["duration"] <= TREND_MAX_MINUTES * 60
-    ]
+
+    def _pick(skip):
+        seen = analyzed if skip else set()
+        return [v for v in videos
+                if v["id"] not in seen
+                and 0 < v["duration"] <= TREND_MAX_MINUTES * 60]
+
+    candidates = _pick(skip_analyzed)
+    # 全部見終わっていたら、飛ばすのをやめて見る（0本で終わらせない）。
+    # 黙って戻すと「同じ動画」に見えるので、そう言ってから見る。
+    _reanalyzing = False
+    if skip_analyzed and not candidates:
+        candidates = _pick(False)
+        _reanalyzing = bool(candidates)
     # ナレーターの営業動画（ボイスサンプル）を外す。本人の依頼（2026-09-01）：
     # 「企業VP」で検索すると上位がほぼ声の見本市になり、実制作の事例が読めない。
     _before = len(candidates)
@@ -5777,6 +5789,9 @@ async def _run_trend_study(cid, query=None, skip_analyzed=None):
         # 何を弾いたかを内訳で出す。除外が効きすぎている時に気づけるように。
         + (f"制作事例でないもの（{'・'.join(f'{k}{n}' for k, n in sorted(_drop_why.items()))}）を"
            f"**{_excluded}本** 除外し、" if _excluded else "")
+        # 分析済みしか残っていない時は黙って戻さない（「同じ動画」に見えるため）
+        + ("**この検索語では全部分析済み**だったので、見た動画をもう一度見ます"
+           "（新しいものが欲しければ検索語を変えてください）。" if _reanalyzing else "")
         + f"うち{len(targets)}本を視聴して映像分析します（数分かかります）…"
     )
 

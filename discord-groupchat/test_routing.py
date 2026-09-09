@@ -3069,6 +3069,21 @@ def run():
         check(f"通す: {_p[:30]}", bot._plan_touches_own_code(_p), False)
     check("SELFFIX_ENABLED は既定オフ", bot.SELFFIX_ENABLED, False)
 
+    print("■ 分析済みの動画を拾い直さない（同じ動画ばかりにしない）")
+    # 事故（2026-09-10）：本人から「同じ動画拾ってんだけど」。
+    # 毎朝の自動リサーチは skip_analyzed=True で飛ばしていたが、手動の
+    # 「リサーチ実行して」は未指定で、お題がある＝飛ばさない扱いだった。
+    # 題材を言わない手動リサーチは毎朝のお題に落ちるので、毎回同じ顔ぶれを
+    # analyze し直していた。
+    _srcA = bot_src()
+    check("既定で分析済みを飛ばす",
+          "if skip_analyzed is None:\n        skip_analyzed = True" in _srcA, True)
+    check("お題の有無で切り替える古い作りが残っていない",
+          "skip_analyzed = not query" in _srcA, False)
+    check("全部分析済みなら、そう言ってから見る",
+          "全部分析済み" in _srcA and "_reanalyzing" in _srcA, True)
+    check("分析済みの台帳を読めている", len(bot._load_analyzed_ids()) > 0, True)
+
     print("■ 検索語が絞りすぎの時に広げる _query_variants")
     # 事故（2026-09-09 08:00）：「会社紹介動画 制作事例」で3本しか取れず、
     # しかも「3Dプリント制作事例」のような別業種が混ざった。
