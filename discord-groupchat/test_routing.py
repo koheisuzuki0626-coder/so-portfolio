@@ -3018,7 +3018,28 @@ def run():
     for _t in ("_trend_topic を直して", "コードを修正して", "テストを追加して"):
         check(f"コード依頼のまま: {_t}", _asks_research(_t), False)
 
+    print("■ exec は発言にコードの手がかりがある時だけ")
+    # 事故（2026-09-09 19:25）：プロフィール文の書き方を相談していた流れで
+    # 「これで作って」と言われ、exec に分類されて
+    # 「🛠 コードを触る作業ですね。プランを作ります…」と答えた。
+    _srcE = bot_src()
+    check("exec→chat の降格がある",
+          "exec→chat に降格（発言にコードの手がかりが無い）" in _srcE, True)
+    _code_sig = lambda s: bool(bot._CODE_WORK_RE.search(s)
+                               or bot._is_selffix_order(s))
+    for _t in ("コードを直して", "この機能を実装して", "スクリプト書いて",
+               "バグ調べて", "テストを追加して"):
+        check(f"コードの手がかりあり: {_t}", _code_sig(_t), True)
+    for _t in ("これで作って", "プロフィール欄これで作って", "この構成で作って",
+               "やって", "1500万の実績を入れて"):
+        check(f"コードの話ではない: {_t}", _code_sig(_t), False)
+
     print("■ 自分のコードを直す計画は、exec でも実行しない")
+    # _clear_pending は (cid, fut) の2引数。1引数で呼ぶと
+    # 「エージェント実行に失敗: _clear_pending() missing 1 required
+    # positional argument: 'fut'」で落ちる（2026-09-09 19:26 に実際に起きた）。
+    check("_clear_pending を1引数で呼んでいない",
+          "_clear_pending(cid)" in bot_src(), False)
     # 事故（2026-09-09 08:16）：selffix は SELFFIX_ENABLED=0 で塞いであるのに、
     # 同じ作業が exec（エージェント実行）として計画されると素通りし、
     # ai_group_chat.py・test_routing.py を書き換える手順まで出して許可を求めた。

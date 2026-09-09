@@ -10538,6 +10538,17 @@ async def _handle_orchestrator(message, cid):
     if kind in ("selffix", "exec") and _asks_research:
         print(f"[plan] {kind}→trend に戻す（リサーチの依頼）")
         kind, reply = "trend", ""
+    # exec は「コードを触る作業」の経路（返事も『🛠 コードを触る作業ですね』）。
+    # 発言そのものにコード・技術作業の手がかりが無ければ通さない。
+    # 事故（2026-09-09 19:25）：プロフィール文の書き方を相談していた流れで
+    # 「これで作って」と言われ、exec に分類されて
+    # 「🛠 コードを触る作業ですね。プランを作ります…」と答えた。
+    # 直前の話題（この日はコード修正の話が続いていた）に引きずられている。
+    # 話題ではなく【いまの発言】で決める。
+    if kind == "exec" and not (_CODE_WORK_RE.search(latest or "")
+                               or _is_selffix_order(latest or "")):
+        print("[plan] exec→chat に降格（発言にコードの手がかりが無い）")
+        kind, reply = "chat", ""
     # 自分のコードを書き換えるのは、はっきり「直して／変えて」と命令された時だけ。
     # 事故（2026-08-21）：「クロードだけで動画制作したい」＝【やり方の希望】を
     # selffix と判定してコードを書き換え、テストを壊して自動で巻き戻った。
@@ -12011,8 +12022,11 @@ async def run_claude_agent(cid, task, owner_id):
     # ai_group_chat.py・test_routing.py・regressions.md を書き換える手順まで
     # 出したうえで許可を求めた。門が種別（kind）で決まっていたのが原因。
     # 種別ではなく【計画の中身】で見る。
+    # ここはまだ _set_pending の前なので、確認待ちの後片付けは要らない。
+    # 2026-09-09：ここで _clear_pending を cid だけ渡して呼び、
+    # 「エージェント実行に失敗: missing 1 required positional argument: 'fut'」で
+    # 落ちた。_clear_pending は (cid, fut) の2引数で、自分が出した確認だけを消す。
     if not SELFFIX_ENABLED and _plan_touches_own_code(plan):
-        _clear_pending(cid)
         return ("🛠 これは自分のコードを直す作業なので、ここでは実行しません"
                 "（Discordからのコード修正はオフにしています）。\n"
                 "Claude Code のセッションで対応します。"
