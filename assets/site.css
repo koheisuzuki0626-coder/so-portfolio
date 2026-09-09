@@ -628,6 +628,14 @@ h1, h2, h3, .display, .headline, .subhead { text-wrap: balance; }
 .about-facts a { color: var(--accent-ink); text-decoration: none; border-bottom: 1px solid rgba(133,100,32,0.35); }
 .about-facts a:hover { border-bottom-color: var(--accent-ink); }
 
+/* 会社概要。項目が増えたので独立した節にしてある。
+   見出し(dt)の幅を固定して、値(dd)の頭を縦に揃える */
+.about-points-wide { grid-template-columns: repeat(3, 1fr); gap: clamp(28px, 4vw, 48px); }
+.company-facts { max-width: 760px; margin-top: clamp(34px, 4.5vw, 48px); }
+.company-facts > div { grid-template-columns: 8.5em 1fr; padding: 17px 0; }
+.company-facts dt { color: var(--ink-dim); }
+.company-facts dd { color: var(--ink-2); }
+
 /* ---------- 下層ページ ---------- */
 /* 固定ヘッダーのぶんだけ本文を下げる。トップはヒーローが受けているので不要 */
 .page-head { padding: calc(var(--nav-h, 61px) + clamp(72px, 11vw, 132px)) 0 clamp(56px, 8vw, 92px); }
@@ -1293,6 +1301,7 @@ footer { background: var(--bg-alt); border-top: 1px solid var(--line); }
     .genre-grid { grid-template-columns: repeat(2, 1fr); }
     .genre, .genre:nth-child(1), .genre:nth-child(2), .genre:nth-child(6), .genre:nth-child(7) { grid-column: span 1; }
     .about-grid { grid-template-columns: 1fr; }
+    .about-points-wide { grid-template-columns: 1fr; }
     .stage-grid { grid-template-columns: 1fr; gap: 34px; }
     .stack { display: none; }
     .stage-track { height: 190vh; }
