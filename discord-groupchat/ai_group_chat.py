@@ -7088,6 +7088,14 @@ def _r_channel_set(c):
 def _r_channel_stats(c):
     """実績分析。「実績/成績/再生数」は単体で、「チャンネル＋分析」も同じ。
     生成依頼（〜作って）が混ざっている場合は制作なので対象外。"""
+    # 「実績」には2つの意味がある。YouTubeチャンネルの再生実績と、
+    # HDDに入っている過去の制作実績。後者をここで拾ってはいけない。
+    # 事故（2026-09-09 17:59）：「HDDから実績抜き出して」に対して
+    # 「投稿済み動画の再生数を取得し…」と答えた。HDDの話をしているのに
+    # YouTubeを見に行こうとしていた。
+    if re.search(r"HDD|ハードディスク|外付け|/Volumes|パス|フォルダ|"
+                 r"制作データ|過去の(制作|案件|仕事)", c.text, re.I):
+        return None
     if (not _GEN_INTENT2_RE.search(c.text)
             and (re.search("実績|成績|再生数|視聴回数|伸び方", c.text)
                  or (re.search("チャンネル", c.text)
