@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- 社内用。検索にも出さないし、サイトのどこからもリンクしていない -->
+    <meta name="robots" content="noindex, nofollow">
+    <title>料金ページの通過率｜so. 社内用</title>
+    <link rel="icon" href="assets/favicon.png" type="image/png" sizes="any">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=Zen+Kaku+Gothic+New:wght@300;400;500&display=swap">
+    <style>
+        :root {
+            --ink: #1d1d1f; --ink-dim: #6e6e73; --ink-2: #3d3d41;
+            --line: rgba(0,0,0,.10); --bg: #fff; --bg-alt: #f5f5f7;
+            --accent: #b08733; --accent-ink: #856420; --warn: #a8323a;
+        }
+        * { box-sizing: border-box; margin: 0; }
+        body {
+            font-family: "Inter", "Zen Kaku Gothic New", -apple-system, BlinkMacSystemFont, sans-serif;
+            font-weight: 400; line-height: 1.72; letter-spacing: .005em;
+            color: var(--ink); background: var(--bg);
+            padding: clamp(28px, 5vw, 64px) clamp(20px, 5vw, 56px) 96px;
+            max-width: 880px; margin: 0 auto;
+        }
+        .eyebrow { font-size: .78rem; font-weight: 500; letter-spacing: .12em; color: var(--accent-ink); }
+        h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); font-weight: 300; letter-spacing: -.01em; margin: 6px 0 0; }
+        .sub { color: var(--ink-dim); font-size: .93rem; margin-top: 12px; }
+        section { margin-top: clamp(38px, 5vw, 56px); }
+        h2 { font-size: 1.02rem; font-weight: 500; margin: 0 0 4px; }
+        .hint { font-size: .85rem; color: var(--ink-dim); margin-bottom: 18px; }
+
+        /* 一番大事な数字 */
+        .headline-num {
+            margin-top: 26px; padding: clamp(22px, 3.5vw, 32px);
+            border: 1px solid var(--line); border-radius: 14px; background: var(--bg-alt);
+        }
+        .headline-num b { display: block; font-size: clamp(2.6rem, 8vw, 4rem); font-weight: 300;
+            letter-spacing: -.02em; line-height: 1.05; }
+        .headline-num .cap { font-size: .93rem; color: var(--ink-dim); margin-top: 8px; }
+        .lost b { color: var(--warn); }
+
+        /* ファネル */
+        .step { display: grid; grid-template-columns: 11em 4.5em 4em 1fr; gap: 12px;
+            align-items: center; padding: 13px 0; border-bottom: 1px solid var(--line); }
+        .step:first-child { border-top: 1px solid var(--line); }
+        .step .n { font-size: 1.02rem; text-align: right; }
+        .step .p { font-size: .88rem; color: var(--ink-dim); text-align: right; }
+        .bar-wrap { display: block; }
+        .bar { display: block; height: 9px; border-radius: 99px; background: var(--accent); min-width: 2px; }
+        .step.drop .lbl::after { content: " ↓ ここで落ちる"; color: var(--warn); font-size: .8rem; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+        th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid var(--line); font-size: .93rem; }
+        th { font-weight: 500; color: var(--ink-dim); font-size: .84rem; }
+        td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+        tr.bad td { color: var(--warn); }
+
+        .empty { padding: 40px 0; color: var(--ink-dim); }
+        .empty ol { margin: 14px 0 0; padding-left: 1.3em; }
+        .empty li { margin-bottom: 6px; }
+        .note { margin-top: 44px; padding-top: 22px; border-top: 1px solid var(--line);
+            font-size: .86rem; color: var(--ink-dim); }
+        .note b { color: var(--ink); font-weight: 500; }
+        button {
+            font: inherit; font-size: .86rem; cursor: pointer; margin-top: 18px;
+            padding: 9px 18px; border-radius: 99px; border: 1px solid var(--line);
+            background: #fff; color: var(--ink-2);
+        }
+        button:hover { border-color: var(--ink-dim); }
+        a { color: var(--accent-ink); }
+        @media (max-width: 620px) {
+            .step { grid-template-columns: 1fr 3.6em 3.4em; }
+            .step .bar-wrap { grid-column: 1 / -1; }
+        }
+    </style>
+</head>
+<body>
+    <p class="eyebrow">Internal</p>
+    <h1>料金ページの通過率</h1>
+    <p class="sub">
+        料金表を公開しているので、高いと感じた人は連絡せずに閉じる。<br>
+        どこで何人が落ちているかを、このブラウザに残った記録から出している。
+    </p>
+
+    <div id="out"></div>
+
+    <p class="note">
+        <b>ここに出るのは、このブラウザで開いたぶんだけ。</b>
+        訪問者ぶんを集めるには <code>index.html</code> の <code>ANALYTICS_ID</code> に
+        GA4 の測定ID を入れる（先にプライバシーポリシーが要る）。<br>
+        いまはサイトが <code>noindex</code> で URL を知っている人しか来られないので、
+        送った相手に直接聞くほうが早い。
+    </p>
+
+    <script>
+        const yen = (n) => `¥${Number(n).toLocaleString('ja-JP')}`;
+        const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+        // サイトの料金表と同じ言い方にする
+        const secLabel = (n) => ({ 15:'15秒', 30:'30秒', 45:'45秒', 60:'60秒',
+            90:'90秒', 120:'2分', 180:'3分', 300:'5分' }[n] || `${n}秒`);
+        const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
+            ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+        let rows = [];
+        try { rows = JSON.parse(localStorage.getItem('so.funnel') || '[]'); } catch { rows = []; }
+
+        const out = document.getElementById('out');
+
+        if (!rows.length) {
+            out.innerHTML = `
+                <div class="empty">
+                    <p>まだ記録がありません。試すには：</p>
+                    <ol>
+                        <li><a href="index.html">トップページ</a>を開く</li>
+                        <li>「料金」まで進む</li>
+                        <li>尺か本数を選ぶ</li>
+                        <li>このページに戻って再読み込み</li>
+                    </ol>
+                </div>`;
+        } else {
+            // 訪問単位で数える。イベント数では通過率が出せない
+            const sids = (name) => new Set(rows.filter((r) => r.name === name).map((r) => r.s));
+            const visit = sids('page_view').size;
+            const plans = sids('plans_view').size;
+            const useS  = sids('calc_use');
+            const ctaS  = sids('calc_cta');
+            const use = useS.size, cta = ctaS.size;
+            const lost = use - cta;
+
+            const steps = [
+                ['サイトに来た',     visit, null],
+                ['料金を見た',       plans, visit],
+                ['条件を選んだ',     use,   plans],
+                ['相談まで進んだ',   cta,   use],
+            ];
+            const stepHtml = steps.map(([lbl, n, prev], i) => {
+                const p = prev === null ? '' : `${pct(n, prev)}%`;
+                const drop = prev !== null && prev > 0 && pct(n, prev) < 50 ? ' drop' : '';
+                const w = visit ? Math.max(2, (n / visit) * 100) : 2;
+                return `<div class="step${drop}">
+                    <span class="lbl">${esc(lbl)}</span>
+                    <span class="n">${n}人</span>
+                    <span class="p">${p}</span>
+                    <span class="bar-wrap"><span class="bar" style="width:${w}%"></span></span>
+                </div>`;
+            }).join('');
+
+            // 尺ごとに「見た人」と「相談まで行った人」を出す。
+            // どの価格帯で落ちているかが分かれば、下げる範囲を絞れる
+            const bySec = new Map();
+            rows.filter((r) => r.name === 'calc_result' || r.name === 'calc_leave').forEach((r) => {
+                if (!r.sec) return;
+                const k = r.sec;
+                if (!bySec.has(k)) bySec.set(k, { sec: r.sec, total: r.total, seen: new Set(), won: new Set() });
+                const e = bySec.get(k);
+                e.total = r.total ?? e.total;
+                e.seen.add(r.s);
+                if (ctaS.has(r.s)) e.won.add(r.s);
+            });
+            const secRows = [...bySec.values()].sort((a, b) => b.sec - a.sec);
+            const secHtml = secRows.length ? `
+                <table>
+                    <thead><tr>
+                        <th>尺</th><th class="num">金額</th>
+                        <th class="num">見た人</th><th class="num">相談へ</th><th class="num">通過率</th>
+                    </tr></thead>
+                    <tbody>${secRows.map((e) => {
+                        const s = e.seen.size, w = e.won.size, p = pct(w, s);
+                        return `<tr class="${s >= 2 && p === 0 ? 'bad' : ''}">
+                            <td>${esc(secLabel(e.sec))}</td><td class="num">${e.total ? yen(e.total) : '—'}</td>
+                            <td class="num">${s}</td><td class="num">${w}</td><td class="num">${p}%</td>
+                        </tr>`;
+                    }).join('')}</tbody>
+                </table>` : '<p class="hint">まだ組み合わせの記録がありません。</p>';
+
+            out.innerHTML = `
+                <div class="headline-num lost">
+                    <b>${lost}人</b>
+                    <span class="cap">条件まで選んだのに、相談せずに閉じた人
+                    ${use ? `（検討した ${use}人 のうち ${pct(lost, use)}%）` : ''}</span>
+                </div>
+
+                <section>
+                    <h2>どこで落ちているか</h2>
+                    <p class="hint">通過率が半分を切った段階に印を付けている。</p>
+                    ${stepHtml}
+                </section>
+
+                <section>
+                    <h2>尺ごとの通過率</h2>
+                    <p class="hint">
+                        長い尺だけ通過率が低いなら、下げるのは長尺だけでいい。
+                        全体的に低いなら料金表そのものを見直す。
+                    </p>
+                    ${secHtml}
+                </section>
+
+                <button id="clear">記録を消す</button>`;
+
+            document.getElementById('clear').addEventListener('click', () => {
+                if (!confirm('このブラウザに残っている記録を消します。よろしいですか？')) return;
+                try { localStorage.removeItem('so.funnel'); } catch { /* noop */ }
+                location.reload();
+            });
+        }
+    </script>
+</body>
+</html>

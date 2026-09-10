@@ -74,9 +74,23 @@ node scripts/set-site-url.mjs https://xxx.github.io/    # github.io へ(CNAME �
 `index.html` の `const ANALYTICS_ID = '';` に GA4 の測定ID（`G-` で始まる）を入れると送信が始まる。
 **空のままなら外部には一切送らず、Cookie も置かない**（e2e で固定してある）。
 
-### 手元で確認する
+### 見かた
 
-ブラウザの開発者コンソールで `soFunnel()` と打つと、訪問単位で数えた表が出る。
+**`funnel.html` を開く。** これだけ。開発者ツールは要らない。
+
+```
+https://koheisuzuki0626-coder.github.io/so-portfolio/funnel.html
+```
+
+- 一番上に「条件まで選んだのに相談せずに閉じた人」の数
+- どの段階で落ちているか（通過率が半分を切ると印が付く）
+- **尺ごとの通過率** ← 値下げの判断はここを見る。
+  長尺だけ通過率が低いなら下げるのは長尺だけでよく、料金表全体を触る必要はない
+
+社内用なので `noindex` にしてあり、サイトのどこからもリンクしていない
+（リンクしていないことを e2e で固定してある）。
+
+コンソール派なら `soFunnel()` でも同じものが文字で出る。
 
 ```
 1. 訪問              4人     —  ████████████████████
@@ -91,7 +105,7 @@ node scripts/set-site-url.mjs https://xxx.github.io/    # github.io へ(CNAME �
 ```
 
 - `soFunnel.raw()` … 生ログ
-- `soFunnel.clear()` … 記録を消す
+- `soFunnel.clear()` … 記録を消す（`funnel.html` の「記録を消す」ボタンと同じ）
 
 **見えるのは自分のブラウザに溜まった分だけ**。
 訪問者ぶんを集めるには `ANALYTICS_ID` が要る。
