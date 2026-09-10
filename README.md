@@ -178,6 +178,19 @@ https://koheisuzuki0626-coder.github.io/so-portfolio/funnel.html
 未記入のプレースホルダ（`◯◯`／`（氏名）`／`000-0000` など）を
 そのまま公開してしまわないよう、e2e で落ちるようにしてある。
 
+### SNS
+
+YouTube と Instagram（`@so_maru_official`）を、フッター・会社概要・JSON-LD の `sameAs` に載せている。
+
+Instagram の共有URLには `?stkn=...&utm_source=qr` のような**一時トークンが付いてくる**。
+これはそのまま配布するものではないので、必ず外して
+`https://www.instagram.com/so_maru_official/` の形で貼ること。
+トークンが混ざっていないことを e2e で見ている。
+
+投稿を実績欄に自動掲載する仕組みは**入れていない**。
+Instagram はログインなしのスクレイピングを弾くので、YouTube と同じ手は使えない。
+やるなら Meta Graph API（ビジネスアカウント＋Facebookページ連携＋アプリ審査）が要る。
+
 ### 構造化データ
 
 `index.html` の JSON-LD（`Organization`）に、代表者・所在地を入れてある。
