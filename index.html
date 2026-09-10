@@ -847,6 +847,47 @@
            3つの項がどれも時間単価 ¥14,600〜15,700 に収まるよう決めてあるので、
            お客様がどの組み合わせを選んでも採算が崩れない。
            数字を動かすときは e2e の「どの組み合わせでも時間単価が保たれる」を必ず通すこと。 */
+        /* ===== 料金計算機の段差(ファネル計測) =====
+           料金表を公開しているので、高いと感じた人は連絡せずに閉じる。
+           そのままでは「誰が価格で諦めたか」が一切残らないため、
+           計算機の通過点にだけ印を打つ。氏名・メールなどは一切送らない。
+
+           見たいのはこの差:
+             calc_use  … 自分で条件を変えた ＝ 具体的に検討した人
+             calc_cta  … 相談ボタンまで進んだ人
+           この2つの人数の差が、価格で落ちた人数。
+           calc_leave に離脱時の組み合わせが入るので、
+           「松を見た人だけが落ちている」のか「全体的に落ちている」のかまで分かる。
+
+           送信先: ANALYTICS_ID に GA4 の測定ID(G-XXXXXXX)を入れると送信が始まる。
+           空のままなら外部には一切送らず、Cookie も置かない。
+           入れる前にプライバシーポリシーを用意すること(README 参照)。
+           記録はいつでも localStorage に残るので、
+           開発者コンソールで soFunnel() と打てば手元で確認できる。 */
+        const ANALYTICS_ID = '';
+
+        const track = (() => {
+            const LOG = 'so.funnel';
+            const push = (row) => {
+                try {
+                    const a = JSON.parse(localStorage.getItem(LOG) || '[]');
+                    a.push(row);
+                    localStorage.setItem(LOG, JSON.stringify(a.slice(-200)));
+                } catch { /* プライベートモード等では黙って諦める */ }
+            };
+            return (name, params = {}) => {
+                const row = { t: new Date().toISOString(), name, ...params };
+                push(row);
+                if (typeof window.gtag === 'function') {
+                    window.gtag('event', name, { ...params, transport_type: 'beacon' });
+                }
+            };
+        })();
+        window.soFunnel = () => {
+            try { return JSON.parse(localStorage.getItem('so.funnel') || '[]'); }
+            catch { return []; }
+        };
+
         const PRICE = { base: 90000, perSec: 3500, perExtra: 65000 };
         const LENGTHS = [
             { sec: 15,  label: '15秒' },
@@ -872,6 +913,8 @@
             let sec = 30;
             let count = 1;
             let summary = '';
+            // 段差の状態。used=自分で条件を変えた / cta=相談ボタンまで進んだ
+            let used = false, cta = false, resultTimer;
 
             // 送信先はお問い合わせ欄のリンクを唯一の出どころにする(二重管理を避ける)
             const mailLink = document.getElementById('calc-mail');
@@ -899,14 +942,28 @@
             }
 
             LENGTHS.forEach(({ sec: s, label }) => {
-                const o = makeOpt(label, lenBox, 'calc-len', s, () => { sec = s; render(); });
+                const o = makeOpt(label, lenBox, 'calc-len', s, () => { sec = s; touch(); render(); });
                 o.label.dataset.sec = String(s);
                 o.input.dataset.sec = String(s);
             });
             for (let n = 1; n <= 6; n += 1) {
-                const o = makeOpt(`${n}本`, cntBox, 'calc-cnt', n, () => { count = n; render(); });
+                const o = makeOpt(`${n}本`, cntBox, 'calc-cnt', n, () => { count = n; touch(); render(); });
                 o.label.dataset.count = String(n);
                 o.input.dataset.count = String(n);
+            }
+
+            /* 初期表示の render とユーザー操作を分ける。
+               「自分で条件を変えた」だけを検討中とみなす */
+            function touch() {
+                if (!used) { used = true; track('calc_use', { sec, count }); }
+            }
+
+            // 選び終えたところを1回だけ拾う(連打のたびに送らない)
+            function settled(total) {
+                clearTimeout(resultTimer);
+                resultTimer = setTimeout(() => {
+                    if (used) track('calc_result', { sec, count, total });
+                }, 900);
             }
 
             function render() {
@@ -939,6 +996,7 @@
                     : `本数 ${count}本（2本目以降 ${count - 1}本）`;
                 document.getElementById('calc-cntfee').textContent = yen(cntFee);
                 document.getElementById('calc-lead-v').textContent = leadTime(sec);
+                settled(total);
 
                 summary = [
                     'so. の料金シミュレーターから送信しています。',
@@ -969,12 +1027,20 @@
                     + `&body=${encodeURIComponent(summary)}`;
             }
 
+            // 相談まで進んだ人。ここまで来た人と calc_use の差が、価格で落ちた人数
+            mailLink.addEventListener('click', () => {
+                cta = true;
+                track('calc_cta', { sec, count, total: PRICE.base + PRICE.perSec * sec + PRICE.perExtra * (count - 1), how: 'mail' });
+            });
+
             // メールソフトが開かない環境向けに、同じ本文をコピーできるようにする
             const copyBtn = document.getElementById('calc-copy');
             const copyMsg = document.getElementById('calc-copy-msg');
             const defaultMsg = copyMsg.textContent;
             let msgTimer;
             copyBtn.addEventListener('click', async () => {
+                cta = true;
+                track('calc_cta', { sec, count, total: PRICE.base + PRICE.perSec * sec + PRICE.perExtra * (count - 1), how: 'copy' });
                 let ok = false;
                 try {
                     await navigator.clipboard.writeText(summary);
@@ -1000,11 +1066,36 @@
                 b.addEventListener('click', () => {
                     sec = Number(b.dataset.len);
                     count = Number(b.dataset.cnt);
+                    touch();
+                    track('calc_preset', { preset: b.querySelector('b')?.textContent || '', sec, count });
                     render();
                 });
             });
 
             render();
+
+            // 料金セクションが実際に画面に入ったか(母数)
+            const plans = document.getElementById('plans');
+            if (plans && 'IntersectionObserver' in window) {
+                const io = new IntersectionObserver((es) => {
+                    if (es.some((e) => e.isIntersecting)) { track('plans_view'); io.disconnect(); }
+                }, { threshold: 0.25 });
+                io.observe(plans);
+            }
+
+            /* 離脱時の最終状態。used かつ !cta が「価格で黙って帰った人」。
+               どの金額を見て帰ったかが total に残る。
+               閉じる瞬間は通常の送信が間に合わないので pagehide で送る */
+            let left = false;
+            const onLeave = () => {
+                if (left || !used) return;
+                left = true;
+                track('calc_leave', { sec, count, total: PRICE.base + PRICE.perSec * sec + PRICE.perExtra * (count - 1), used, cta });
+            };
+            window.addEventListener('pagehide', onLeave);
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') onLeave();
+            });
         }
 
         document.getElementById('year').textContent = new Date().getFullYear();
