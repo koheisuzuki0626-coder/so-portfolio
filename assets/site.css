@@ -636,6 +636,15 @@ h1, h2, h3, .display, .headline, .subhead { text-wrap: balance; }
 .company-facts dt { color: var(--ink-dim); }
 .company-facts dd { color: var(--ink-2); }
 
+/* 秒単価が段で変わるので、式の下に内訳を添える */
+.calc-formula-sub {
+    display: block;
+    margin-top: 6px;
+    font-size: 0.82em;
+    color: var(--ink-dim);
+    letter-spacing: 0.02em;
+}
+
 /* ---------- プライバシーポリシー ---------- */
 /* 読み物ではなく参照される文書なので、番号を振って行を追いやすくする */
 .policy { max-width: 760px; margin: 0; padding: 0; list-style: none; counter-reset: policy; }
