@@ -1366,12 +1366,35 @@ footer { background: var(--bg-alt); border-top: 1px solid var(--line); }
     .stage-track { height: 190vh; }
 }
 @media (max-width: 860px) {
-    #nav { padding: 10px 16px; }
+    #nav { padding: 10px 16px 0; flex-wrap: wrap; }
     #nav .logo { font-size: 1.12rem; }
-    /* 狭い画面ではメニューをハンバーガーにまとめる */
-    .nav-main { display: none; }
-    .subpage .nav-main { display: flex; gap: 15px; }
-    .subpage .nav-item { font-size: 0.78rem; }
+    /* 狭い画面では項目を2段目に送り、入りきらないぶんは横スクロールさせる。
+       文字を小さくして詰め込むより、読める大きさのまま流せるほうが押しやすい */
+    .nav-main {
+        display: flex;
+        order: 3;
+        flex: 0 0 100%;
+        margin-left: 0;
+        gap: 20px;
+        font-size: 0.84rem;
+        overflow-x: auto;
+        overscroll-behavior-x: contain;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        /* ナビの左右パディングを打ち消して画面端まで使う。
+           端で切れているのが分かるよう、右側だけ薄くぼかす */
+        margin-inline: -16px;
+        padding: 9px 16px 8px;
+        -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
+                mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
+    }
+    .nav-main::-webkit-scrollbar { display: none; }
+    .nav-item { font-size: inherit; }
+    /* 端まで流しきったらぼかしを外す(JS が .nav-main-end を付ける) */
+    .nav-main.nav-main-end {
+        -webkit-mask-image: none;
+                mask-image: none;
+    }
     .burger { display: block; }
     .menu { top: var(--nav-h); height: calc(100svh - var(--nav-h)); max-height: none; }
     .menu-inner { grid-template-columns: 1fr; gap: 34px; padding: 28px 22px 60px; }

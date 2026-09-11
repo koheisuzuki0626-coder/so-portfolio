@@ -748,6 +748,20 @@
                 stage.style.setProperty('--p', p.toFixed(3));
             }
         }
+        /* 2段目の項目を最後まで流したら、右端のぼかしを外す。
+           まだ続きがあるのかどうかを見た目で分かるようにするため */
+        const navMain = document.querySelector('.nav-main');
+        function syncNavMainEdge() {
+            if (!navMain) return;
+            const more = navMain.scrollWidth - navMain.clientWidth - navMain.scrollLeft;
+            navMain.classList.toggle('nav-main-end', more <= 2);
+        }
+        if (navMain) {
+            navMain.addEventListener('scroll', syncNavMainEdge, { passive: true });
+            window.addEventListener('resize', syncNavMainEdge);
+            syncNavMainEdge();
+        }
+
         function onScroll() {
             if (ticking) return;
             ticking = true;

@@ -189,6 +189,20 @@
         const progress = document.getElementById('progress');
         const root = document.documentElement;
 
+
+        /* 2段目の項目を最後まで流したら、右端のぼかしを外す */
+        const navMain = document.querySelector('.nav-main');
+        function syncNavMainEdge() {
+            if (!navMain) return;
+            const more = navMain.scrollWidth - navMain.clientWidth - navMain.scrollLeft;
+            navMain.classList.toggle('nav-main-end', more <= 2);
+        }
+        if (navMain) {
+            navMain.addEventListener('scroll', syncNavMainEdge, { passive: true });
+            window.addEventListener('resize', syncNavMainEdge);
+            syncNavMainEdge();
+        }
+
         let ticking = false;
         function update() {
             ticking = false;
@@ -196,7 +210,8 @@
             nav.classList.toggle('scrolled', window.scrollY > 20);
 
             // 黒いセクションに重なったらヘッダーを反転させる(トップと同じ挙動)
-            const band = nav.getBoundingClientRect().bottom;
+            const nr = nav.getBoundingClientRect();
+            const band = nr.top + nr.height / 2;
             const onDark = [...document.querySelectorAll('.cta-band')].some((el) => {
                 const r = el.getBoundingClientRect();
                 return r.top <= band - 4 && r.bottom >= band;
