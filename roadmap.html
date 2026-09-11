@@ -49,6 +49,8 @@
         td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
         tfoot td { font-weight: 500; border-bottom: 0; }
         .wrap-x { overflow-x: auto; }
+        /* 文字の列が3つ以上ある表は、狭い画面で潰さずに横スクロールさせる */
+        .wrap-x table.t-wide { min-width: 560px; }
 
         .stage { border-left: 2px solid var(--line); padding: 0 0 4px 22px; margin-top: 26px; position: relative; }
         .stage::before { content: ""; position: absolute; left: -7px; top: 8px; width: 12px; height: 12px;
@@ -72,41 +74,86 @@
         .note b { color: var(--ink); font-weight: 500; }
         code { font-size: .9em; background: var(--bg-alt); padding: 1px 5px; border-radius: 4px; }
         a { color: var(--accent-ink); }
+
+        /* 章 */
+        .act { margin-top: clamp(54px, 7vw, 84px); padding-top: 16px; border-top: 2px solid var(--ink); }
+        .act-label { display: flex; align-items: baseline; gap: 12px; }
+        .act-label b { font-size: .78rem; font-weight: 500; letter-spacing: .12em; color: var(--accent-ink); }
+        .act-label span { font-size: .82rem; color: var(--ink-dim); }
+        .act + section, .act + details { margin-top: 26px; }
+
+        /* 先にやること */
+        .do { margin-top: 26px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+        .do > li { display: grid; grid-template-columns: 38px 1fr; gap: 4px 14px; align-items: baseline;
+                   padding: 16px 20px; border-top: 1px solid var(--line); }
+        .do > li:first-child { border-top: 0; }
+        .do > li > b { font-size: 1.5rem; font-weight: 300; color: var(--accent-ink); line-height: 1.2; }
+        .do > li > div { font-size: .96rem; }
+        .do > li > div em { display: block; font-style: normal; font-size: .86rem;
+                            color: var(--ink-dim); margin-top: 3px; }
+        .do { list-style: none; padding: 0; }
+
+        /* 折りたたみ */
+        details.fold { border-bottom: 1px solid var(--line); }
+        details.fold:first-of-type { border-top: 1px solid var(--line); }
+        details.fold > summary { cursor: pointer; list-style: none; display: block;
+                                 padding: 15px 30px 15px 0; position: relative; }
+        details.fold > summary::-webkit-details-marker { display: none; }
+        details.fold > summary::after { content: ""; position: absolute; right: 8px; top: 23px;
+                                        width: 8px; height: 8px; border-right: 1.5px solid var(--ink-dim);
+                                        border-bottom: 1.5px solid var(--ink-dim);
+                                        transform: rotate(45deg); transition: transform .18s ease; }
+        details.fold[open] > summary::after { transform: rotate(-135deg); }
+        details.fold > summary:hover { background: var(--bg-alt); }
+        .fold-t { font-size: 1rem; font-weight: 500; }
+        .fold-s { font-size: .85rem; color: var(--ink-dim); }
+        @media (max-width: 760px) {
+            /* 狭い画面では見出しと要約が1行につながって読みにくいので、2行に分ける */
+            .fold-t, .fold-s { display: block; }
+            .fold-s { margin-top: 1px; line-height: 1.55; }
+            details.fold > summary { padding-block: 13px; }
+            details.fold > summary::after { top: 20px; }
+        }
+        .fold-body { padding: 2px 0 28px; }
+        .fold-body > *:first-child { margin-top: 0; }
+        .openall { margin-top: 18px; font-size: .82rem; color: var(--accent-ink);
+                   background: none; border: 0; padding: 0; cursor: pointer; font: inherit;
+                   font-size: .82rem; text-decoration: underline; text-underline-offset: 3px; }
     </style>
 </head>
 <body>
     <p class="eyebrow">Internal</p>
     <h1>事業ロードマップ</h1>
     <p class="sub">
-        開業から12ヶ月で <b>年収（額面）¥10,695,000</b>。<br>
-        件数は月2件から動かさず、実績が積み上がる順に受注する尺を伸ばしていく。<br>
-        <b>すでに退職しているので、当面の焦点は年収ではなく「最初の入金までを持ちこたえられるか」。</b>
+        開業から12ヶ月で <b>年収（額面）¥10,695,000</b>。件数は月2件から動かさず、尺だけ伸ばす。<br>
+        すでに退職しているので、当面の焦点は年収ではなく<b>「最初の入金までを持ちこたえられるか」</b>。
     </p>
     <p class="asof">2026年9月11日 時点 ／ 数字は料金表と工数モデルから計算したもの</p>
 
+    <ul class="do">
+        <li><b>1</b><div>Higgsfield の有料プランに入る
+            <em>無料プラン・残高12.36クレジットでは、梅の30秒すら納品できない</em></div></li>
+        <li><b>2</b><div><a href="#test-build">60秒の松を1本つくって工数を測る</a>
+            <em>料金表が乗っている前提（松は梅の1.9倍）が、まだ一度も実測されていない</em></div></li>
+        <li><b>3</b><div>準備と並行して声かけを始める
+            <em>初入金は11/30。開業準備が終わってから営業では、底が1ヶ月深くなる</em></div></li>
+    </ul>
+
+    <div class="act"><p class="act-label"><b>1</b><span>いまの位置と、資金がいつ尽きるか</span></p></div>
+
     <section>
         <h2>いまの状態</h2>
-        <p class="lead">計画の前に、動かせていないものが2つある。</p>
         <div class="now">
-            <div class="stop"><b>未開業</b><span>受注 0件・売上 0円。会社は既に退職済みで、給与収入もない</span></div>
-            <div class="stop"><b>12.36</b><span>残りクレジット。Higgsfield が無料プランのままで、梅の30秒も納品できない</span></div>
+            <div class="stop"><b>未開業</b><span>受注 0件・売上 0円。退職済みで給与収入もない</span></div>
+            <div class="stop"><b>12.36</b><span>残りクレジット。Higgsfield は無料プランのまま</span></div>
             <div><b>0本</b><span>クライアント事例。自社チャンネルのみ</span></div>
             <div class="stop"><b>約2.5ヶ月</b><span>最初の入金まで。その間ずっと収入ゼロ</span></div>
-        </div>
-        <div class="flag">
-            <b>この2つが先。</b>
-            <p>有料プランに入らないと1本も納品できない。松を1本つくって工数を測れば、
-               仕上げの段階の倍率（竹1.4／松1.9、いずれも未実測）と、クレジットの実費が同時に分かる。
-               料金表はこの実測の上に載っているので、ここが最優先。</p>
         </div>
     </section>
 
     <section>
         <h2>最初の入金まで</h2>
-        <p class="lead">
-            退職済みで給与がないので、<b>いま一番効くのは売上ではなく手元資金</b>。
-            納品してもすぐ入金されるわけではない（月末締め・翌月末払いを想定）。
-        </p>
+        <p class="lead">納品してもすぐ入金されない（月末締め・翌月末払いを想定）。</p>
         <div class="wrap-x"><table>
             <thead><tr><th>時期</th><th>起きること</th></tr></thead>
             <tbody>
@@ -119,10 +166,7 @@
         </table></div>
 
         <h3>手元資金がいくら要るか</h3>
-        <p class="lead">
-            立ち上がりを見込んだ納品ペース（10月1件 → 11月以降 月2件）で、
-            生活費とツール代（月5万）を引いた手元の推移。
-        </p>
+        <p class="lead">立ち上がりを見込んだペース（10月1件 → 11月以降 月2件）で、生活費とツール代（月5万）を引いた手元の推移。</p>
         <div class="wrap-x"><table>
             <thead><tr><th>生活費</th><th class="num">9月</th><th class="num">10月</th><th class="num">11月</th><th class="num">12月</th><th class="num">1月</th><th class="num">2月</th><th class="num">必要な貯蓄</th></tr></thead>
             <tbody>
@@ -131,85 +175,13 @@
                 <tr><td>月30万</td><td class="num">−35万</td><td class="num">−70万</td><td class="num">−86万</td><td class="num">−60万</td><td class="num">−36万</td><td class="num">−10万</td><td class="num"><b>86万</b></td></tr>
             </tbody>
         </table></div>
-        <p class="lead" style="margin-top:14px">
-            <b>底は11月末ごろ。</b>そこを越えれば入金が追いついてくる。
-            生活費が月25万なら70万、月30万なら86万の貯蓄があれば回りきる。
-            これは<b>計画どおりに10月から受注できた場合</b>の数字なので、
-            1ヶ月遅れれば底はそのぶん深くなる。
-        </p>
         <div class="flag">
-            <b>受注が遅れたときのほうが効く。</b>
-            <p>10月に1件も取れないと、初入金は12月末にずれる。
-               手元が尽きる前に売上を立てるには、P0 と並行して声かけを始めるしかない。
-               <b>開業準備が終わってから営業を始めるのでは遅い。</b></p>
+            <b>底は11月末。ただしこれは計画どおり10月に受注できた場合の数字。</b>
+            <p>10月に1件も取れないと初入金は12月末にずれ、底はそのぶん深くなる。</p>
         </div>
     </section>
 
-    <section>
-        <h2>今年（暦年2026）の着地</h2>
-        <p class="lead">
-            残りは10〜12月の3ヶ月だけ。今日から P0（2週間）を始めると受注可能が9月25日、
-            竹の制作期間を見て初納品は10月中旬になる。<b>暦年で1,000万には届かない。</b>
-        </p>
-        <div class="wrap-x"><table>
-            <thead><tr><th>ケース</th><th class="num">10月</th><th class="num">11月</th><th class="num">12月</th><th class="num">売上</th><th class="num">年収（額面）</th></tr></thead>
-            <tbody>
-                <tr><td>ロードマップ通り</td><td class="num">60万</td><td class="num">60万</td><td class="num">60万</td><td class="num">180万</td><td class="num">160万</td></tr>
-                <tr><td><b>立ち上がりを見込む</b></td><td class="num">19.5万</td><td class="num">60万</td><td class="num">60万</td><td class="num">139.5万</td><td class="num"><b>119.5万</b></td></tr>
-                <tr><td>出遅れ</td><td class="num">0</td><td class="num">19.5万</td><td class="num">60万</td><td class="num">79.5万</td><td class="num">59.5万</td></tr>
-            </tbody>
-        </table></div>
-        <p class="lead" style="margin-top:14px">
-            実績ゼロから初月に月2件は苦しいので、中心は120万前後。
-            <b>目標は「暦年2026で1,000万」ではなく「開業から12ヶ月で1,069万」に読み替える。</b>
-            今日開業すれば着地は2027年9月。計画自体はそのまま生きる。
-        </p>
-    </section>
-
-    <section>
-        <h2>開業から12ヶ月の受注構成</h2>
-        <p class="lead">
-            件数は最初から最後まで月2件。上げるのは尺だけ。
-            実績が積み上がるほど長い映像を任せてもらえるようになる、という順番。
-        </p>
-        <div class="wrap-x"><table>
-            <thead><tr><th>四半期</th><th>月あたりの受注</th><th class="num">月商</th><th class="num">四半期計</th><th class="num">月の工数</th></tr></thead>
-            <tbody>
-                <tr><td>Q1／1〜3ヶ月</td><td>90秒（梅）＋ 30秒（梅）</td><td class="num">¥600,000</td><td class="num">¥1,800,000</td><td class="num">40.4h</td></tr>
-                <tr><td>Q2／4〜6ヶ月</td><td>3分（梅）＋ 30秒（梅）</td><td class="num">¥915,000</td><td class="num">¥2,745,000</td><td class="num">62.0h</td></tr>
-                <tr><td>Q3／7〜9ヶ月</td><td>3分（梅）＋ 90秒（梅）</td><td class="num">¥1,125,000</td><td class="num">¥3,375,000</td><td class="num">76.4h</td></tr>
-                <tr><td>Q4／10〜12ヶ月</td><td>3分（梅）＋ 90秒（梅）</td><td class="num">¥1,125,000</td><td class="num">¥3,375,000</td><td class="num">76.4h</td></tr>
-            </tbody>
-            <tfoot><tr><td>年間</td><td>24件</td><td class="num">—</td><td class="num">¥11,295,000</td><td class="num">766h</td></tr></tfoot>
-        </table></div>
-        <p class="lead" style="margin-top:14px">
-            売上 ¥11,295,000 − ツール代 ¥600,000 ＝ <b>年収（額面）¥10,695,000</b>。粗利率 94.5%。
-            ここから税と社会保険で3〜4割引かれるので、手元に残るのは概ね ¥620〜680万
-            （事業形態・控除・消費税の届出で変わるため、税理士に確認すること）。
-        </p>
-        <p class="lead">
-            年間の工数 766h は、制作に使える 1,373h の <b>56%</b>。607h 空く。
-            上の表はすべて梅で組んである。<b>竹や松が売れればその時点で上振れする</b>ので、
-            この計画は下限に近い。
-        </p>
-    </section>
-
-    <section>
-        <h2>毎月の必達ライン</h2>
-        <p class="lead">月2件を安定して取れるかどうか、それだけ。必要な問い合わせ数は受注率で決まる。</p>
-        <div class="wrap-x"><table>
-            <thead><tr><th>受注率</th><th class="num">必要な問い合わせ／月</th><th class="num">／週</th><th class="num">年間</th></tr></thead>
-            <tbody>
-                <tr><td>40%（紹介中心）</td><td class="num">5.0件</td><td class="num">1.2件</td><td class="num">60件</td></tr>
-                <tr><td><b>30%（想定）</b></td><td class="num"><b>6.7件</b></td><td class="num"><b>1.6件</b></td><td class="num"><b>80件</b></td></tr>
-                <tr><td>20%（冷たい流入中心）</td><td class="num">10.0件</td><td class="num">2.3件</td><td class="num">120件</td></tr>
-            </tbody>
-        </table></div>
-        <p class="lead" style="margin-top:14px">
-            週1.6件なら紹介だけでも現実的に届く水準。ただし<b>ゼロからつくる必要がある</b>。
-            Q1 は紹介で埋まるとして、Q2 までに紹介以外の経路を1つ立てられないと Q3 以降で息切れする。
-        </p>
-    </section>
+    <div class="act"><p class="act-label"><b>2</b><span>やること</span></p></div>
 
     <section>
         <h2>4つの段階</h2>
@@ -221,15 +193,13 @@
             <p class="when">最初の2週間 ／ この期間も声かけは並行して進める</p>
             <ul>
                 <li><b>Higgsfield の有料プランに入る。</b>無料プラン・12クレジットでは1本も納品できない</li>
-                <li><b>60秒の松を1本つくって工数を測る。</b>竹1.4／松1.9 の倍率は未実測。
-                    2.5倍だった場合、時間単価は ¥11,000/h まで落ちる。
-                    題材・記録項目・判定の基準は<a href="#test-build">下の「最初の1本」</a>に固定してある</li>
+                <li><b>60秒の松を1本つくって工数を測る。</b>倍率が1.9でなく2.5だった場合、時間単価は
+                    ¥11,000/h まで落ちる。題材・記録項目・判定基準は<a href="#test-build">下に固定してある</a></li>
                 <li>開業届を出す。インボイス登録の要否は取引先が法人中心かで決める</li>
                 <li>見積書・契約書・請求書のひな形。<b>著作権の帰属・修正3回まで・支払サイト</b>を書き込む</li>
-                <li>プロフィール・略歴をサイトに載せる（氏名・経歴・顔写真）</li>
-                <li>会社概要の「開業」行を足す</li>
+                <li>プロフィール・略歴をサイトに載せる（氏名・経歴・顔写真）／会社概要の「開業」行を足す</li>
                 <li><b>手元資金と月の生活費を確定させる。</b>いつまで無収入で持つかを日付で押さえる</li>
-                <li><b>支払サイトを見積書・契約書に明記する。</b>末締め翌月末より短くできれば、底が浅くなる</li>
+                <li><b>支払サイトを明記する。</b>末締め翌月末より短くできれば、底が浅くなる</li>
             </ul>
             <div class="gate"><b>次へ進む条件：</b>60秒の松を完成させて工数を実測した／見積書を即日出せる</div>
         </div>
@@ -237,13 +207,13 @@
         <div class="stage">
             <p class="tag">P1</p>
             <h3>90秒で足場をつくる</h3>
-            <p class="when">1〜3ヶ月 ／ 90秒（梅）＋ 30秒（梅）</p>
+            <p class="when">1〜3ヶ月 ／ 90秒（梅）＋ 30秒（梅）／ 月商 ¥600,000</p>
             <ul>
                 <li>実績ゼロから売りやすい <b>90秒・¥405,000</b> を軸に、3ヶ月で事例6本</li>
                 <li>知人・前職の伝手から埋める。必要な問い合わせは月7件で、紹介だけでも届く水準</li>
-                <li>受注のたびに<b>事例掲載の許諾</b>を取る。値引きの代わりではなく、標準の契約条項として入れる</li>
+                <li>受注のたびに<b>事例掲載の許諾</b>を取る。値引きの代わりではなく、標準の契約条項として</li>
                 <li>納品ごとに実工数を記録し、料金の前提を更新する</li>
-                <li>実績欄を自社チャンネルからクライアント事例に差し替える。自社作品は「表現サンプル」として別枠に残す</li>
+                <li>実績欄を自社チャンネルからクライアント事例に差し替える（自社作品は別枠で残す）</li>
             </ul>
             <div class="gate"><b>次へ進む条件：</b>事例6本を掲載／月商 ¥600,000 を3ヶ月連続</div>
         </div>
@@ -251,9 +221,9 @@
         <div class="stage">
             <p class="tag">P2</p>
             <h3>3分を売れるようにする</h3>
-            <p class="when">4〜6ヶ月 ／ 3分（梅）＋ 30秒（梅）</p>
+            <p class="when">4〜6ヶ月 ／ 3分（梅）＋ 30秒（梅）／ 月商 ¥915,000</p>
             <ul>
-                <li>P1 の事例を材料に <b>3分・¥720,000</b> を通す。月商 ¥915,000</li>
+                <li>P1 の事例を材料に <b>3分・¥720,000</b> を通す</li>
                 <li>3分は工数48h。1本で月の工数の6割を使うので、<b>2本の進行が重ならないよう着手日をずらす</b></li>
                 <li>竹・松を提案してみる。通れば同じ尺のまま月商が上がる（90秒：梅40.5万→竹53.1万）</li>
                 <li><code>funnel.html</code> で、どの価格帯で落ちているかを見る</li>
@@ -264,9 +234,8 @@
         <div class="stage">
             <p class="tag">P3</p>
             <h3>年収1,000万に乗せる</h3>
-            <p class="when">7〜12ヶ月 ／ 3分（梅）＋ 90秒（梅）</p>
+            <p class="when">7〜12ヶ月 ／ 3分（梅）＋ 90秒（梅）／ 月商 ¥1,125,000</p>
             <ul>
-                <li>月商 ¥1,125,000 を6ヶ月続けて着地</li>
                 <li>稼働は年766h・持ち時間の56%。<b>値上げなしでここまで来られる</b></li>
                 <li>Q3 の時点で問い合わせが月10件を超えていたら、件数を増やす判断ができる</li>
                 <li>年商2,000万に伸ばす選択肢を残すなら、このあたりで法人化を検討する</li>
@@ -278,73 +247,67 @@
     <section id="test-build">
         <h2>最初の1本：計測用のテスト制作</h2>
         <p class="lead">
-            料金表は「1秒あたり ¥6,650・松の工数は梅の1.9倍」という<b>未実測の前提</b>の上に乗っている。
+            料金表は「1秒あたり ¥6,650・松は梅の1.9倍の工数」という<b>未実測の前提</b>に乗っている。
             最初の1本は作品ではなく<b>計測</b>が目的なので、測れる設計にしてから着手する。
         </p>
 
-        <h3>尺は60秒にする</h3>
+        <h3>尺は60秒</h3>
         <p class="lead">
-            工数は「固定（打ち合わせ・構成・書き出し）＋ 変動（尺に比例する部分）」でできている。
-            測りたいのは変動のほうなので、固定費の割合が小さくなる尺を選ぶ。
-            短すぎると固定費に埋もれて測れず、長すぎると無収入期間に日数を使いすぎる。
+            測りたいのは尺に比例する変動工数のほう。短いと固定工数（5.8h）に埋もれて測れず、
+            長いと無収入期間に日数を使いすぎる。
         </p>
         <div class="wrap-x"><table>
-            <thead><tr><th>尺</th><th class="num">予測工数</th><th class="num">実働日数</th><th class="num">変動費の割合</th><th class="num">±2h のブレの影響</th></tr></thead>
+            <thead><tr><th>尺</th><th class="num">予測工数</th><th class="num">実働日数</th><th class="num">±2h のブレが出る大きさ</th></tr></thead>
             <tbody>
-                <tr><td>15秒</td><td class="num">11.6h</td><td class="num">1.7日</td><td class="num">59%</td><td class="num">±17.2%</td></tr>
-                <tr><td>30秒</td><td class="num">18.5h</td><td class="num">2.6日</td><td class="num">74%</td><td class="num">±10.8%</td></tr>
-                <tr><td><b>60秒（採用）</b></td><td class="num"><b>32.2h</b></td><td class="num"><b>4.6日</b></td><td class="num"><b>85%</b></td><td class="num"><b>±6.2%</b></td></tr>
-                <tr><td>90秒</td><td class="num">45.8h</td><td class="num">6.5日</td><td class="num">90%</td><td class="num">±4.4%</td></tr>
-                <tr><td>3分</td><td class="num">86.9h</td><td class="num">12.4日</td><td class="num">94%</td><td class="num">±2.3%</td></tr>
+                <tr><td>15秒</td><td class="num">11.6h</td><td class="num">1.7日</td><td class="num">±17.2%（埋もれる）</td></tr>
+                <tr><td>30秒</td><td class="num">18.5h</td><td class="num">2.6日</td><td class="num">±10.8%</td></tr>
+                <tr><td><b>60秒（採用）</b></td><td class="num"><b>32.2h</b></td><td class="num"><b>4.6日</b></td><td class="num"><b>±6.2%</b></td></tr>
+                <tr><td>3分</td><td class="num">86.9h</td><td class="num">12.4日</td><td class="num">±2.3%（日数が重い）</td></tr>
             </tbody>
         </table></div>
         <p class="lead" style="margin-top:14px">
-            3分なら精度は一番高いが、実働12.4日を収入ゼロの期間に使う。
-            60秒なら4.6日で済み、それでも<b>倍率が1.9ではなく2.5だった場合に27%の超過として表に出る</b>。
-            測定の目的には十分。
+            60秒なら4.6日で済み、それでも<b>倍率が2.5だった場合は27%の超過として表に出る</b>。測定には十分。
         </p>
 
-        <h3>題材は so. 自身の会社紹介にする</h3>
+        <h3>題材は so. 自身の会社紹介</h3>
         <ul>
             <li>クライアント実績がゼロなので、<b>サイトに載せられる1本が同時に手に入る</b></li>
-            <li>松の全機能（4K・声の調整・高精細化・ちらつき除去・3形式書き出し）を一通り通せる</li>
-            <li>9:16 で書き出せば Instagram にそのまま出せる</li>
-            <li>60秒から30秒・15秒に切り出せるので、プリセットの見本も同時にできる</li>
-            <li>締切と修正依頼が外から来ないので、<b>純粋な制作工数だけ</b>を測れる</li>
+            <li>松の全機能（4K・声の調整・高精細化・ちらつき除去・3形式）を一通り通せる。9:16 は Instagram に流用できる</li>
+            <li>外から締切も修正依頼も来ないので、<b>純粋な制作工数だけ</b>を測れる</li>
         </ul>
 
         <h3>記録するもの</h3>
-        <p class="lead">尺より記録のほうが大事。合計時間だけ測っても、次の尺の見積りには使えない。</p>
-        <div class="wrap-x"><table>
-            <thead><tr><th>区分</th><th>工程</th><th class="num">予測</th><th>測る理由</th></tr></thead>
+        <p class="lead">合計時間だけ測っても、次の尺の見積りには使えない。</p>
+        <div class="wrap-x"><table class="t-wide">
+            <thead><tr><th>記録する項目</th><th class="num">予測</th><th>これで分かること</th></tr></thead>
             <tbody>
-                <tr><td>固定</td><td>ヒアリング・構成・絵コンテ・最終書き出し</td><td class="num">5.8h</td><td>尺が変わっても増えない部分。短い案件の採算を決める</td></tr>
-                <tr><td>変動</td><td>生成・選別・撮り直し・つなぎ・音</td><td class="num">27.4h</td><td>1秒あたりの単価が妥当かはこれで決まる</td></tr>
-                <tr><td>—</td><td>消費クレジット（工程ごと）</td><td class="num">未知</td><td>原価。売上から引いて初めて実際の時間単価が出る</td></tr>
-                <tr><td>—</td><td>仕上げ工程だけの時間（4K化・ちらつき除去・3形式）</td><td class="num">未知</td><td>松と竹の差額 ¥1,750/秒 に見合うかの根拠</td></tr>
+                <tr><td>固定：ヒアリング・構成・絵コンテ・最終書き出し</td><td class="num">5.8h</td><td>尺が変わっても増えない部分。短い案件の採算</td></tr>
+                <tr><td>変動：生成・選別・撮り直し・つなぎ・音</td><td class="num">27.4h</td><td>1秒あたりの単価が妥当かどうか</td></tr>
+                <tr><td>消費クレジット（工程ごと）</td><td class="num">未知</td><td>原価。引いて初めて実際の時間単価が出る</td></tr>
+                <tr><td>仕上げ工程だけの時間（4K化・ちらつき除去・3形式）</td><td class="num">未知</td><td>松と竹の差額 ¥1,750/秒 に見合うか</td></tr>
             </tbody>
         </table></div>
 
         <h3>結果の読み方</h3>
-        <div class="wrap-x"><table>
+        <div class="wrap-x"><table class="t-wide">
             <thead><tr><th class="num">実測</th><th>意味</th><th>やること</th></tr></thead>
             <tbody>
-                <tr><td class="num">約33h</td><td>倍率1.9は妥当。時間単価 ¥14,583/h が確認できる</td><td>料金表を確定させる</td></tr>
-                <tr><td class="num">40h 超</td><td>倍率が足りない。実質 ¥11,000/h 前後まで落ちている</td><td>松の単価を上げるか、松の工程を減らす</td></tr>
-                <tr><td class="num">25h 未満</td><td>松が安すぎる。または仕上げ工程の手離れが想定より良い</td><td>値上げではなく、松をもっと前に出して売る</td></tr>
+                <tr><td class="num">約33h</td><td>倍率1.9は妥当。¥14,583/h が確認できる</td><td>料金表を確定させる</td></tr>
+                <tr><td class="num">40h 超</td><td>倍率が足りない。実質 ¥11,000/h 前後</td><td>松の単価を上げるか、工程を減らす</td></tr>
+                <tr><td class="num">25h 未満</td><td>松が安すぎる</td><td>値上げではなく、松を前に出して売る</td></tr>
             </tbody>
         </table></div>
 
         <h3>クレジットはどれくらい要るか</h3>
         <p class="lead">
-            Higgsfield の API は<b>1生成あたりのクレジット単価を返さない</b>（モデル一覧にも単価の項目がない）。
-            公開されている唯一の数字は <code>flux_3_video_edit</code> の「処理した映像1秒につき1クレジット」だけ。
-            なので正確な金額は事前には出せない。出せるのは<b>「何秒ぶん処理するか」</b>のほうで、これは設計から決まる。
+            Higgsfield の API は<b>1生成あたりの単価を返さない</b>。公開されている数字は
+            <code>flux_3_video_edit</code> の「処理1秒につき1クレジット」だけ。
+            事前に出せるのは金額ではなく<b>処理する秒数</b>のほうで、これは設計から決まる。
         </p>
-        <div class="wrap-x"><table>
+        <div class="wrap-x"><table class="t-wide">
             <thead><tr><th>工程</th><th>内訳</th><th class="num">処理する秒数</th></tr></thead>
             <tbody>
-                <tr><td>カット生成</td><td>6カット × 採用までに5回 × 10秒</td><td class="num">300秒</td></tr>
+                <tr><td>カット生成</td><td>6カット × 採用まで5回 × 10秒</td><td class="num">300秒</td></tr>
                 <tr><td>4K 化</td><td>本編60秒</td><td class="num">60秒</td></tr>
                 <tr><td>ちらつき除去</td><td>本編60秒</td><td class="num">60秒</td></tr>
                 <tr><td>3形式の書き出し</td><td>縦・正方形（横は本編）</td><td class="num">120秒</td></tr>
@@ -352,116 +315,167 @@
             </tbody>
             <tfoot><tr><td>合計</td><td>最終60秒に対して約9倍</td><td class="num">約720秒</td></tr></tfoot>
         </table></div>
-        <p class="lead" style="margin-top:14px">
-            分かっている最安の単価（1クレジット／秒）で換算しても<b>下限で約720クレジット</b>。
-            生成は編集より高いのが普通で、4K や std モードはさらに上がるので、実際はこの数倍を見ておく。
-            <b>いまの残高は12.36クレジット（無料プラン）。</b>最安レートで12秒ぶんで、1カットも完走できない。
-            金額の精度を詰めるより、<b>有料プランに入るかどうかが先</b>という結論は残高を見れば変わらない。
-        </p>
         <div class="flag">
-            <b>単価は、この1本で測るしかない。</b>
-            <p>
-                生成のたびに残高を記録して差分を取る。工程ごとに引き算しておけば、
-                「60秒の松の原価はいくらか」が実数で出る。それが出るまで、料金表の利益率は仮の数字のまま。
-            </p>
+            <b>最安の単価で換算しても下限で720クレジット。残高は12.36。</b>
+            <p>生成は編集より高いのが普通で、4K ならさらに上がる。単価を詰めるより有料プランが先、
+               という結論は残高を見れば変わらない。実費は本番中に、生成のたび残高の差分を取って測る。</p>
         </div>
     </section>
 
-    <section>
-        <h2>空き時間の実態</h2>
-        <p class="lead">
-            制作に使えるのは年1,373h、計画で使うのは766h。607h 空く計算だが、
-            この1,373h は<b>すでに営業・経理・学習を引いたあとの数字</b>なので、
-            空いたぶんはそのまま制作に足せる。
-        </p>
-        <div class="wrap-x"><table>
-            <thead><tr><th>内訳</th><th class="num">年間</th><th class="num">週あたり</th></tr></thead>
-            <tbody>
-                <tr><td>総持ち時間（平日242日 × 7h）</td><td class="num">1,694h</td><td class="num">36.8h</td></tr>
-                <tr><td>問い合わせ対応・見積（週1.5件×1h）</td><td class="num">−69h</td><td class="num">1.5h</td></tr>
-                <tr><td>サイト更新・自社チャンネル</td><td class="num">−92h</td><td class="num">2.0h</td></tr>
-                <tr><td>ツール検証・学習</td><td class="num">−92h</td><td class="num">2.0h</td></tr>
-                <tr><td>記帳・請求・入金確認／確定申告</td><td class="num">−68h</td><td class="num">1.5h</td></tr>
-                <tr><td><b>制作に使える</b></td><td class="num"><b>1,373h</b></td><td class="num"><b>29.8h</b></td></tr>
-                <tr><td>うち計画で使う</td><td class="num">766h</td><td class="num">16.7h</td></tr>
-            </tbody>
-        </table></div>
-        <p class="lead" style="margin-top:14px">
-            経理も事務も自分でやる前提。見積書・契約書の作成は案件ごとの作業なので、
-            基本料金（¥90,000）のなかに入っており、ここには重ねて数えていない。
-        </p>
-    </section>
+    <div class="act"><p class="act-label"><b>3</b><span>数字の裏づけ ／ 必要なときだけ開く</span>
+        <button class="openall" type="button" id="openall">すべて開く</button></p></div>
 
-    <section>
-        <h2>この先の伸ばし方</h2>
-        <p class="lead">
-            年収1,069万は上限ではない。ただし<b>以前の版に書いていた「月4件で年収2,010万」は成立しない。</b>
-            当時は持ち時間を1,920hとして非制作時間を引いていなかった。実際に必要な工数は1,834hで、
-            制作に使える1,373hを超える。
-        </p>
-        <div class="wrap-x"><table>
-            <thead><tr><th>段階</th><th>やること</th><th class="num">年収（額面）</th><th class="num">必要な制作時間</th><th>成立するか</th></tr></thead>
-            <tbody>
-                <tr><td>1（現計画）</td><td>月2件。四半期ごとに尺を伸ばす</td><td class="num">¥10,695,000</td><td class="num">766h（56%）</td><td>成立</td></tr>
-                <tr><td>2</td><td>3分以上に絞って月2件</td><td class="num">¥16,680,000</td><td class="num">1,176h（86%）</td><td>ぎりぎり成立</td></tr>
-                <tr><td>3（天井）</td><td>制作時間を使い切る</td><td class="num">約¥19,500,000</td><td class="num">1,373h（100%）</td><td>余白ゼロ</td></tr>
-                <tr><td>—</td><td>月4件に増やす</td><td class="num">¥26,400,000</td><td class="num">1,834h（134%）</td><td><b>一人では不可</b></td></tr>
-            </tbody>
-        </table></div>
-        <p class="lead" style="margin-top:14px">
-            <b>一人でやる限り、天井は年収およそ1,950万。</b>しかもそれは余白ゼロの数字なので、
-            現実的な上限は1,500万前後。ここから先は外注か採用の話になる。
-            なお天井の金額は仕上げの段階にほとんど左右されない（梅1,957万／竹1,954万／松1,951万）。
-            価格と工数に同じ倍率がかかるため。
-        </p>
-    </section>
+    <details class="fold">
+        <summary><span class="fold-t">開業から12ヶ月の受注構成</span>
+            <span class="fold-s">月2件のまま尺だけ伸ばす → 年商 ¥11,295,000 ／ 年収 ¥10,695,000</span></summary>
+        <div class="fold-body">
+            <div class="wrap-x"><table>
+                <thead><tr><th>四半期</th><th>月あたりの受注</th><th class="num">月商</th><th class="num">四半期計</th><th class="num">月の工数</th></tr></thead>
+                <tbody>
+                    <tr><td>Q1／1〜3ヶ月</td><td>90秒（梅）＋ 30秒（梅）</td><td class="num">¥600,000</td><td class="num">¥1,800,000</td><td class="num">40.4h</td></tr>
+                    <tr><td>Q2／4〜6ヶ月</td><td>3分（梅）＋ 30秒（梅）</td><td class="num">¥915,000</td><td class="num">¥2,745,000</td><td class="num">62.0h</td></tr>
+                    <tr><td>Q3／7〜9ヶ月</td><td>3分（梅）＋ 90秒（梅）</td><td class="num">¥1,125,000</td><td class="num">¥3,375,000</td><td class="num">76.4h</td></tr>
+                    <tr><td>Q4／10〜12ヶ月</td><td>3分（梅）＋ 90秒（梅）</td><td class="num">¥1,125,000</td><td class="num">¥3,375,000</td><td class="num">76.4h</td></tr>
+                </tbody>
+                <tfoot><tr><td>年間</td><td>24件</td><td class="num">—</td><td class="num">¥11,295,000</td><td class="num">766h</td></tr></tfoot>
+            </table></div>
+            <p class="lead" style="margin-top:14px">
+                売上 ¥11,295,000 − ツール代 ¥600,000 ＝ 年収（額面）¥10,695,000、粗利率 94.5%。
+                税と社会保険で3〜4割引かれるので手元に残るのは概ね ¥620〜680万（税理士に確認）。<br>
+                表はすべて梅で組んである。<b>竹や松が売れればその時点で上振れする。</b>
+            </p>
+        </div>
+    </details>
 
-    <section>
-        <h2>値上げをしない伸ばし方</h2>
-        <p class="lead">公開している料金表を途中で書き換えるのは、既存のお客様から見て気持ちのいいものではない。避けて通れる。</p>
-        <h3>受ける案件を長尺・上位の段に寄せる（推奨）</h3>
-        <p class="lead">
-            価格を1円も動かさずに年収1,668万まで届く。同じ制作時間でも、3分1件（49h・¥720,000）は
-            30秒3.8件ぶんの売上になる。仕上げの段を上げるのも同じ効果がある。
-        </p>
-        <h3>値上げではなく「上の枠を足す」</h3>
-        <p class="lead">
-            既存の価格はそのまま残し、上位の選択肢を新設する。梅・竹・松の仕組みがすでにこれにあたる。
-            梅は従来価格のままなので、既存のお客様に説明がいらない。
-        </p>
-        <h3>どうしても値上げするとき</h3>
-        <p class="lead">
-            実績が20件を超えて指名で来るようになったら、値上げは正当な判断。定石は
-            <b>「改定日を明記する」「既存のお客様は1年間だけ改定前の価格で受ける」</b>の2つ。
-        </p>
-    </section>
+    <details class="fold">
+        <summary><span class="fold-t">今年（暦年2026）の着地</span>
+            <span class="fold-s">暦年では120万前後。1,000万は「開業から12ヶ月」で読み替える</span></summary>
+        <div class="fold-body">
+            <p class="lead">今日から P0（2週間）を始めると受注可能が9月25日、初納品は10月中旬。残りは3ヶ月しかない。</p>
+            <div class="wrap-x"><table>
+                <thead><tr><th>ケース</th><th class="num">10月</th><th class="num">11月</th><th class="num">12月</th><th class="num">売上</th><th class="num">年収（額面）</th></tr></thead>
+                <tbody>
+                    <tr><td>ロードマップ通り</td><td class="num">60万</td><td class="num">60万</td><td class="num">60万</td><td class="num">180万</td><td class="num">160万</td></tr>
+                    <tr><td><b>立ち上がりを見込む</b></td><td class="num">19.5万</td><td class="num">60万</td><td class="num">60万</td><td class="num">139.5万</td><td class="num"><b>119.5万</b></td></tr>
+                    <tr><td>出遅れ</td><td class="num">0</td><td class="num">19.5万</td><td class="num">60万</td><td class="num">79.5万</td><td class="num">59.5万</td></tr>
+                </tbody>
+            </table></div>
+            <p class="lead" style="margin-top:14px">今日開業すれば着地は2027年9月。計画自体はそのまま生きる。</p>
+        </div>
+    </details>
 
-    <section>
-        <h2>先に決めること</h2>
-        <p class="lead">Q1 が始まる前に決めておく。P2 に入ってからでは間に合わない。</p>
-        <h3>受注経路をどれにするか</h3>
-        <p class="lead">
-            まず1つでいい。Q1 の月7件は紹介で埋まる想定だが、Q2 以降を紹介だけに頼ると読めない。
-            直接営業・知人紹介（単価は保てる／数が伸びない）、SNSで制作過程を出す（相性は良い／効き始めるまで数ヶ月）、
-            クラウドソーシング（実績は早い／単価が半分以下）、制作会社の下請け（安定する／単価は半分・自社名が残らない）。
-        </p>
-        <h3>個人事業か、法人か</h3>
-        <p class="lead">
-            売上1,130万の水準だと、2年後に消費税の課税事業者になる。年収1,000万で止めるなら個人事業のままで足りることが多い。
-            法人化を予定しているなら、会社概要の表記（屋号→商号／代表者→代表取締役／開業→設立）を差し替える。
-        </p>
-        <h3>値下げをするかどうか</h3>
-        <p class="lead">
-            いまは<b>しない</b>。まだ1件も見積を出しておらず、断られたデータがない。
-            料金表を公開しているので価格で諦めた人は連絡してこない。
-            <code>funnel.html</code> でどの価格帯が落ちているかを見てから判断する。
-            下げるなら定価ではなく「初回3社限定」にすると、終わっても値上げに見えない。
-        </p>
-    </section>
+    <details class="fold">
+        <summary><span class="fold-t">毎月の必達ライン</span>
+            <span class="fold-s">受注率30%なら、必要な問い合わせは月6.7件（週1.6件）</span></summary>
+        <div class="fold-body">
+            <div class="wrap-x"><table>
+                <thead><tr><th>受注率</th><th class="num">必要な問い合わせ／月</th><th class="num">／週</th><th class="num">年間</th></tr></thead>
+                <tbody>
+                    <tr><td>40%（紹介中心）</td><td class="num">5.0件</td><td class="num">1.2件</td><td class="num">60件</td></tr>
+                    <tr><td><b>30%（想定）</b></td><td class="num"><b>6.7件</b></td><td class="num"><b>1.6件</b></td><td class="num"><b>80件</b></td></tr>
+                    <tr><td>20%（冷たい流入中心）</td><td class="num">10.0件</td><td class="num">2.3件</td><td class="num">120件</td></tr>
+                </tbody>
+            </table></div>
+            <p class="lead" style="margin-top:14px">
+                週1.6件なら紹介だけでも届く水準。ただし<b>ゼロからつくる必要がある</b>。
+                Q1 は紹介で埋まるとして、Q2 までに紹介以外の経路を1つ立てられないと Q3 以降で息切れする。
+            </p>
+        </div>
+    </details>
+
+    <details class="fold">
+        <summary><span class="fold-t">空き時間の実態</span>
+            <span class="fold-s">制作に使えるのは年1,373h、計画で使うのは766h（56%）</span></summary>
+        <div class="fold-body">
+            <p class="lead">1,373h は<b>すでに営業・経理・学習を引いたあとの数字</b>なので、空いたぶんはそのまま制作に足せる。</p>
+            <div class="wrap-x"><table>
+                <thead><tr><th>内訳</th><th class="num">年間</th><th class="num">週あたり</th></tr></thead>
+                <tbody>
+                    <tr><td>総持ち時間（平日242日 × 7h）</td><td class="num">1,694h</td><td class="num">36.8h</td></tr>
+                    <tr><td>問い合わせ対応・見積（週1.5件×1h）</td><td class="num">−69h</td><td class="num">1.5h</td></tr>
+                    <tr><td>サイト更新・自社チャンネル</td><td class="num">−92h</td><td class="num">2.0h</td></tr>
+                    <tr><td>ツール検証・学習</td><td class="num">−92h</td><td class="num">2.0h</td></tr>
+                    <tr><td>記帳・請求・入金確認／確定申告</td><td class="num">−68h</td><td class="num">1.5h</td></tr>
+                    <tr><td><b>制作に使える</b></td><td class="num"><b>1,373h</b></td><td class="num"><b>29.8h</b></td></tr>
+                    <tr><td>うち計画で使う</td><td class="num">766h</td><td class="num">16.7h</td></tr>
+                </tbody>
+            </table></div>
+        </div>
+    </details>
+
+    <details class="fold">
+        <summary><span class="fold-t">この先の伸ばし方</span>
+            <span class="fold-s">一人でやる限り天井は年収およそ1,950万。月4件は成立しない</span></summary>
+        <div class="fold-body">
+            <div class="wrap-x"><table class="t-wide">
+                <thead><tr><th>段階</th><th>やること</th><th class="num">年収（額面）</th><th class="num">必要な制作時間</th><th>成立するか</th></tr></thead>
+                <tbody>
+                    <tr><td>1（現計画）</td><td>月2件。四半期ごとに尺を伸ばす</td><td class="num">¥10,695,000</td><td class="num">766h（56%）</td><td>成立</td></tr>
+                    <tr><td>2</td><td>3分以上に絞って月2件</td><td class="num">¥16,680,000</td><td class="num">1,176h（86%）</td><td>ぎりぎり成立</td></tr>
+                    <tr><td>3（天井）</td><td>制作時間を使い切る</td><td class="num">約¥19,500,000</td><td class="num">1,373h（100%）</td><td>余白ゼロ</td></tr>
+                    <tr><td>—</td><td>月4件に増やす</td><td class="num">¥26,400,000</td><td class="num">1,834h（134%）</td><td><b>一人では不可</b></td></tr>
+                </tbody>
+            </table></div>
+            <p class="lead" style="margin-top:14px">
+                天井は余白ゼロの数字なので、現実的な上限は1,500万前後。ここから先は外注か採用の話になる。
+                天井の金額は仕上げの段階にほとんど左右されない（梅1,957万／竹1,954万／松1,951万）。
+                価格と工数に同じ倍率がかかるため。<br>
+                <b>以前の版の「月4件で年収2,010万」は成立しない。</b>当時は非制作時間を引いていなかった。
+            </p>
+        </div>
+    </details>
+
+    <details class="fold">
+        <summary><span class="fold-t">値上げをしない伸ばし方</span>
+            <span class="fold-s">価格を1円も動かさずに年収1,668万まで届く</span></summary>
+        <div class="fold-body">
+            <div class="wrap-x"><table class="t-wide">
+                <thead><tr><th>やり方</th><th>中身</th></tr></thead>
+                <tbody>
+                    <tr><td><b>長尺・上位の段に寄せる</b><br>（推奨）</td>
+                        <td>同じ制作時間でも、3分1件（49h・¥720,000）は30秒3.8件ぶんの売上になる。仕上げの段を上げるのも同じ効果</td></tr>
+                    <tr><td>上の枠を足す</td>
+                        <td>既存の価格を残したまま上位の選択肢を新設する。梅・竹・松がすでにこれ。梅は従来価格なので既存客への説明がいらない</td></tr>
+                    <tr><td>どうしても値上げするとき</td>
+                        <td>実績20件を超えて指名で来るようになってから。改定日を明記し、既存客は1年間だけ改定前の価格で受ける</td></tr>
+                </tbody>
+            </table></div>
+        </div>
+    </details>
+
+    <details class="fold">
+        <summary><span class="fold-t">先に決めること</span>
+            <span class="fold-s">受注経路／個人事業か法人か／値下げをするか — Q1 が始まる前に</span></summary>
+        <div class="fold-body">
+            <h3 style="margin-top:18px">受注経路をどれにするか</h3>
+            <p class="lead">まず1つでいい。Q1 は紹介で埋まる想定だが、Q2 以降を紹介だけに頼ると読めない。</p>
+            <div class="wrap-x"><table class="t-wide">
+                <thead><tr><th>経路</th><th>良い点</th><th>難点</th></tr></thead>
+                <tbody>
+                    <tr><td>直接営業・知人紹介</td><td>単価を保てる</td><td>数が伸びない</td></tr>
+                    <tr><td>SNSで制作過程を出す</td><td>事業との相性が良い</td><td>効き始めるまで数ヶ月</td></tr>
+                    <tr><td>クラウドソーシング</td><td>実績が早く積める</td><td>単価が半分以下</td></tr>
+                    <tr><td>制作会社の下請け</td><td>安定する</td><td>単価が半分・自社名が残らない</td></tr>
+                </tbody>
+            </table></div>
+            <h3>個人事業か、法人か</h3>
+            <p class="lead">
+                売上1,130万の水準だと2年後に消費税の課税事業者になる。年収1,000万で止めるなら個人事業のままで足りることが多い。
+                法人化を予定しているなら、会社概要の表記（屋号→商号／代表者→代表取締役／開業→設立）を差し替える。
+            </p>
+            <h3>値下げをするかどうか</h3>
+            <p class="lead">
+                いまは<b>しない</b>。まだ1件も見積を出しておらず、断られたデータがない。
+                料金表を公開しているので、価格で諦めた人は連絡してこない。
+                <code>funnel.html</code> でどの価格帯が落ちているかを見てから判断する。
+                下げるなら定価ではなく「初回3社限定」にすると、終わっても値上げに見えない。
+            </p>
+        </div>
+    </details>
 
     <section>
         <h2>この計画が崩れるとき</h2>
-        <div class="wrap-x"><table>
+        <div class="wrap-x"><table class="t-wide">
             <thead><tr><th>起きること</th><th>影響</th><th>どうするか</th></tr></thead>
             <tbody>
                 <tr><td>松の工数が想定より重い（2.5倍など）</td><td>時間単価が ¥11,000/h まで落ちる</td><td>P0 で実測してから料金表を確定する</td></tr>
@@ -475,8 +489,32 @@
     <p class="note">
         <b>前提：</b>時間単価 ¥14,900／平日10–18時（昼休み1時間を引いて実働7h）／
         年間平日242日＝総持ち時間1,694h／制作以外（営業・経理・学習・確定申告）に321h／
-        制作に使える1,373h。料金と工数のモデルは <code>README.md</code> の「料金の考え方」と同じ。<br>
+        制作に使える1,373h。料金と工数のモデルは <code>README.md</code> の「料金の考え方」と同じ。
+        見積書・契約書の作成は案件ごとの作業なので基本料金（¥90,000）に含み、空き時間の表には重ねて数えていない。<br>
         年収は額面（売上 − 経費）で、税・社会保険を引く前の数字。
     </p>
+
+    <script>
+        // 「すべて開く」。開いたあとは「すべて閉じる」に変わる
+        (function () {
+            const btn = document.getElementById('openall');
+            const folds = document.querySelectorAll('details.fold');
+            const sync = () => {
+                const allOpen = [...folds].every((d) => d.open);
+                btn.textContent = allOpen ? 'すべて閉じる' : 'すべて開く';
+            };
+            btn.addEventListener('click', () => {
+                const open = btn.textContent === 'すべて開く';
+                folds.forEach((d) => { d.open = open; });
+                sync();
+            });
+            folds.forEach((d) => d.addEventListener('toggle', sync));
+            // 折りたたみの中へのリンクを踏んだら開いてから飛ぶ
+            addEventListener('hashchange', () => {
+                const t = document.getElementById(location.hash.slice(1));
+                if (t) t.closest('details')?.setAttribute('open', '');
+            });
+        })();
+    </script>
 </body>
 </html>

@@ -83,6 +83,24 @@ check('robots.txt でクロールは止めていない', /Allow: \//.test(rb) &&
    料金を動かしたらここもズレる。主要な数字だけ突き合わせる */
 {
     const rm = await open(browser, { page: 'roadmap.html' });
+
+    /* 折りたたむ前に、たたんだ状態のままで主要な数字が読めるかを見る。
+       たたんだ見出しに数字が出ていないと、開かないと何も分からない資料になる */
+    const folded = await rm.locator('body').innerText();
+    check('たたんだままでも年商・年収が読める',
+        /¥11,295,000/.test(folded) && /¥10,695,000/.test(folded));
+    check('たたんだままでも天井と必要な問い合わせ数が読める',
+        /1,950万/.test(folded) && /6\.7件/.test(folded));
+
+    /* 折りたたみを全部開いてから、中身の数字を突き合わせる */
+    const foldCount = await rm.evaluate(() => {
+        const d = document.querySelectorAll('details.fold');
+        d.forEach((x) => { x.open = true; });
+        return d.length;
+    });
+    check('折りたたみが存在する', foldCount >= 5);
+    check('「すべて開く」ボタンがある', await rm.locator('#openall').count() === 1);
+
     const t = await rm.locator('body').innerText();
     check('ロードマップの目標が計画と一致', /¥10,695,000/.test(t));
     check('ロードマップの四半期計が計画と一致',
@@ -93,6 +111,10 @@ check('robots.txt でクロールは止めていない', /Allow: \//.test(rb) &&
         (await rm.evaluate(() => document.querySelector('meta[name="robots"]')?.content || '')).includes('noindex'));
     check('ロードマップで横溢れなし',
         (await rm.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) <= 0);
+    check('計測用テスト制作の仕様が載っている',
+        /60秒/.test(t) && /32\.2h/.test(t) && /720/.test(t));
+    check('P0 から計測用テスト制作へリンクしている',
+        await rm.locator('.stage a[href="#test-build"]').count() >= 1);
     for (const f of ['index.html', 'about.html']) {
         check(`${f} から roadmap.html にリンクしていない`,
             !/roadmap\.html/.test(await (await rm.request.get(`${BASE}/${f}`)).text()));
