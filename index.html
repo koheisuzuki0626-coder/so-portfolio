@@ -718,11 +718,15 @@
             syncNavHeight();
             nav.classList.toggle('scrolled', window.scrollY > 20);
 
-            // ヘッダーの帯が黒いセクションに重なっているかを見て配色を切り替える
-            const band = nav.getBoundingClientRect().bottom;
+            /* ヘッダーの帯が黒いセクションに重なっているかを見て配色を切り替える。
+               判定はヘッダーの「下端」ではなく「中央」で行う。
+               下端で見ると、黒い帯の終わりがヘッダーの内側に入った時点で
+               まだ半分以上が黒に重なっているのに配色が戻り、境目でちらつく */
+            const navRect = nav.getBoundingClientRect();
+            const band = navRect.top + navRect.height / 2;
             const onDark = darkAreas.some((el) => {
                 const r = el.getBoundingClientRect();
-                return r.top <= band - 4 && r.bottom >= band;
+                return r.top <= band && r.bottom >= band;
             });
             nav.classList.toggle('on-dark', onDark);
 

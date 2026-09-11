@@ -30,7 +30,14 @@ body {
     letter-spacing: 0.005em;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    /* ヒーローのモザイクが画面幅をはみ出す設計なので横方向を切る。
+       ただし overflow-x:hidden は body をスクロールコンテナにしてしまい、
+       iOS Safari で position:fixed のヘッダーが消える/ずれることがある。
+       clip はスクロールコンテナを作らないので、対応ブラウザではそちらを使う */
     overflow-x: hidden;
+}
+@supports (overflow-x: clip) {
+    body { overflow-x: clip; }
 }
 
 a { color: inherit; text-decoration: none; }
@@ -161,7 +168,11 @@ h1, h2, h3, .display, .headline, .subhead { text-wrap: balance; }
     backdrop-filter: saturate(180%) blur(20px);
     -webkit-backdrop-filter: saturate(180%) blur(20px);
     border-bottom: 1px solid transparent;
-    transition: background 0.4s ease, border-color 0.4s ease;
+    /* 背景色はアニメーションさせない。黒帯との境目で配色が入れ替わるとき、
+       バーがゆっくり白→黒に変わる間に文字色だけ先に反転すると、
+       途中でバーも文字も中間色になり、一瞬ヘッダーが読めなくなる
+       (実測でコントラスト 1.91:1 まで落ちていた)。切り替えは瞬時に行う */
+    transition: border-color 0.4s ease;
 }
 #nav.scrolled {
     background: rgba(255, 255, 255, 0.9);
@@ -198,7 +209,8 @@ h1, h2, h3, .display, .headline, .subhead { text-wrap: balance; }
     padding: 0;
     cursor: pointer;
     white-space: nowrap;
-    transition: color 0.25s ease;
+    /* 上と同じ理由で、文字色もアニメーションさせない */
+    transition: none;
 }
 .nav-item::after {
     content: "";
