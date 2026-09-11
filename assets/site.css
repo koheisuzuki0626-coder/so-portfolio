@@ -645,6 +645,13 @@ h1, h2, h3, .display, .headline, .subhead { text-wrap: balance; }
 .company-facts dt { color: var(--ink-dim); }
 .company-facts dd { color: var(--ink-2); }
 
+/* 選んだ段の「向いている用途」。何を選べばいいかの判断材料になる */
+.calc-tier-use {
+    display: block;
+    margin-top: 5px;
+    color: var(--accent-ink);
+}
+
 /* 秒単価が段で変わるので、式の下に内訳を添える */
 .calc-formula-sub {
     display: block;
