@@ -78,9 +78,32 @@ for (const [f, html] of [['index.html', idx], ['about.html', about], ['privacy.h
 const rb = await (await page.request.get(`${BASE}/robots.txt`)).text();
 check('robots.txt でクロールは止めていない', /Allow: \//.test(rb) && !/Disallow: \//.test(rb));
 
+/* ---- ロードマップ(社内用) ----
+   数字はサイトの料金表・工数モデルから出しているので、
+   料金を動かしたらここもズレる。主要な数字だけ突き合わせる */
+{
+    const rm = await open(browser, { page: 'roadmap.html' });
+    const t = await rm.locator('body').innerText();
+    check('ロードマップの目標が計画と一致', /¥10,695,000/.test(t));
+    check('ロードマップの四半期計が計画と一致',
+        /¥1,800,000/.test(t) && /¥2,745,000/.test(t) && /¥3,375,000/.test(t) && /¥11,295,000/.test(t));
+    check('未開業であることを書いている', /未開業/.test(t));
+    check('無料プランが止まっていると書いている', /無料プラン/.test(t) && /12\.36/.test(t));
+    check('社内用なので検索に出さない',
+        (await rm.evaluate(() => document.querySelector('meta[name="robots"]')?.content || '')).includes('noindex'));
+    check('ロードマップで横溢れなし',
+        (await rm.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) <= 0);
+    for (const f of ['index.html', 'about.html']) {
+        check(`${f} から roadmap.html にリンクしていない`,
+            !/roadmap\.html/.test(await (await rm.request.get(`${BASE}/${f}`)).text()));
+    }
+    await rm.close();
+}
+
 /* ---- 配信できるか ---- */
 for (const f of ['assets/site.css', 'assets/logo-mark.png', 'assets/favicon.png',
-                 'assets/apple-touch-icon.png', 'assets/ogp.png', 'privacy.html', 'funnel.html']) {
+                 'assets/apple-touch-icon.png', 'assets/ogp.png', 'privacy.html',
+                 'funnel.html', 'roadmap.html']) {
     const st = (await page.request.get(`${BASE}/${f}`)).status();
     check(`${f} が配信できる`, st === 200, `HTTP ${st}`);
 }

@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- 社内用。検索にも出さないし、サイトのどこからもリンクしていない -->
+    <meta name="robots" content="noindex, nofollow">
+    <title>事業ロードマップ｜so. 社内用</title>
+    <link rel="icon" href="assets/favicon.png" type="image/png" sizes="any">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=Zen+Kaku+Gothic+New:wght@300;400;500&display=swap">
+    <style>
+        :root {
+            --ink: #1d1d1f; --ink-dim: #6e6e73; --ink-2: #3d3d41;
+            --line: rgba(0,0,0,.10); --bg: #fff; --bg-alt: #f5f5f7;
+            --accent: #b08733; --accent-ink: #856420; --warn: #a8323a; --ok: #2f6b4f;
+        }
+        * { box-sizing: border-box; margin: 0; }
+        body {
+            font-family: "Inter", "Zen Kaku Gothic New", -apple-system, BlinkMacSystemFont, sans-serif;
+            font-weight: 400; line-height: 1.75; letter-spacing: .005em;
+            color: var(--ink); background: var(--bg);
+            padding: clamp(28px, 5vw, 64px) clamp(20px, 5vw, 56px) 110px;
+            max-width: 960px; margin: 0 auto;
+            word-break: auto-phrase; line-break: strict;
+        }
+        p, li, td, th { text-wrap: pretty; }
+        .eyebrow { font-size: .78rem; font-weight: 500; letter-spacing: .12em; color: var(--accent-ink); }
+        h1 { font-size: clamp(1.8rem, 4.4vw, 2.6rem); font-weight: 300; letter-spacing: -.012em; margin: 6px 0 0; }
+        .sub { color: var(--ink-dim); font-size: .95rem; margin-top: 14px; }
+        .asof { margin-top: 10px; font-size: .82rem; color: var(--ink-dim); }
+        section { margin-top: clamp(44px, 6vw, 68px); }
+        h2 { font-size: 1.18rem; font-weight: 500; margin: 0 0 6px; letter-spacing: .01em; }
+        .lead { color: var(--ink-dim); font-size: .93rem; margin-bottom: 20px; }
+        h3 { font-size: 1rem; font-weight: 500; margin: 26px 0 6px; }
+
+        .now { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1px;
+               background: var(--line); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+        .now > div { background: var(--bg-alt); padding: 20px 22px; }
+        .now b { display: block; font-size: clamp(1.5rem, 3.6vw, 2rem); font-weight: 300; letter-spacing: -.02em; line-height: 1.15; white-space: nowrap; }
+        .now span { display: block; font-size: .82rem; color: var(--ink-dim); margin-top: 6px; }
+        .now .stop b { color: var(--warn); }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+        th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--line); font-size: .93rem; vertical-align: top; }
+        th { font-weight: 500; color: var(--ink-dim); font-size: .82rem; }
+        td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        tfoot td { font-weight: 500; border-bottom: 0; }
+        .wrap-x { overflow-x: auto; }
+
+        .stage { border-left: 2px solid var(--line); padding: 0 0 4px 22px; margin-top: 26px; position: relative; }
+        .stage::before { content: ""; position: absolute; left: -7px; top: 8px; width: 12px; height: 12px;
+                         border-radius: 50%; background: var(--accent); }
+        .stage .tag { font-size: .76rem; letter-spacing: .1em; color: var(--accent-ink); font-weight: 500; }
+        .stage h3 { margin: 2px 0 2px; font-size: 1.06rem; }
+        .stage .when { font-size: .84rem; color: var(--ink-dim); }
+        .stage ul { margin: 12px 0 0; padding-left: 1.2em; }
+        .stage li { font-size: .93rem; color: var(--ink-2); margin-bottom: 6px; }
+        .gate { margin-top: 14px; padding: 11px 15px; background: var(--bg-alt); border-radius: 9px;
+                font-size: .88rem; color: var(--ink-2); }
+        .gate b { color: var(--ink); font-weight: 500; }
+
+        .flag { margin-top: 18px; padding: 16px 20px; border-radius: 11px;
+                border: 1px solid rgba(168,50,58,.28); background: rgba(168,50,58,.05); }
+        .flag b { color: var(--warn); font-weight: 500; }
+        .flag p { font-size: .9rem; color: var(--ink-2); margin-top: 5px; }
+
+        .note { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--line);
+                font-size: .86rem; color: var(--ink-dim); }
+        .note b { color: var(--ink); font-weight: 500; }
+        code { font-size: .9em; background: var(--bg-alt); padding: 1px 5px; border-radius: 4px; }
+        a { color: var(--accent-ink); }
+    </style>
+</head>
+<body>
+    <p class="eyebrow">Internal</p>
+    <h1>事業ロードマップ</h1>
+    <p class="sub">
+        開業から12ヶ月で <b>年収（額面）¥10,695,000</b>。<br>
+        件数は月2件から動かさず、実績が積み上がる順に受注する尺を伸ばしていく。
+    </p>
+    <p class="asof">2026年9月11日 時点 ／ 数字は料金表と工数モデルから計算したもの</p>
+
+    <section>
+        <h2>いまの状態</h2>
+        <p class="lead">計画の前に、動かせていないものが2つある。</p>
+        <div class="now">
+            <div class="stop"><b>未開業</b><span>受注 0件・売上 0円。開業届も未提出</span></div>
+            <div class="stop"><b>12.36</b><span>残りクレジット。Higgsfield が無料プランのままで、梅の30秒も納品できない</span></div>
+            <div><b>0本</b><span>クライアント事例。自社チャンネルのみ</span></div>
+            <div><b>週25h</b><span>1本に充てられる時間（平日10–18時から算出）</span></div>
+        </div>
+        <div class="flag">
+            <b>この2つが先。</b>
+            <p>有料プランに入らないと1本も納品できない。松を1本つくって工数を測れば、
+               仕上げの段階の倍率（竹1.4／松1.9、いずれも未実測）と、クレジットの実費が同時に分かる。
+               料金表はこの実測の上に載っているので、ここが最優先。</p>
+        </div>
+    </section>
+
+    <section>
+        <h2>今年（暦年2026）の着地</h2>
+        <p class="lead">
+            残りは10〜12月の3ヶ月だけ。今日から P0（2週間）を始めると受注可能が9月25日、
+            竹の制作期間を見て初納品は10月中旬になる。<b>暦年で1,000万には届かない。</b>
+        </p>
+        <div class="wrap-x"><table>
+            <thead><tr><th>ケース</th><th class="num">10月</th><th class="num">11月</th><th class="num">12月</th><th class="num">売上</th><th class="num">年収（額面）</th></tr></thead>
+            <tbody>
+                <tr><td>ロードマップ通り</td><td class="num">60万</td><td class="num">60万</td><td class="num">60万</td><td class="num">180万</td><td class="num">160万</td></tr>
+                <tr><td><b>立ち上がりを見込む</b></td><td class="num">19.5万</td><td class="num">60万</td><td class="num">60万</td><td class="num">139.5万</td><td class="num"><b>119.5万</b></td></tr>
+                <tr><td>出遅れ</td><td class="num">0</td><td class="num">19.5万</td><td class="num">60万</td><td class="num">79.5万</td><td class="num">59.5万</td></tr>
+            </tbody>
+        </table></div>
+        <p class="lead" style="margin-top:14px">
+            実績ゼロから初月に月2件は苦しいので、中心は120万前後。
+            <b>目標は「暦年2026で1,000万」ではなく「開業から12ヶ月で1,069万」に読み替える。</b>
+            今日開業すれば着地は2027年9月。計画自体はそのまま生きる。
+        </p>
+    </section>
+
+    <section>
+        <h2>開業から12ヶ月の受注構成</h2>
+        <p class="lead">
+            件数は最初から最後まで月2件。上げるのは尺だけ。
+            実績が積み上がるほど長い映像を任せてもらえるようになる、という順番。
+        </p>
+        <div class="wrap-x"><table>
+            <thead><tr><th>四半期</th><th>月あたりの受注</th><th class="num">月商</th><th class="num">四半期計</th><th class="num">月の工数</th></tr></thead>
+            <tbody>
+                <tr><td>Q1／1〜3ヶ月</td><td>90秒（梅）＋ 30秒（梅）</td><td class="num">¥600,000</td><td class="num">¥1,800,000</td><td class="num">40.4h</td></tr>
+                <tr><td>Q2／4〜6ヶ月</td><td>3分（梅）＋ 30秒（梅）</td><td class="num">¥915,000</td><td class="num">¥2,745,000</td><td class="num">62.0h</td></tr>
+                <tr><td>Q3／7〜9ヶ月</td><td>3分（梅）＋ 90秒（梅）</td><td class="num">¥1,125,000</td><td class="num">¥3,375,000</td><td class="num">76.4h</td></tr>
+                <tr><td>Q4／10〜12ヶ月</td><td>3分（梅）＋ 90秒（梅）</td><td class="num">¥1,125,000</td><td class="num">¥3,375,000</td><td class="num">76.4h</td></tr>
+            </tbody>
+            <tfoot><tr><td>年間</td><td>24件</td><td class="num">—</td><td class="num">¥11,295,000</td><td class="num">766h</td></tr></tfoot>
+        </table></div>
+        <p class="lead" style="margin-top:14px">
+            売上 ¥11,295,000 − ツール代 ¥600,000 ＝ <b>年収（額面）¥10,695,000</b>。粗利率 94.5%。
+            ここから税と社会保険で3〜4割引かれるので、手元に残るのは概ね ¥620〜680万
+            （事業形態・控除・消費税の届出で変わるため、税理士に確認すること）。
+        </p>
+        <p class="lead">
+            年間の工数 766h は、制作に使える 1,373h の <b>56%</b>。607h 空く。
+            上の表はすべて梅で組んである。<b>竹や松が売れればその時点で上振れする</b>ので、
+            この計画は下限に近い。
+        </p>
+    </section>
+
+    <section>
+        <h2>毎月の必達ライン</h2>
+        <p class="lead">月2件を安定して取れるかどうか、それだけ。必要な問い合わせ数は受注率で決まる。</p>
+        <div class="wrap-x"><table>
+            <thead><tr><th>受注率</th><th class="num">必要な問い合わせ／月</th><th class="num">／週</th><th class="num">年間</th></tr></thead>
+            <tbody>
+                <tr><td>40%（紹介中心）</td><td class="num">5.0件</td><td class="num">1.2件</td><td class="num">60件</td></tr>
+                <tr><td><b>30%（想定）</b></td><td class="num"><b>6.7件</b></td><td class="num"><b>1.6件</b></td><td class="num"><b>80件</b></td></tr>
+                <tr><td>20%（冷たい流入中心）</td><td class="num">10.0件</td><td class="num">2.3件</td><td class="num">120件</td></tr>
+            </tbody>
+        </table></div>
+        <p class="lead" style="margin-top:14px">
+            週1.6件なら紹介だけでも現実的に届く水準。ただし<b>ゼロからつくる必要がある</b>。
+            Q1 は紹介で埋まるとして、Q2 までに紹介以外の経路を1つ立てられないと Q3 以降で息切れする。
+        </p>
+    </section>
+
+    <section>
+        <h2>4つの段階</h2>
+        <p class="lead">件数を増やす段階がないので、各段階の課題は「次の尺を任せてもらえる実績が揃ったか」に絞られる。</p>
+
+        <div class="stage">
+            <p class="tag">P0</p>
+            <h3>受けられる状態にする</h3>
+            <p class="when">最初の2週間 ／ この期間も声かけは並行して進める</p>
+            <ul>
+                <li><b>Higgsfield の有料プランに入る。</b>無料プラン・12クレジットでは1本も納品できない</li>
+                <li><b>松を1本つくって工数を測る。</b>竹1.4／松1.9 の倍率は未実測。
+                    2.5倍だった場合、時間単価は ¥11,000/h まで落ちる。クレジットの実費もここで分かる</li>
+                <li>開業届を出す。インボイス登録の要否は取引先が法人中心かで決める</li>
+                <li>見積書・契約書・請求書のひな形。<b>著作権の帰属・修正3回まで・支払サイト</b>を書き込む</li>
+                <li>プロフィール・略歴をサイトに載せる（氏名・経歴・顔写真）</li>
+                <li>会社概要の「開業」行を足す</li>
+            </ul>
+            <div class="gate"><b>次へ進む条件：</b>松を1本完成させて工数を実測した／見積書を即日出せる</div>
+        </div>
+
+        <div class="stage">
+            <p class="tag">P1</p>
+            <h3>90秒で足場をつくる</h3>
+            <p class="when">1〜3ヶ月 ／ 90秒（梅）＋ 30秒（梅）</p>
+            <ul>
+                <li>実績ゼロから売りやすい <b>90秒・¥405,000</b> を軸に、3ヶ月で事例6本</li>
+                <li>知人・前職の伝手から埋める。必要な問い合わせは月7件で、紹介だけでも届く水準</li>
+                <li>受注のたびに<b>事例掲載の許諾</b>を取る。値引きの代わりではなく、標準の契約条項として入れる</li>
+                <li>納品ごとに実工数を記録し、料金の前提を更新する</li>
+                <li>実績欄を自社チャンネルからクライアント事例に差し替える。自社作品は「表現サンプル」として別枠に残す</li>
+            </ul>
+            <div class="gate"><b>次へ進む条件：</b>事例6本を掲載／月商 ¥600,000 を3ヶ月連続</div>
+        </div>
+
+        <div class="stage">
+            <p class="tag">P2</p>
+            <h3>3分を売れるようにする</h3>
+            <p class="when">4〜6ヶ月 ／ 3分（梅）＋ 30秒（梅）</p>
+            <ul>
+                <li>P1 の事例を材料に <b>3分・¥720,000</b> を通す。月商 ¥915,000</li>
+                <li>3分は工数48h。1本で月の工数の6割を使うので、<b>2本の進行が重ならないよう着手日をずらす</b></li>
+                <li>竹・松を提案してみる。通れば同じ尺のまま月商が上がる（90秒：梅40.5万→竹53.1万）</li>
+                <li><code>funnel.html</code> で、どの価格帯で落ちているかを見る</li>
+            </ul>
+            <div class="gate"><b>次へ進む条件：</b>3分の納品を2本以上／月商 ¥915,000 を2ヶ月連続</div>
+        </div>
+
+        <div class="stage">
+            <p class="tag">P3</p>
+            <h3>年収1,000万に乗せる</h3>
+            <p class="when">7〜12ヶ月 ／ 3分（梅）＋ 90秒（梅）</p>
+            <ul>
+                <li>月商 ¥1,125,000 を6ヶ月続けて着地</li>
+                <li>稼働は年766h・持ち時間の56%。<b>値上げなしでここまで来られる</b></li>
+                <li>Q3 の時点で問い合わせが月10件を超えていたら、件数を増やす判断ができる</li>
+                <li>年商2,000万に伸ばす選択肢を残すなら、このあたりで法人化を検討する</li>
+            </ul>
+            <div class="gate"><b>着地：</b>年商 ¥11,295,000 ／ 年収（額面）¥10,695,000</div>
+        </div>
+    </section>
+
+    <section>
+        <h2>この計画が崩れるとき</h2>
+        <div class="wrap-x"><table>
+            <thead><tr><th>起きること</th><th>影響</th><th>どうするか</th></tr></thead>
+            <tbody>
+                <tr><td>松の工数が想定より重い（2.5倍など）</td><td>時間単価が ¥11,000/h まで落ちる</td><td>P0 で実測してから料金表を確定する</td></tr>
+                <tr><td>問い合わせが月7件に届かない</td><td>月2件が埋まらず、全体が後ろ倒し</td><td>紹介以外の経路を Q2 までに1つ立てる</td></tr>
+                <tr><td>クレジットがプラン内に収まらない</td><td>経費が月5万の定額前提が崩れる</td><td>梅と松で原価を分けて把握する</td></tr>
+                <tr><td>開業が1ヶ月遅れる</td><td>Q1ペースなら約60万、Q3以降なら約112万が消える</td><td>P0 を今週中に終わらせる</td></tr>
+            </tbody>
+        </table></div>
+    </section>
+
+    <p class="note">
+        <b>前提：</b>時間単価 ¥14,900／平日10–18時（昼休み1時間を引いて実働7h）／
+        年間平日242日＝総持ち時間1,694h／制作以外（営業・経理・学習・確定申告）に321h／
+        制作に使える1,373h。料金と工数のモデルは <code>README.md</code> の「料金の考え方」と同じ。<br>
+        年収は額面（売上 − 経費）で、税・社会保険を引く前の数字。
+    </p>
+</body>
+</html>

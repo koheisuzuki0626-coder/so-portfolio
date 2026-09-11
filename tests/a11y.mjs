@@ -2,7 +2,7 @@
 import { check, report, open } from './lib.mjs';
 import pwmod from '/opt/node22/lib/node_modules/playwright/index.js';
 const browser = await pwmod.chromium.launch();
-for (const file of ['index.html', 'about.html', 'privacy.html', 'funnel.html']) {
+for (const file of ['index.html', 'about.html', 'privacy.html', 'funnel.html', 'roadmap.html']) {
     const page = await open(browser, { page: file });
     const bad = await page.evaluate(() => {
         const L = (c) => { const v = c.map(x => { x /= 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); });
