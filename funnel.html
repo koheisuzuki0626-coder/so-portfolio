@@ -24,7 +24,11 @@
             color: var(--ink); background: var(--bg);
             padding: clamp(28px, 5vw, 64px) clamp(20px, 5vw, 56px) 96px;
             max-width: 880px; margin: 0 auto;
+            /* 本体と同じ日本語の折り返し。文節で折り返し、行末の泣き別れを減らす */
+            word-break: auto-phrase;
+            line-break: strict;
         }
+        p, li, td, th { text-wrap: pretty; }
         .eyebrow { font-size: .78rem; font-weight: 500; letter-spacing: .12em; color: var(--accent-ink); }
         h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); font-weight: 300; letter-spacing: -.01em; margin: 6px 0 0; }
         .sub { color: var(--ink-dim); font-size: .93rem; margin-top: 12px; }

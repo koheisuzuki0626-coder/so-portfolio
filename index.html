@@ -144,7 +144,7 @@
                   "name": "納品までどのくらいかかりますか？",
                   "acceptedAnswer": {
                         "@type": "Answer",
-                        "text": "30秒で約2週間、90秒で約3週間、3分で約5週間、5分で約7週間が目安です。撮影日を押さえる必要がないので、日程はお客様のご確認のスピードだけで決まります。お急ぎの場合はご相談ください。"
+                        "text": "30秒で約2週間、90秒で約2〜3週間、3分で約3〜4週間、5分で約4〜7週間が目安です。幅があるのは仕上げの段階で手間が変わるためで、梅がもっとも早く、松がもっとも時間をいただきます。撮影日を押さえる必要がないので、日程はお客様のご確認のスピードだけで決まります。お急ぎの場合はご相談ください。"
                   }
             },
             {
@@ -480,7 +480,7 @@
                 </div>
             </div>
             <p class="flow-note reveal">お客様にご対応いただくのは <strong>01 のヒアリング</strong>、<strong>02 の構成案のご確認</strong>、<strong>03 の絵コンテのご確認</strong>、<strong>05 の編集チェック</strong> の4回だけです。撮影の立ち会いも、出演も、現場対応もありません。</p>
-            <p class="flow-note reveal">ご依頼から納品までの目安は <strong>30秒で約2週間、90秒で約3週間、3分で約5週間、5分で約7週間</strong>。撮影日を押さえる必要がない分、日程はお客様のご確認のスピードだけで決まります。編集チェックを3回とも使う場合は、それぞれ1週間ほど余裕を見てください。お急ぎの場合はご相談ください。</p>
+            <p class="flow-note reveal">ご依頼から納品までの目安は <strong>30秒で約2週間、90秒で約2〜3週間、3分で約3〜4週間、5分で約4〜7週間</strong>（仕上げの段階で変わります）。撮影日を押さえる必要がない分、日程はお客様のご確認のスピードだけで決まります。編集チェックを3回とも使う場合は、それぞれ1週間ほど余裕を見てください。お急ぎの場合はご相談ください。</p>
         </div>
     </section>
 
@@ -615,7 +615,7 @@
                 </details>
                 <details class="faq-item">
                     <summary>納品までどのくらいかかりますか？</summary>
-                    <div class="faq-a"><p>30秒で約2週間、90秒で約3週間、3分で約5週間、5分で約7週間が目安です。撮影日を押さえる必要がないので、日程はお客様のご確認のスピードだけで決まります。お急ぎの場合はご相談ください。</p></div>
+                    <div class="faq-a"><p>30秒で約2週間、90秒で約2〜3週間、3分で約3〜4週間、5分で約4〜7週間が目安です。幅があるのは仕上げの段階で手間が変わるためで、梅がもっとも早く、松がもっとも時間をいただきます。撮影日を押さえる必要がないので、日程はお客様のご確認のスピードだけで決まります。お急ぎの場合はご相談ください。</p></div>
                 </details>
                 <details class="faq-item">
                     <summary>打ち合わせや立ち会いは必要ですか？</summary>
@@ -1001,15 +1001,15 @@
            お客様には確かめようがないので出さない(工数の根拠としては README に残す)。
            ここに並ぶのは全部、納品物を見れば確認できるものにしてある。 */
         const TIERS = [
-            { id: 'ume', label: '梅', sub: '標準', perSec: 3500,
+            { id: 'ume', label: '梅', sub: '標準', perSec: 3500, hours: 1.0,
               short: '720p・横型',
               detail: '画質 720p ／ ナレーションは自動生成の音声 ／ 横型で納品',
               use: 'SNS 投稿・社内共有・スマホで見てもらう用途' },
-            { id: 'take', label: '竹', sub: '上', perSec: 4900,
+            { id: 'take', label: '竹', sub: '上', perSec: 4900, hours: 1.4,
               short: '1080p・縦横2形式',
               detail: '画質 1080p（フルHD） ／ ナレーションの声を選べます ／ 横型と縦型で納品',
               use: 'サイト掲載・営業資料・広告出稿' },
-            { id: 'matsu', label: '松', sub: '特上', perSec: 6650,
+            { id: 'matsu', label: '松', sub: '特上', perSec: 6650, hours: 1.9,
               short: '4K対応・縦横3形式',
               detail: '画質 4K 対応 ／ 声を選んで話し方まで調整 ／ 画面の高精細化とちらつき除去 ／ 横型・縦型・正方形で納品',
               use: '展示会や大画面での上映・ブランド映像' },
@@ -1026,8 +1026,23 @@
         ];
         // 1本あたりが短くなりすぎないよう、尺に応じて本数の上限を決める
         const countCap = (sec) => (sec <= 30 ? 2 : sec <= 90 ? 4 : 6);
-        const leadTime = (sec) => (sec <= 30 ? '約2週間' : sec <= 90 ? '約3週間'
-            : sec <= 180 ? '約5週間' : '約7週間');
+
+        /* 納期は工数から出す。固定の早見表にすると、尺が伸びたときに
+           実際の手間より長い数字を出してしまう(3分48hで5週間など)。
+
+             納期 = 工数 ÷ 週に充てられる時間 ＋ 確認の往復
+             LEAD_WEEK_HOURS … 1本に集中して充てられる週あたりの時間。
+                               年間の制作可能時間 1,373h ÷ 46週 ≒ 30h のうち、
+                               主軸の1本に充てるぶん
+             LEAD_REVIEW     … 構成案・絵コンテ・初稿チェックの往復ぶん
+             最低2週間        … どんなに短くてもこの往復は縮まらない
+
+           仕上げの段階で工数が変わるので、納期も段によって変わる。
+           修正を3回とも使う場合は、別途1回1週間ほど見てもらう(本文に明記) */
+        const LEAD_WEEK_HOURS = 25, LEAD_REVIEW = 1;
+        const leadWeeks = (sec, t) =>
+            Math.max(2, Math.round((4.8 + 0.24 * t.hours * sec) / LEAD_WEEK_HOURS + LEAD_REVIEW));
+        const leadTime = (sec, t) => `約${leadWeeks(sec, t)}週間`;
         const yen = (n) => `¥${n.toLocaleString('ja-JP')}`;
 
         const calc = document.querySelector('.calc');
@@ -1143,7 +1158,7 @@
                     ? '本数 1本'
                     : `本数 ${count}本（2本目以降 ${count - 1}本）`;
                 document.getElementById('calc-cntfee').textContent = yen(cntFee);
-                document.getElementById('calc-lead-v').textContent = leadTime(sec);
+                document.getElementById('calc-lead-v').textContent = leadTime(sec, tier);
                 settled(total);
 
                 summary = [
@@ -1154,7 +1169,7 @@
                     `・合計の尺：${lenLabel}`,
                     `・本数：${count}本`,
                     `・概算金額：${yen(total)}（税別）`,
-                    `・納品目安：${leadTime(sec)}`,
+                    `・納品目安：${leadTime(sec, tier)}`,
                     '',
                     '■ 内訳',
                     `・基本料金：${yen(PRICE.base)}`,
