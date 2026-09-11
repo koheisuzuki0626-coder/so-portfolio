@@ -63,6 +63,14 @@ check('本文の納期が計算結果と一致(5分)', idx.includes(`5分で約$
 check('タイトルの「最短2週間」が実態と合う',
     /最短2週間/.test(idx) && Math.min(...TIERS.flatMap(t => LENGTHS.map(s => leadWeeks(t, s)))) === 2);
 
+/* ---- 料金の説明文が段と矛盾していないか ----
+   段で秒単価が変わるのに「1秒あたり ¥3,500」と書いてあると嘘になる */
+const why = await page.locator('.calc-why').innerText();
+check('内訳の秒単価が段の幅で書いてある',
+    /¥3,500〜6,650/.test(why) && /仕上げの段階/.test(why), why.split('\n').find(l => l.includes('1秒')) || '');
+check('制作にかかる日数が何で変わるか書いてある',
+    /尺と仕上げの段階によって前後します/.test(await page.locator('#process').innerText()));
+
 /* ---- 公開範囲 ---- */
 for (const [f, html] of [['index.html', idx], ['about.html', about], ['privacy.html', privacy]]) {
     check(`${f} は検索結果に出さない`, /name="robots" content="noindex/.test(html));
