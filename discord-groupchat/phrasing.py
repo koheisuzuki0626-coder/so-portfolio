@@ -63,6 +63,7 @@ __all__ = [
     "_stack_revise",
     "_strip_engine_words",
     "_strip_media_context",
+    "_instruction_part",
     "_wants_action",
 ]
 
@@ -481,3 +482,36 @@ def _strip_media_context(text):
     誤発動するのを防ぐ（機能トリガーの判定には必ずこちらを使う）。"""
     t = re.split(r"\s*【", text or "")[0]
     return t.replace("（ファイル共有）", "").strip()
+
+
+# 引用の始まり：ボットの名乗り（**クロード2（PM）**: など）か、行頭の引用記号。
+_QUOTED_HEAD_RE = re.compile(
+    r"^\*{0,2}(クロード|Claude|Gemini|ジェミニ)\s*\d?(（[^）]*）)?\*{0,2}\s*[:：]")
+
+
+def _instruction_part(text):
+    """貼り付けた引用を落として、本人が打った【指示】の部分だけを返す。
+
+    事故（2026-09-12 09:11）：「クロード1、以下の事例を探して」の後に
+    ボットの過去の返事を丸ごと貼ったところ、その引用に含まれる
+    「TOPPANの実績紹介動画」の『実績』で、自分のチャンネルの実績分析が
+    始まった。指示は頭の1行で、残りは参考として貼っただけだった。
+
+    見つからなければ全文を返す（普通の長文を壊さないため）。
+    """
+    t = _strip_media_context(text or "")
+    lines = t.splitlines()
+    for i, ln in enumerate(lines):
+        if not i:
+            continue
+        s = ln.strip()
+        if _QUOTED_HEAD_RE.match(s) or s.startswith(">"):
+            return "\n".join(lines[:i]).strip() or t
+    # 「以下の〜」と書いてあり空行で区切られているなら、その前までが指示
+    if lines and re.search(r"(以下|下記|次)の", lines[0]):
+        for i, ln in enumerate(lines):
+            if i and not ln.strip():
+                head = "\n".join(lines[:i]).strip()
+                if head:
+                    return head
+    return t
