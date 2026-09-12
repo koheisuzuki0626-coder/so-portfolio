@@ -7175,8 +7175,18 @@ def _r_channel_stats(c):
     if re.search(r"HDD|ハードディスク|外付け|/Volumes|パス|フォルダ|"
                  r"制作データ|過去の(制作|案件|仕事)", c.text, re.I):
         return None
+    # 「実績」「成績」は語だけでは足りない。何かを【見せて/分析して】と
+    # 頼まれて初めて実績分析になる。
+    # 事故（2026-09-12 11:50）：営業ロープレ中の「実績数値を出すパターンで
+    # 行こう」が、自分のチャンネルの再生数分析として扱われた。
+    # 動画の中身の相談をしているのに、YouTube APIを叩きに行っていた。
+    # 「再生数」「視聴回数」「伸び方」は数字そのものを指すので単体で通す。
+    _metric = re.search("再生数|視聴回数|伸び方", c.text)
+    _record = re.search("実績|成績", c.text) and re.search(
+        "分析|見せて|見て|教えて|どう|確認|レポート|振り返り|チェック|出して$",
+        c.text)
     if (not _GEN_INTENT2_RE.search(c.text)
-            and (re.search("実績|成績|再生数|視聴回数|伸び方", c.text)
+            and (_metric or _record
                  or (re.search("チャンネル", c.text)
                      and re.search("分析|レポート|振り返り|どう", c.text)))
             and not re.search("この動画|添付", c.text)):
